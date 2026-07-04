@@ -92,4 +92,34 @@ jobs:
         env:
           API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          API_KEY_RAW: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTEN
+          API_KEY_RAW: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+        run: |
+          mkdir -p ~/private_keys
+          KEY_ID_CLEAN=$(printf '%s' "$API_KEY_ID" | tr -d ' \r\n')
+          ISSUER_CLEAN=$(printf '%s' "$API_ISSUER_ID" | tr -d ' \r\n')
+          KEYFILE=~/private_keys/AuthKey_${KEY_ID_CLEAN}.p8
+          printf '%s' "$API_KEY_RAW" > /tmp/rawkey.txt
+          if grep -q "BEGIN PRIVATE KEY" /tmp/rawkey.txt; then
+            cp /tmp/rawkey.txt "$KEYFILE"
+          else
+            printf '%s' "$API_KEY_RAW" | tr -d ' \r\n' | base64 -d > "$KEYFILE"
+          fi
+          chmod 600 "$KEYFILE"
+          if openssl pkey -in "$KEYFILE" -noout 2>/dev/null; then
+            echo "CLE VALIDE"
+          else
+            echo "CLE INVALIDE"
+            exit 1
+          fi
+          xcrun altool --upload-app \
+            --file "$(ls "$RUNNER_TEMP"/export/*.ipa)" \
+            --type ios \
+            --apiKey "$KEY_ID_CLEAN" \
+            --apiIssuer "$ISSUER_CLEAN"
+          rm -f "$KEYFILE"
+      - name: Upload logs si echec
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: /Users/runner/Library/Developer/Xcode/DerivedData
