@@ -16,21 +16,13 @@ jobs:
         run: |
           unzip -o "MOBILEA Dispatch.zip" -d .
           ls -la src
-      - name: Supprimer LaunchScreen storyboard problematique
+      - name: Reparer LaunchScreen storyboard
         run: |
           SB=$(find src -name "LaunchScreen.storyboard" | head -1)
-          echo "Storyboard trouve: $SB"
-          if [ -n "$SB" ]; then
-            rm -f "$SB"
-            echo "Storyboard supprime"
-          fi
-          # Retirer la reference UILaunchStoryboardName du Info.plist
-          PLIST=$(find src -name "Info.plist" -path "*MOBILEA Dispatch*" | head -1)
-          echo "Info.plist trouve: $PLIST"
-          if [ -n "$PLIST" ]; then
-            /usr/libexec/PlistBuddy -c "Delete :UILaunchStoryboardName" "$PLIST" 2>/dev/null || echo "Pas de UILaunchStoryboardName a supprimer"
-            echo "Info.plist nettoye"
-          fi
+          echo "Storyboard: $SB"
+          echo "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPGRvY3VtZW50IHR5cGU9ImNvbS5hcHBsZS5JbnRlcmZhY2VCdWlsZGVyMy5Db2NvYVRvdWNoLlN0b3J5Ym9hcmQuWElCIiB2ZXJzaW9uPSIzLjAiIHRvb2xzVmVyc2lvbj0iMjI1MDUiIHRhcmdldFJ1bnRpbWU9ImlPUy5Db2NvYVRvdWNoIiBwcm9wZXJ0eUFjY2Vzc0NvbnRyb2w9Im5vbmUiIHVzZUF1dG9sYXlvdXQ9IllFUyIgbGF1bmNoU2NyZWVuPSJZRVMiIHVzZVRyYWl0Q29sbGVjdGlvbnM9IllFUyIgdXNlU2FmZUFyZWFzPSJZRVMiIGNvbG9yTWF0Y2hlZD0iWUVTIiBpbml0aWFsVmlld0NvbnRyb2xsZXI9IjAxSi1scC1vVk0iPgogICAgPGRlcGVuZGVuY2llcz4KICAgICAgICA8ZGVwbG95bWVudCBpZGVudGlmaWVyPSJpT1MiLz4KICAgICAgICA8cGx1Z0luIGlkZW50aWZpZXI9ImNvbS5hcHBsZS5JbnRlcmZhY2VCdWlsZGVyLklCQ29jb2FUb3VjaFBsdWdpbiIgdmVyc2lvbj0iMjI1MDQiLz4KICAgICAgICA8Y2FwYWJpbGl0eSBuYW1lPSJTYWZlIGFyZWEgbGF5b3V0IGd1aWRlcyIgbWluVG9vbHNWZXJzaW9uPSI5LjAiLz4KICAgICAgICA8Y2FwYWJpbGl0eSBuYW1lPSJkb2N1bWVudHMgc2F2ZWQgaW4gdGhlIFhjb2RlIDggZm9ybWF0IiBtaW5Ub29sc1ZlcnNpb249IjguMCIvPgogICAgPC9kZXBlbmRlbmNpZXM+CiAgICA8c2NlbmVzPgogICAgICAgIDxzY2VuZSBzY2VuZUlEPSJFSGYtSVctQTJFIj4KICAgICAgICAgICAgPG9iamVjdHM+CiAgICAgICAgICAgICAgICA8dmlld0NvbnRyb2xsZXIgaWQ9IjAxSi1scC1vVk0iIHNjZW5lTWVtYmVySUQ9InZpZXdDb250cm9sbGVyIj4KICAgICAgICAgICAgICAgICAgICA8dmlldyBrZXk9InZpZXciIGNvbnRlbnRNb2RlPSJzY2FsZVRvRmlsbCIgaWQ9IjRtTy1lNC1SRVEiPgogICAgICAgICAgICAgICAgICAgICAgICA8cmVjdCBrZXk9ImZyYW1lIiB4PSIwLjAiIHk9IjAuMCIgd2lkdGg9IjQxNCIgaGVpZ2h0PSI4OTYiLz4KICAgICAgICAgICAgICAgICAgICAgICAgPGF1dG9yZXNpemluZ01hc2sga2V5PSJhdXRvcmVzaXppbmdNYXNrIiBmbGV4aWJsZU1heFg9IllFUyIgZmxleGlibGVNYXhZPSJZRVMiLz4KICAgICAgICAgICAgICAgICAgICAgICAgPHZpZXdMYXlvdXRHdWlkZSBrZXk9InNhZmVBcmVhIiBpZD0iWHBLLUJxLUE3VSIvPgogICAgICAgICAgICAgICAgICAgICAgICA8Y29sb3Iga2V5PSJiYWNrZ3JvdW5kQ29sb3IiIHdoaXRlPSIxIiBhbHBoYT0iMSIgY29sb3JTcGFjZT0iY3VzdG9tIiBjdXN0b21Db2xvclNwYWNlPSJnZW5lcmljR2FtbWEyMkdyYXlDb2xvclNwYWNlIi8+CiAgICAgICAgICAgICAgICAgICAgPC92aWV3PgogICAgICAgICAgICAgICAgPC92aWV3Q29udHJvbGxlcj4KICAgICAgICAgICAgICAgIDxwbGFjZWhvbGRlciBwbGFjZWhvbGRlcklkZW50aWZpZXI9IklCRmlyc3RSZXNwb25kZXIiIGlkPSJpWWotS3EtRWExIiB1c2VyTGFiZWw9IkZpcnN0IFJlc3BvbmRlciIgc2NlbmVNZW1iZXJJRD0iZmlyc3RSZXNwb25kZXIiLz4KICAgICAgICAgICAgPC9vYmplY3RzPgogICAgICAgIDwvc2NlbmU+CiAgICA8L3NjZW5lcz4KPC9kb2N1bWVudD4K" | base64 -d > "$SB"
+          echo "=== Nouveau contenu ==="
+          cat "$SB"
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
