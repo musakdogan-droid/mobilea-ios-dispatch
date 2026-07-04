@@ -123,3 +123,4 @@ jobs:
         with:
           name: build-logs
           path: /Users/runner/Library/Developer/Xcode/DerivedData
+          <!-- MOBILEA Dispatch - build trigger -->
