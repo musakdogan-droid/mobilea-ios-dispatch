@@ -16,6 +16,38 @@ jobs:
         run: |
           unzip -o "MOBILEA Dispatch.zip" -d .
           ls -la src
+      - name: Corriger LaunchScreen storyboard
+        run: |
+          SB=$(find src -name "LaunchScreen.storyboard" | head -1)
+          echo "Storyboard trouve: $SB"
+          cat > "$SB" << 'STORYBOARD'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="22505" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">
+              <dependencies>
+                  <deployment identifier="iOS"/>
+                  <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="22504"/>
+                  <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+                  <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+              </dependencies>
+              <scenes>
+                  <scene sceneID="EHf-IW-A2E">
+                      <objects>
+                          <viewController id="01J-lp-oVM" sceneMemberID="viewController">
+                              <view key="view" contentMode="scaleToFill" id="4mO-e4-REQ">
+                                  <rect key="frame" x="0.0" y="0.0" width="414" height="896"/>
+                                  <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMaxY="YES"/>
+                                  <viewLayoutGuide key="safeArea" id="XpK-Bq-A7U"/>
+                                  <color key="backgroundColor" white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                              </view>
+                          </viewController>
+                          <placeholder placeholderIdentifier="IBFirstResponder" id="iYj-Kq-Ea1" userLabel="First Responder" sceneMemberID="firstResponder"/>
+                      </objects>
+                  </scene>
+              </scenes>
+          </document>
+          STORYBOARD
+          echo "=== Storyboard remplace ==="
+          cat "$SB"
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
