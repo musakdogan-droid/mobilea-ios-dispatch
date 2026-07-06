@@ -4,7 +4,7 @@ on:
     branches: [ main ]
 jobs:
   build:
-    runs-on: macos-latest 
+    runs-on: macos-latest  
     steps:
       - uses: actions/checkout@v4 
       - name: Selectionner Xcode 26
