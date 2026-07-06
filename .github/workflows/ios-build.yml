@@ -5,7 +5,7 @@ on:
 jobs: 
   build:
     runs-on: macos-latest   
-    steps: 
+    steps:  
       - uses: actions/checkout@v4 
       - name: Selectionner Xcode 26
         run: |
