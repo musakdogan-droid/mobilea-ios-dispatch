@@ -2,27 +2,57 @@ name: Build iOS MOBILEA Dispatch
 on:
   push:
     branches: [ main ]
-jobs: 
+jobs:
   build:
-    runs-on: macos-latest   
-    steps:  
-      - uses: actions/checkout@v4 
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Selectionner Xcode 26
         run: |
-          ls /Applications | grep Xcode
-          sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer 2>/dev/null || sudo xcode-select -s /Applications/Xcode_26.0.app/Contents/Developer 2>/dev/null || sudo xcode-select -s /Applications/Xcode_26.0.1.app/Contents/Developer 2>/dev/null || sudo xcode-select -s /Applications/Xcode_26.1.app/Contents/Developer 2>/dev/null || echo "Xcode 26 introuvable"
+          sudo xcode-select -s /Applications/Xcode_26.0.1.app/Contents/Developer 2>/dev/null || sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer 2>/dev/null || sudo xcode-select -s /Applications/Xcode_26.0.app/Contents/Developer 2>/dev/null || echo "Xcode 26 introuvable"
           xcodebuild -version
       - name: Decompresser le zip Dispatch
         run: |
           unzip -o "MOBILEA Dispatch.zip" -d .
           ls -la src
-      - name: Reparer LaunchScreen storyboard
+      - name: Reparer TOUS les storyboards et LaunchIcon
         run: |
-          SB=$(find src -name "LaunchScreen.storyboard" | head -1)
-          echo "Storyboard: $SB"
-          echo "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPGRvY3VtZW50IHR5cGU9ImNvbS5hcHBsZS5JbnRlcmZhY2VCdWlsZGVyMy5Db2NvYVRvdWNoLlN0b3J5Ym9hcmQuWElCIiB2ZXJzaW9uPSIzLjAiIHRvb2xzVmVyc2lvbj0iMjI1MDUiIHRhcmdldFJ1bnRpbWU9ImlPUy5Db2NvYVRvdWNoIiBwcm9wZXJ0eUFjY2Vzc0NvbnRyb2w9Im5vbmUiIHVzZUF1dG9sYXlvdXQ9IllFUyIgbGF1bmNoU2NyZWVuPSJZRVMiIHVzZVRyYWl0Q29sbGVjdGlvbnM9IllFUyIgdXNlU2FmZUFyZWFzPSJZRVMiIGNvbG9yTWF0Y2hlZD0iWUVTIiBpbml0aWFsVmlld0NvbnRyb2xsZXI9IjAxSi1scC1vVk0iPgogICAgPGRlcGVuZGVuY2llcz4KICAgICAgICA8ZGVwbG95bWVudCBpZGVudGlmaWVyPSJpT1MiLz4KICAgICAgICA8cGx1Z0luIGlkZW50aWZpZXI9ImNvbS5hcHBsZS5JbnRlcmZhY2VCdWlsZGVyLklCQ29jb2FUb3VjaFBsdWdpbiIgdmVyc2lvbj0iMjI1MDQiLz4KICAgICAgICA8Y2FwYWJpbGl0eSBuYW1lPSJTYWZlIGFyZWEgbGF5b3V0IGd1aWRlcyIgbWluVG9vbHNWZXJzaW9uPSI5LjAiLz4KICAgICAgICA8Y2FwYWJpbGl0eSBuYW1lPSJkb2N1bWVudHMgc2F2ZWQgaW4gdGhlIFhjb2RlIDggZm9ybWF0IiBtaW5Ub29sc1ZlcnNpb249IjguMCIvPgogICAgPC9kZXBlbmRlbmNpZXM+CiAgICA8c2NlbmVzPgogICAgICAgIDxzY2VuZSBzY2VuZUlEPSJFSGYtSVctQTJFIj4KICAgICAgICAgICAgPG9iamVjdHM+CiAgICAgICAgICAgICAgICA8dmlld0NvbnRyb2xsZXIgaWQ9IjAxSi1scC1vVk0iIHNjZW5lTWVtYmVySUQ9InZpZXdDb250cm9sbGVyIj4KICAgICAgICAgICAgICAgICAgICA8dmlldyBrZXk9InZpZXciIGNvbnRlbnRNb2RlPSJzY2FsZVRvRmlsbCIgaWQ9IjRtTy1lNC1SRVEiPgogICAgICAgICAgICAgICAgICAgICAgICA8cmVjdCBrZXk9ImZyYW1lIiB4PSIwLjAiIHk9IjAuMCIgd2lkdGg9IjQxNCIgaGVpZ2h0PSI4OTYiLz4KICAgICAgICAgICAgICAgICAgICAgICAgPGF1dG9yZXNpemluZ01hc2sga2V5PSJhdXRvcmVzaXppbmdNYXNrIiBmbGV4aWJsZU1heFg9IllFUyIgZmxleGlibGVNYXhZPSJZRVMiLz4KICAgICAgICAgICAgICAgICAgICAgICAgPHZpZXdMYXlvdXRHdWlkZSBrZXk9InNhZmVBcmVhIiBpZD0iWHBLLUJxLUE3VSIvPgogICAgICAgICAgICAgICAgICAgICAgICA8Y29sb3Iga2V5PSJiYWNrZ3JvdW5kQ29sb3IiIHdoaXRlPSIxIiBhbHBoYT0iMSIgY29sb3JTcGFjZT0iY3VzdG9tIiBjdXN0b21Db2xvclNwYWNlPSJnZW5lcmljR2FtbWEyMkdyYXlDb2xvclNwYWNlIi8+CiAgICAgICAgICAgICAgICAgICAgPC92aWV3PgogICAgICAgICAgICAgICAgPC92aWV3Q29udHJvbGxlcj4KICAgICAgICAgICAgICAgIDxwbGFjZWhvbGRlciBwbGFjZWhvbGRlcklkZW50aWZpZXI9IklCRmlyc3RSZXNwb25kZXIiIGlkPSJpWWotS3EtRWExIiB1c2VyTGFiZWw9IkZpcnN0IFJlc3BvbmRlciIgc2NlbmVNZW1iZXJJRD0iZmlyc3RSZXNwb25kZXIiLz4KICAgICAgICAgICAgPC9vYmplY3RzPgogICAgICAgIDwvc2NlbmU+CiAgICA8L3NjZW5lcz4KPC9kb2N1bWVudD4K" | base64 -d > "$SB"
-          echo "=== Nouveau contenu ==="
-          cat "$SB"
+          # 1. Reparer LaunchScreen.storyboard
+          LSB=$(find src -name "LaunchScreen.storyboard" | head -1)
+          if [ -n "$LSB" ]; then
+            echo "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPGRvY3VtZW50IHR5cGU9ImNvbS5hcHBsZS5JbnRlcmZhY2VCdWlsZGVyMy5Db2NvYVRvdWNoLlN0b3J5Ym9hcmQuWElCIiB2ZXJzaW9uPSIzLjAiIHRvb2xzVmVyc2lvbj0iMjI1MDUiIHRhcmdldFJ1bnRpbWU9ImlPUy5Db2NvYVRvdWNoIiBwcm9wZXJ0eUFjY2Vzc0NvbnRyb2w9Im5vbmUiIHVzZUF1dG9sYXlvdXQ9IllFUyIgbGF1bmNoU2NyZWVuPSJZRVMiIHVzZVRyYWl0Q29sbGVjdGlvbnM9IllFUyIgdXNlU2FmZUFyZWFzPSJZRVMiIGNvbG9yTWF0Y2hlZD0iWUVTIiBpbml0aWFsVmlld0NvbnRyb2xsZXI9IjAxSi1scC1vVk0iPgogICAgPGRlcGVuZGVuY2llcz4KICAgICAgICA8ZGVwbG95bWVudCBpZGVudGlmaWVyPSJpT1MiLz4KICAgICAgICA8cGx1Z0luIGlkZW50aWZpZXI9ImNvbS5hcHBsZS5JbnRlcmZhY2VCdWlsZGVyLklCQ29jb2FUb3VjaFBsdWdpbiIgdmVyc2lvbj0iMjI1MDQiLz4KICAgICAgICA8Y2FwYWJpbGl0eSBuYW1lPSJTYWZlIGFyZWEgbGF5b3V0IGd1aWRlcyIgbWluVG9vbHNWZXJzaW9uPSI5LjAiLz4KICAgICAgICA8Y2FwYWJpbGl0eSBuYW1lPSJkb2N1bWVudHMgc2F2ZWQgaW4gdGhlIFhjb2RlIDggZm9ybWF0IiBtaW5Ub29sc1ZlcnNpb249IjguMCIvPgogICAgPC9kZXBlbmRlbmNpZXM+CiAgICA8c2NlbmVzPgogICAgICAgIDxzY2VuZSBzY2VuZUlEPSJFSGYtSVctQTJFIj4KICAgICAgICAgICAgPG9iamVjdHM+CiAgICAgICAgICAgICAgICA8dmlld0NvbnRyb2xsZXIgaWQ9IjAxSi1scC1vVk0iIHNjZW5lTWVtYmVySUQ9InZpZXdDb250cm9sbGVyIj4KICAgICAgICAgICAgICAgICAgICA8dmlldyBrZXk9InZpZXciIGNvbnRlbnRNb2RlPSJzY2FsZVRvRmlsbCIgaWQ9IjRtTy1lNC1SRVEiPgogICAgICAgICAgICAgICAgICAgICAgICA8cmVjdCBrZXk9ImZyYW1lIiB4PSIwLjAiIHk9IjAuMCIgd2lkdGg9IjQxNCIgaGVpZ2h0PSI4OTYiLz4KICAgICAgICAgICAgICAgICAgICAgICAgPGF1dG9yZXNpemluZ01hc2sga2V5PSJhdXRvcmVzaXppbmdNYXNrIiBmbGV4aWJsZU1heFg9IllFUyIgZmxleGlibGVNYXhZPSJZRVMiLz4KICAgICAgICAgICAgICAgICAgICAgICAgPHZpZXdMYXlvdXRHdWlkZSBrZXk9InNhZmVBcmVhIiBpZD0iWHBLLUJxLUE3VSIvPgogICAgICAgICAgICAgICAgICAgICAgICA8Y29sb3Iga2V5PSJiYWNrZ3JvdW5kQ29sb3IiIHdoaXRlPSIxIiBhbHBoYT0iMSIgY29sb3JTcGFjZT0iY3VzdG9tIiBjdXN0b21Db2xvclNwYWNlPSJnZW5lcmljR2FtbWEyMkdyYXlDb2xvclNwYWNlIi8+CiAgICAgICAgICAgICAgICAgICAgPC92aWV3PgogICAgICAgICAgICAgICAgPC92aWV3Q29udHJvbGxlcj4KICAgICAgICAgICAgICAgIDxwbGFjZWhvbGRlciBwbGFjZWhvbGRlcklkZW50aWZpZXI9IklCRmlyc3RSZXNwb25kZXIiIGlkPSJpWWotS3EtRWExIiB1c2VyTGFiZWw9IkZpcnN0IFJlc3BvbmRlciIgc2NlbmVNZW1iZXJJRD0iZmlyc3RSZXNwb25kZXIiLz4KICAgICAgICAgICAgPC9vYmplY3RzPgogICAgICAgIDwvc2NlbmU+CiAgICA8L3NjZW5lcz4KPC9kb2N1bWVudD4K" | base64 -d > "$LSB"
+            echo "LaunchScreen repare: $LSB"
+          fi
+          # 2. Reparer Main.storyboard - retirer les references image="LaunchIcon"
+          MSB=$(find src -name "Main.storyboard" | head -1)
+          if [ -n "$MSB" ]; then
+            # Retirer l'attribut image="LaunchIcon" et image="wifi.slash" des imageView
+            sed -i '' 's/ image="LaunchIcon"//g' "$MSB" 2>/dev/null || sed -i 's/ image="LaunchIcon"//g' "$MSB"
+            sed -i '' 's/ image="wifi.slash" catalog="system"//g' "$MSB" 2>/dev/null || sed -i 's/ image="wifi.slash" catalog="system"//g' "$MSB"
+            echo "Main.storyboard nettoye: $MSB"
+          fi
+          # 3. Corriger le Contents.json de LaunchIcon (scales 1x 2x 3x)
+          LIC=$(find src -path "*LaunchIcon.imageset/Contents.json" | head -1)
+          if [ -n "$LIC" ]; then
+            echo "ewogICJpbWFnZXMiIDogWwogICAgeyAiY29tcHJlc3Npb24tdHlwZSIgOiAiYXV0b21hdGljIiwgImZpbGVuYW1lIiA6ICJsYXVuY2gtNjQucG5nIiwgImlkaW9tIiA6ICJ1bml2ZXJzYWwiLCAic2NhbGUiIDogIjF4IiB9LAogICAgeyAiY29tcHJlc3Npb24tdHlwZSIgOiAiYXV0b21hdGljIiwgImZpbGVuYW1lIiA6ICJsYXVuY2gtMTI4LnBuZyIsICJpZGlvbSIgOiAidW5pdmVyc2FsIiwgInNjYWxlIiA6ICIyeCIgfSwKICAgIHsgImNvbXByZXNzaW9uLXR5cGUiIDogImF1dG9tYXRpYyIsICJmaWxlbmFtZSIgOiAibGF1bmNoLTE5Mi5wbmciLCAiaWRpb20iIDogInVuaXZlcnNhbCIsICJzY2FsZSIgOiAiM3giIH0KICBdLAogICJpbmZvIiA6IHsgImF1dGhvciIgOiAieGNvZGUiLCAidmVyc2lvbiIgOiAxIH0KfQo=" | base64 -d > "$LIC"
+            echo "LaunchIcon Contents.json corrige: $LIC"
+          fi
+          # 4. Retirer alpha de toutes les images PNG dans Assets
+          python3 << 'PYEOF'
+          from PIL import Image
+          import os, glob
+          for png in glob.glob("src/**/*.png", recursive=True):
+              try:
+                  im = Image.open(png)
+                  if im.mode in ('RGBA','LA','P'):
+                      bg = Image.new('RGB', im.size, (255,255,255))
+                      rgba = im.convert('RGBA')
+                      bg.paste(rgba, mask=rgba.split()[3])
+                      bg.save(png, 'PNG')
+              except Exception as e:
+                  pass
+          print("Alpha retire de tous les PNG")
+          PYEOF
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
