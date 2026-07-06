@@ -14,19 +14,6 @@ jobs:
       - name: Decompresser le zip Dispatch
         run: |
           unzip -o "MOBILEA Dispatch.zip" -d .
-      - name: DIAGNOSTIC - verifier le contenu reel
-        run: |
-          echo "=== Main.storyboard (references problematiques) ==="
-          grep -o 'image="[^"]*"\|systemColor="[^"]*"' "src/MOBILEA Dispatch/Base.lproj/Main.storyboard" | sort -u || echo "AUCUNE - fichier propre"
-          echo ""
-          echo "=== LaunchIcon Contents.json scales ==="
-          grep '"scale"' "src/MOBILEA Dispatch/Assets.xcassets/LaunchIcon.imageset/Contents.json"
-          echo ""
-          echo "=== toolsVersion des storyboards ==="
-          grep -o 'toolsVersion="[^"]*"' "src/MOBILEA Dispatch/Base.lproj/Main.storyboard"
-          echo ""
-          echo "=== Contenu de AppIcon Contents.json (extrait) ==="
-          head -20 "src/MOBILEA Dispatch/Assets.xcassets/AppIcon.appiconset/Contents.json"
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
@@ -55,17 +42,78 @@ jobs:
           echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > /tmp/profile.mobileprovision
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
-      - name: Build Archive VERBOSE
+      - name: Build Archive
         run: |
           cd src
-          set -o pipefail
           xcodebuild archive \
             -workspace "MOBILEA Dispatch.xcworkspace" \
             -scheme "MOBILEA Dispatch" \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/MOBILEA_Dispatch.xcarchive" \
             -destination "generic/platform=iOS" \
-            CODE_SIGNING_ALLOWED=NO 2>&1 | grep -i "error:\|error \|\.storyboard\|actool\|ibtool\|failed\|The document" | tail -50
+            CODE_SIGNING_ALLOWED=NO
+      - name: Export IPA
+        run: |
+          cat > /tmp/exportOptions.plist << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>teamID</key>
+            <string>PUZZP2FP89</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>fr.mobilea.dispatch</key>
+              <string>MOBILEA Dispatch Distribution</string>
+            </dict>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>compileBitcode</key>
+            <false/>
+            <key>stripSwiftSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/MOBILEA_Dispatch.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist /tmp/exportOptions.plist
+      - name: Upload vers App Store Connect
+        env:
+          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          API_KEY_RAW: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+        run: |
+          mkdir -p ~/private_keys
+          KEY_ID_CLEAN=$(printf '%s' "$API_KEY_ID" | tr -d ' \r\n')
+          ISSUER_CLEAN=$(printf '%s' "$API_ISSUER_ID" | tr -d ' \r\n')
+          KEYFILE=~/private_keys/AuthKey_${KEY_ID_CLEAN}.p8
+          printf '%s' "$API_KEY_RAW" > /tmp/rawkey.txt
+          if grep -q "BEGIN PRIVATE KEY" /tmp/rawkey.txt; then
+            cp /tmp/rawkey.txt "$KEYFILE"
+          else
+            printf '%s' "$API_KEY_RAW" | tr -d ' \r\n' | base64 -d > "$KEYFILE"
+          fi
+          chmod 600 "$KEYFILE"
+          if openssl pkey -in "$KEYFILE" -noout 2>/dev/null; then
+            echo "CLE VALIDE"
+          else
+            echo "CLE INVALIDE"
+            exit 1
+          fi
+          xcrun altool --upload-app \
+            --file "$(ls "$RUNNER_TEMP"/export/*.ipa)" \
+            --type ios \
+            --apiKey "$KEY_ID_CLEAN" \
+            --apiIssuer "$ISSUER_CLEAN"
+          rm -f "$KEYFILE"
       - name: Upload logs si echec
         if: failure()
         uses: actions/upload-artifact@v4
