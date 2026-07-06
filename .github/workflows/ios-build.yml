@@ -38,10 +38,11 @@ jobs:
             echo "LaunchIcon Contents.json corrige: $LIC"
           fi
           # 4. Retirer alpha de toutes les images PNG dans Assets
-          python3 << 'PYEOF'
+          pip3 install Pillow --quiet --break-system-packages 2>/dev/null || pip3 install Pillow --quiet
+          python3 -c "
           from PIL import Image
-          import os, glob
-          for png in glob.glob("src/**/*.png", recursive=True):
+          import glob
+          for png in glob.glob('src/**/*.png', recursive=True):
               try:
                   im = Image.open(png)
                   if im.mode in ('RGBA','LA','P'):
@@ -49,10 +50,10 @@ jobs:
                       rgba = im.convert('RGBA')
                       bg.paste(rgba, mask=rgba.split()[3])
                       bg.save(png, 'PNG')
-              except Exception as e:
+              except Exception:
                   pass
-          print("Alpha retire de tous les PNG")
-          PYEOF
+          print('Alpha retire de tous les PNG')
+          "
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
