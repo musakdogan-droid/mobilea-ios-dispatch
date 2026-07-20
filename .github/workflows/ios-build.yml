@@ -17,16 +17,6 @@ jobs:
           xcodebuild -downloadPlatform iOS 2>&1 | tail -5 || echo "download echoue, on continue"
       - name: Decompresser
         run: unzip -o "MOBILEA Dispatch.zip" -d .
-      - name: Diagnostic structure du projet
-        run: |
-          echo "=== Contenu de src/ ==="
-          ls -la src/ || echo "pas de src/"
-          echo ""
-          echo "=== Tous les Info.plist (hors Pods) ==="
-          find src -name "Info.plist" -not -path "*/Pods/*" 2>/dev/null || echo "aucun"
-          echo ""
-          echo "=== Le .xcodeproj ==="
-          find src -maxdepth 2 -name "*.xcodeproj" 2>/dev/null || echo "aucun"
       - name: Ajouter GoogleService-Info.plist
         run: |
           set -e
@@ -35,18 +25,16 @@ jobs:
             exit 1
           fi
           echo "=== Placement du GoogleService-Info.plist ==="
-          # 1) Copie a la racine de src/ (emplacement le plus courant pour PWABuilder)
+          # Copie a la racine de src/
           cp -f "GoogleService-Info.plist" "src/GoogleService-Info.plist"
           echo "Copie dans src/"
-          # 2) Copie a cote de CHAQUE Info.plist de l'app (hors Pods), au cas ou
-          #    Xcode le cherche dans le dossier du groupe principal.
-          for INFO in $(find src -name "Info.plist" -not -path "*/Pods/*" 2>/dev/null); do
-            DIR=$(dirname "$INFO")
-            if [ "$DIR" != "src" ] && [ "$DIR" != "." ]; then
-              cp -f "GoogleService-Info.plist" "$DIR/GoogleService-Info.plist"
-              echo "Copie dans $DIR"
-            fi
-          done
+          # Copie dans le dossier de l'app (nom fixe, avec espace gere par les guillemets)
+          if [ -d "src/MOBILEA Dispatch" ]; then
+            cp -f "GoogleService-Info.plist" "src/MOBILEA Dispatch/GoogleService-Info.plist"
+            echo "Copie dans src/MOBILEA Dispatch/"
+          else
+            echo "Dossier 'src/MOBILEA Dispatch' introuvable"
+          fi
           echo "=== Emplacements finaux du plist ==="
           find src -name "GoogleService-Info.plist"
       - name: Setup Ruby
