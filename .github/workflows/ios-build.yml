@@ -18,21 +18,22 @@ jobs:
           xcodebuild -version
       - name: Installer la plateforme iOS (fiable)
         run: |
-          echo "=== SDK iOS deja presents ? ==="
-          xcodebuild -showsdks 2>/dev/null | grep -i "iphoneos" && echo "SDK iOS deja present" && exit 0
-          echo "=== Telechargement de la plateforme iOS ==="
-          # Premiere tentative
-          xcodebuild -downloadPlatform iOS 2>&1 | tail -15 || true
-          # Verification
-          if xcodebuild -showsdks 2>/dev/null | grep -qi "iphoneos"; then
-            echo "Plateforme iOS installee avec succes"
-          else
-            echo "Nouvelle tentative via xcodebuild-select..."
-            sudo xcodebuild -runFirstLaunch 2>&1 | tail -10 || true
-            xcodebuild -downloadPlatform iOS 2>&1 | tail -15 || true
-          fi
-          echo "=== SDK finalement disponibles ==="
-          xcodebuild -showsdks 2>/dev/null | grep -i "ios" || echo "ATTENTION : toujours aucun SDK iOS"
+          echo "=== Version Xcode active ==="
+          xcodebuild -version
+          echo "=== Premier lancement Xcode (composants) ==="
+          sudo xcodebuild -runFirstLaunch 2>&1 | tail -5 || true
+          echo "=== Runtimes iOS deja installes ==="
+          xcrun simctl runtime list 2>/dev/null || true
+          echo "=== Telechargement/installation de la plateforme iOS ==="
+          # Boucle : on tente le telechargement jusqu'a 3 fois, car il echoue
+          # parfois de facon transitoire sur les runners GitHub.
+          for i in 1 2 3; do
+            echo "--- Tentative $i ---"
+            sudo xcodebuild -downloadPlatform iOS 2>&1 | tail -8 && break
+            sleep 10
+          done
+          echo "=== Verification finale des SDK ==="
+          xcodebuild -showsdks 2>&1 | grep -i "ios" || echo "Aucun SDK iOS liste (peut etre normal)"
       - name: Decompresser
         run: unzip -o "MOBILEA Dispatch.zip" -d .
       - name: Ajouter GoogleService-Info.plist
@@ -89,6 +90,7 @@ jobs:
             -scheme "MOBILEA Dispatch" \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/MOBILEA_Dispatch.xcarchive" \
+            -sdk iphoneos \
             -destination "generic/platform=iOS" \
             -allowProvisioningUpdates \
             CODE_SIGNING_ALLOWED=NO
