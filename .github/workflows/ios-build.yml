@@ -7,14 +7,32 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Selectionner Xcode 26 et installer plateforme iOS
+      - name: Selectionner Xcode 26
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.0.1.app/Contents/Developer 2>/dev/null || sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer 2>/dev/null || echo "x"
+          ls /Applications | grep Xcode
+          sudo xcode-select -s /Applications/Xcode_26.0.1.app/Contents/Developer 2>/dev/null \
+            || sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer 2>/dev/null \
+            || sudo xcode-select -s /Applications/Xcode_26.0.app/Contents/Developer 2>/dev/null \
+            || sudo xcode-select -s /Applications/Xcode_26.1.app/Contents/Developer 2>/dev/null \
+            || echo "Xcode 26 introuvable"
           xcodebuild -version
-          echo "=== Plateformes disponibles ==="
-          xcodebuild -showsdks 2>/dev/null | grep -i ios || echo "aucun SDK iOS"
-          echo "=== Installation plateforme iOS ==="
-          xcodebuild -downloadPlatform iOS 2>&1 | tail -5 || echo "download echoue, on continue"
+      - name: Installer la plateforme iOS (fiable)
+        run: |
+          echo "=== SDK iOS deja presents ? ==="
+          xcodebuild -showsdks 2>/dev/null | grep -i "iphoneos" && echo "SDK iOS deja present" && exit 0
+          echo "=== Telechargement de la plateforme iOS ==="
+          # Premiere tentative
+          xcodebuild -downloadPlatform iOS 2>&1 | tail -15 || true
+          # Verification
+          if xcodebuild -showsdks 2>/dev/null | grep -qi "iphoneos"; then
+            echo "Plateforme iOS installee avec succes"
+          else
+            echo "Nouvelle tentative via xcodebuild-select..."
+            sudo xcodebuild -runFirstLaunch 2>&1 | tail -10 || true
+            xcodebuild -downloadPlatform iOS 2>&1 | tail -15 || true
+          fi
+          echo "=== SDK finalement disponibles ==="
+          xcodebuild -showsdks 2>/dev/null | grep -i "ios" || echo "ATTENTION : toujours aucun SDK iOS"
       - name: Decompresser
         run: unzip -o "MOBILEA Dispatch.zip" -d .
       - name: Ajouter GoogleService-Info.plist
@@ -25,10 +43,8 @@ jobs:
             exit 1
           fi
           echo "=== Placement du GoogleService-Info.plist ==="
-          # Copie a la racine de src/
           cp -f "GoogleService-Info.plist" "src/GoogleService-Info.plist"
           echo "Copie dans src/"
-          # Copie dans le dossier de l'app (nom fixe, avec espace gere par les guillemets)
           if [ -d "src/MOBILEA Dispatch" ]; then
             cp -f "GoogleService-Info.plist" "src/MOBILEA Dispatch/GoogleService-Info.plist"
             echo "Copie dans src/MOBILEA Dispatch/"
@@ -74,6 +90,7 @@ jobs:
             -configuration Release \
             -archivePath "$RUNNER_TEMP/MOBILEA_Dispatch.xcarchive" \
             -destination "generic/platform=iOS" \
+            -allowProvisioningUpdates \
             CODE_SIGNING_ALLOWED=NO
       - name: Export IPA
         run: |
