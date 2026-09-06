@@ -10,7 +10,6 @@
   } catch(e){}
 })();
 </script>
-
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <!-- SÉCURITÉ -->
@@ -4442,6 +4441,22 @@ function startApp() {
       try { await OneSignal.login('staff_' + (SESSION.uid || SESSION.role)); } catch(e) {}
       try { await OneSignal.User.addTag('role', 'staff'); } catch(e) {}
     });
+  }
+  // APP NATIVE (dispatch/admin) : le Web SDK OneSignal ne marche pas en natif.
+  // On déclenche le pont natif (native-bridge.js) pour abonner l'appareil via
+  // le plugin OneSignal natif, avec le tag role=staff.
+  if((SESSION.role === 'admin' || SESSION.role === 'dispatch')) {
+    window.SESSION = SESSION; // exposer pour le pont natif
+    var _stTries = 0;
+    var _stLink = setInterval(function(){
+      _stTries++;
+      window.SESSION = SESSION;
+      if(typeof window.mobileaLinkPush === 'function') {
+        try { window.mobileaLinkPush(); } catch(e){}
+        clearInterval(_stLink);
+      }
+      if(_stTries > 20) clearInterval(_stLink);
+    }, 500);
   }
   // Demander la permission de notification (nécessaire pour l'alerte système
   // vibration + son + message quand une nouvelle course arrive)
