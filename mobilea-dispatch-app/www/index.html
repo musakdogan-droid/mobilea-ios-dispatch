@@ -2,8 +2,7 @@
 <html lang="fr">
 <head>
 <script>
-/* APP DISPATCH : forcer le mode dispatch au démarrage. Sans ça, l'app ouvrait
-   l'écran chauffeur par défaut. On pose le hash #dispatch avant tout le reste. */
+/* APP DISPATCH : forcer le mode dispatch au démarrage. */
 (function(){
   try {
     var h = (location.hash||'').toLowerCase();
@@ -11,6 +10,7 @@
   } catch(e){}
 })();
 </script>
+
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <!-- SÉCURITÉ -->
@@ -7434,6 +7434,15 @@ async function _saveCourseForce(data, clientName, paxCount) {
     data.chauffeur ? '👤 '+data.chauffeur : ''
   ].filter(x=>x).join(' — ');
   try { await addLog(`➕ Nouvelle ${data.type==='mad'?'MAD':'course'} : ${clientName} — ${detailCreation}`); } catch(e){}
+  // Notifier le staff (dispatch/admin) qu'une nouvelle course a été créée, pour
+  // que le dispatch la voie même s'il n'est pas devant l'écran (app fermée).
+  try {
+    await notifierStaff(
+      '🆕 Nouvelle course',
+      `${clientName} — ${data.depart||data.lieu||'?'} → ${data.arrivee||data.duree||'?'}${dtLog?' — '+dtLog:''}${data.chauffeur?' — '+data.chauffeur:''}`,
+      'https://mobilea-6tg.pages.dev/#dispatch'
+    );
+  } catch(e){}
   // Synchroniser vers LogiPax à la création (Deloitte / Magical Shuttle)
   if(newId) { try { syncToLogipax({...data, _id:newId}, 'insert'); } catch(e){} }
   if(data.chauffeur) {
