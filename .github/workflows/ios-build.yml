@@ -15,15 +15,19 @@ jobs:
 
       - name: Trouver le dossier du projet Capacitor
         run: |
-          # Dispatch : on cible EXPLICITEMENT le dossier de l'app dispatch,
-          # pour ne pas confondre avec l'app driver.
-          CFG=$(find . -path '*mobilea-dispatch-app/capacitor.config.json' -not -path '*/node_modules/*' | head -1)
+          # Dispatch : on identifie le projet par son appId (fr.mobilea.dispatch),
+          # ce qui marche meme si le nom du dossier contient un espace.
+          CFG=""
+          while IFS= read -r f; do
+            if grep -q "fr.mobilea.dispatch" "$f"; then CFG="$f"; break; fi
+          done < <(find . -name capacitor.config.json -not -path '*/node_modules/*')
           if [ -z "$CFG" ]; then
-            echo "ERREUR : capacitor.config.json du dispatch introuvable."
-            find . -maxdepth 2 -type d -not -path '*/.git/*' | sort
+            echo "ERREUR : capacitor.config.json du dispatch (fr.mobilea.dispatch) introuvable."
+            find . -maxdepth 2 -not -path '*/.git/*' | sort
             exit 1
           fi
           PROJ=$(dirname "$CFG")
+          echo "Projet dispatch: $PROJ"
           echo "Projet trouve dans : $PROJ"
           echo "PROJ_DIR=$PROJ" >> "$GITHUB_ENV"
 
