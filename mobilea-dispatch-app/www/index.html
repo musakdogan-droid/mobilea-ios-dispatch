@@ -1,6 +1,16 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<script>
+/* APP DISPATCH : forcer le mode dispatch au démarrage. Sans ça, l'app ouvrait
+   l'écran chauffeur par défaut. On pose le hash #dispatch avant tout le reste. */
+(function(){
+  try {
+    var h = (location.hash||'').toLowerCase();
+    if(h !== '#dispatch' && h.indexOf('#c/') !== 0){ location.hash = 'dispatch'; }
+  } catch(e){}
+})();
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <!-- SÉCURITÉ -->
