@@ -4445,16 +4445,6 @@ function startApp() {
   // APP NATIVE (dispatch/admin) : le Web SDK OneSignal ne marche pas en natif.
   // On déclenche le pont natif (native-bridge.js) pour abonner l'appareil via
   // le plugin OneSignal natif, avec le tag role=staff.
-  // DIAGNOSTIC démarrage (temporaire) : montre le rôle et si le pont natif existe.
-  (function(){
-    try {
-      var d=document.getElementById('start-diag');
-      if(!d){ d=document.createElement('div'); d.id='start-diag';
-        d.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99999;padding:6px 10px;font:11px system-ui;color:#fff;text-align:center;background:#7c3aed';
-        document.body.appendChild(d); }
-      d.textContent = 'DIAG: role=' + (SESSION&&SESSION.role) + ' | pont=' + (typeof window.mobileaLinkPush) + ' | Cap=' + !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
-    } catch(e){}
-  })();
   if((SESSION.role === 'admin' || SESSION.role === 'dispatch')) {
     window.SESSION = SESSION; // exposer pour le pont natif
     var _stTries = 0;
