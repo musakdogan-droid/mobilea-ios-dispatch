@@ -81,7 +81,7 @@ jobs:
           # 3) Lier le fichier d'entitlements au projet Xcode (CODE_SIGN_ENTITLEMENTS)
           #    pour toutes les configurations de la cible App.
           if ! grep -q "CODE_SIGN_ENTITLEMENTS" App.xcodeproj/project.pbxproj; then
-            /usr/bin/sed -i '' -E 's/(PRODUCT_BUNDLE_IDENTIFIER = fr\.mobilea\.driver;)/CODE_SIGN_ENTITLEMENTS = App\/App.entitlements; \1/g' App.xcodeproj/project.pbxproj || true
+            /usr/bin/sed -i '' -E 's/(PRODUCT_BUNDLE_IDENTIFIER = fr\.mobilea\.dispatch;)/CODE_SIGN_ENTITLEMENTS = App\/App.entitlements; \1/g' App.xcodeproj/project.pbxproj || true
             echo "CODE_SIGN_ENTITLEMENTS injecte dans le projet."
           else
             echo "CODE_SIGN_ENTITLEMENTS deja present."
