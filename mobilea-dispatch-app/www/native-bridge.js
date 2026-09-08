@@ -32,6 +32,35 @@
 
     // ── NOTIFICATIONS (OneSignal natif) ──────────────────────────────────
     var _osInit = false;
+
+    // Initialiser OneSignal DÈS LE LANCEMENT (pas seulement après connexion).
+    // Sinon iOS abandonne la demande de token push (« Apns Delegate Never
+    // Fired »). Le login (external_id) se fera plus tard via mobileaLinkPush.
+    (function initOneSignalNow(){
+      try {
+        var OS = (window.cordova && window.cordova.plugins && window.cordova.plugins.OneSignal)
+               || (window.plugins && window.plugins.OneSignal)
+               || window.OneSignal || null;
+        if (OS && OS.default && typeof OS.initialize !== 'function'
+            && (typeof OS.default.initialize === 'function' || OS.default.Notifications)) { OS = OS.default; }
+        if (!OS) { setTimeout(initOneSignalNow, 400); return; }
+        if (_osInit) return;
+        _osInit = true;
+        var APP_ID = "df716aa7-cc78-46f1-84ef-f95dc420d4b0";
+        if (typeof OS.initialize === "function") {
+          OS.initialize(APP_ID);
+          if (OS.Notifications && OS.Notifications.requestPermission) {
+            try { OS.Notifications.requestPermission(true); } catch(e){}
+          }
+        } else if (typeof OS.setAppId === "function") {
+          OS.setAppId(APP_ID);
+          if (OS.promptForPushNotificationsWithUserResponse) {
+            try { OS.promptForPushNotificationsWithUserResponse(); } catch(e){}
+          }
+        }
+      } catch(e){}
+    })();
+
     window.mobileaLinkPush = function () {
       function pdiag(msg, ok) {
         try {
