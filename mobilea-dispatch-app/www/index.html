@@ -2,13 +2,7 @@
 <html lang="fr">
 <head>
 <script>
-/* APP DISPATCH : forcer le mode dispatch au démarrage. */
-(function(){
-  try {
-    var h = (location.hash||'').toLowerCase();
-    if(h !== '#dispatch' && h.indexOf('#c/') !== 0){ location.hash = 'dispatch'; }
-  } catch(e){}
-})();
+(function(){ try { var h=(location.hash||'').toLowerCase(); if(h!=='#dispatch'&&h.indexOf('#c/')!==0){ location.hash='dispatch'; } } catch(e){} })();
 </script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -6167,6 +6161,10 @@ window.saveCourseGoogle = async function(id) {
       );
     }
   } catch(e) { console.warn('notif modification:', e); }
+  // Notifier aussi le staff (dispatch/admin) de la modification.
+  try {
+    await notifierStaff('✏️ Course modifiée', `${client||''} — ${depart||''} → ${arrivee||''}${datetime?' — '+fdt(datetime):''}`, 'https://mobilea-6tg.pages.dev/#dispatch');
+  } catch(e){}
   const _ov = document.getElementById('course-edit-ov');
   if(_ov) _ov.remove();
   // Fermer aussi la modale de course standard si c'est elle qui est ouverte.
