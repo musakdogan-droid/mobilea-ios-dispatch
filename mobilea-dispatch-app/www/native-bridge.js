@@ -37,7 +37,7 @@
         try {
           var d = document.getElementById('push-diag');
           if(!d){ d=document.createElement('div'); d.id='push-diag';
-            d.style.cssText='position:fixed;left:0;right:0;bottom:34px;z-index:99999;padding:6px 10px;font:11px system-ui;color:#fff;text-align:center';
+            d.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99999;padding:10px;font:13px system-ui;color:#fff;text-align:center;font-weight:700';
             document.body.appendChild(d); }
           d.style.background = ok ? '#2563eb' : '#dc2626';
           d.textContent = 'PUSH: ' + msg;
@@ -54,7 +54,7 @@
           OneSignal = OneSignal.default;
         }
         if (!OneSignal) { pdiag('plugin OneSignal ABSENT', false); return; }
-        var APP_ID = "85e71302-1646-456d-9db4-a1875bb7d25c";
+        var APP_ID = "df716aa7-cc78-46f1-84ef-f95dc420d4b0";
         var S = window.SESSION || {};
         var extId = S.uid ? ('staff_' + S.uid) : ('staff_' + (S.role || 'dispatch'));
 
