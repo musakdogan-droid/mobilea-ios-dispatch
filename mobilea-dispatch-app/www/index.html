@@ -4095,9 +4095,21 @@ window.doDispatchLogin = async function() {
 
 // NOUVELLE connexion chauffeur : email + mot de passe (Firebase Auth) + GPS obligatoire
 window.doChauffeurLogin = async function() {
-  const email = (document.getElementById('chl-email')?.value||'').trim();
-  const pass = document.getElementById('chl-pass').value;
   const err = document.getElementById('chl-err');
+  try {
+    await _doChauffeurLoginInner(err);
+  } catch(ex) {
+    // Filet de sécurité : si quoi que ce soit plante de façon inattendue,
+    // on l'affiche au lieu de laisser le bouton "ne rien faire".
+    console.error('doChauffeurLogin erreur inattendue:', ex);
+    if(err) { err.style.color = '#dc2626'; err.textContent = 'Erreur inattendue. Réessayez ou contactez le support.'; }
+  }
+};
+
+async function _doChauffeurLoginInner(err) {
+  const email = (document.getElementById('chl-email')?.value||'').trim();
+  const pass = document.getElementById('chl-pass')?.value||'';
+  if(!err) { console.warn('doChauffeurLogin: élément chl-err introuvable'); return; }
   err.style.color = '';
   err.textContent = '';
   if(!email || !pass) { err.textContent = 'Email et mot de passe requis'; return; }
@@ -4227,7 +4239,7 @@ window.doChauffeurLogin = async function() {
       );
     } catch(e) {}
   }
-};
+}
 
 // Mot de passe oublié chauffeur
 window.resetChauffeurPassword = async function() {
