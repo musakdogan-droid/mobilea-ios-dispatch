@@ -19,11 +19,33 @@
     } catch(e){}
   }
   window.addEventListener('error', function(ev){
-    afficherErreur('ERREUR: ' + ev.message + ' | ' + (ev.filename||'').split('/').pop() + ':' + ev.lineno);
+    afficherErreur('ERREUR: ' + ev.message + ' | ' + (ev.filename||'').split('/').pop() + ':' + ev.lineno + (ev.error&&ev.error.stack ? ' | STACK: '+String(ev.error.stack).slice(0,300) : ''));
   });
   window.addEventListener('unhandledrejection', function(ev){
-    afficherErreur('PROMESSE REJETÉE: ' + (ev.reason && ev.reason.message || ev.reason));
+    afficherErreur('PROMESSE REJETÉE: ' + (ev.reason && (ev.reason.stack||ev.reason.message) || ev.reason));
   });
+  // Surveille loadAll : dit si elle démarre, combien de temps elle prend, si
+  // elle plante, et combien de courses/chauffeurs sont chargés à la fin.
+  window._diagLoadAllPatch = function() {
+    if(typeof window.loadAll !== 'function' || window._loadAllPatched) return;
+    window._loadAllPatched = true;
+    const orig = window.loadAll;
+    window.loadAll = async function(...args) {
+      const t0 = Date.now();
+      afficherErreur('loadAll DÉBUT');
+      try {
+        const r = await orig.apply(this, args);
+        const dt = Date.now()-t0;
+        afficherErreur('loadAll FIN (' + dt + 'ms) courses=' + ((window.D&&D.courses)?D.courses.length:'?') + ' chauffeurs=' + ((window.D&&D.chauffeurs)?D.chauffeurs.length:'?') + ' role=' + (window.SESSION&&SESSION.role));
+        return r;
+      } catch(e) {
+        afficherErreur('loadAll PLANTÉ: ' + (e && (e.stack||e.message||e)));
+        throw e;
+      }
+    };
+  };
+  const _tryPatch = setInterval(function(){ window._diagLoadAllPatch(); if(window._loadAllPatched) clearInterval(_tryPatch); }, 200);
+  setTimeout(function(){ clearInterval(_tryPatch); }, 15000);
 })();
 </script>
 <script>
