@@ -2,6 +2,31 @@
 <html lang="fr">
 <head>
 <script>
+/* DIAGNOSTIC TEMPORAIRE : capture toute erreur JS non gérée et l'affiche à
+   l'écran (utile en app native où il n'y a pas de console accessible). */
+(function(){
+  function afficherErreur(msg) {
+    try {
+      var d = document.getElementById('js-error-diag');
+      if(!d){
+        d = document.createElement('div');
+        d.id = 'js-error-diag';
+        d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;max-height:40vh;overflow-y:auto;background:#7f1d1d;color:#fff;padding:10px;font:11px monospace;white-space:pre-wrap';
+        document.addEventListener('DOMContentLoaded', function(){ document.body.appendChild(d); });
+        if(document.body) document.body.appendChild(d);
+      }
+      d.textContent += (d.textContent?'\\n---\\n':'') + msg;
+    } catch(e){}
+  }
+  window.addEventListener('error', function(ev){
+    afficherErreur('ERREUR: ' + ev.message + ' | ' + (ev.filename||'').split('/').pop() + ':' + ev.lineno);
+  });
+  window.addEventListener('unhandledrejection', function(ev){
+    afficherErreur('PROMESSE REJETÉE: ' + (ev.reason && ev.reason.message || ev.reason));
+  });
+})();
+</script>
+<script>
 (function(){ try { var h=(location.hash||'').toLowerCase(); if(h!=='#dispatch'&&h.indexOf('#c/')!==0){ location.hash='dispatch'; } } catch(e){} })();
 </script>
 <meta charset="UTF-8">
