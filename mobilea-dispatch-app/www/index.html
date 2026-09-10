@@ -4839,8 +4839,11 @@ async function sendPushNotification(title, message, url, targetChauffeurIds, tar
 }
 
 // Notifier tout le staff (admin + dispatch) — ex: nouvelle réservation client.
+// IMPORTANT : on n'envoie JAMAIS d'URL ici. Dans l'app native, une notification
+// avec URL est ouverte par iOS dans Safari au lieu de simplement rouvrir l'app
+// (qui affiche déjà l'espace dispatch/admin normalement au relancement).
 async function notifierStaff(title, message, url) {
-  return sendPushNotification(title, message, url, null, { key:'role', value:'staff' });
+  return sendPushNotification(title, message, null, null, { key:'role', value:'staff' });
 }
 
 // Retrouve l'id chauffeur (Firebase) à partir de son nom affiché ("Prénom Nom")
