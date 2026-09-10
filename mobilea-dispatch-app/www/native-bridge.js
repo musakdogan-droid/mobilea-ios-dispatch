@@ -62,16 +62,7 @@
     })();
 
     window.mobileaLinkPush = function () {
-      function pdiag(msg, ok) {
-        try {
-          var d = document.getElementById('push-diag');
-          if(!d){ d=document.createElement('div'); d.id='push-diag';
-            d.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99999;padding:10px;font:13px system-ui;color:#fff;text-align:center;font-weight:700';
-            document.body.appendChild(d); }
-          d.style.background = ok ? '#2563eb' : '#dc2626';
-          d.textContent = 'PUSH: ' + msg;
-        } catch(e){}
-      }
+      function pdiag(){} // diagnostic retiré (no-op) — les notifications marchent
       try {
         var OneSignal = (window.cordova && window.cordova.plugins && window.cordova.plugins.OneSignal)
                      || (window.plugins && window.plugins.OneSignal)
