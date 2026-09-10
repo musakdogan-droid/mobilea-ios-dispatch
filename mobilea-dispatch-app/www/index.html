@@ -18,6 +18,7 @@
       d.textContent += (d.textContent?'\\n---\\n':'') + msg;
     } catch(e){}
   }
+  window._diagShow = afficherErreur;
   window.addEventListener('error', function(ev){
     afficherErreur('ERREUR: ' + ev.message + ' | ' + (ev.filename||'').split('/').pop() + ':' + ev.lineno + (ev.error&&ev.error.stack ? ' | STACK: '+String(ev.error.stack).slice(0,300) : ''));
   });
@@ -3943,12 +3944,12 @@ function renderAll() {
     renderConvList, renderDirigeant, renderReservations, renderRevenus,
     renderAgenda, renderComptesClients, renderClientPortal,
     updateBadges, buildDriverSelects];
-  prioritaires.forEach(fn => { try { fn(); } catch(e) { console.error((fn.name||'')+' error:', e); } });
+  prioritaires.forEach(fn => { try { fn(); } catch(e) { console.error((fn.name||'')+' error:', e); if(window._diagShow) window._diagShow((fn.name||'?')+' PLANTÉ: '+(e&&(e.stack||e.message||e))); } });
   try { renderAlertesZone(); } catch(e){}
   try { if(typeof renderGeofenceZones==='function') renderGeofenceZones(); } catch(e){}
   // Le reste est rendu juste après, laissant le navigateur peindre l'écran d'abord.
   setTimeout(() => {
-    autres.forEach(fn => { try { fn(); } catch(e) { console.error((fn.name||'')+' error:', e); } });
+    autres.forEach(fn => { try { fn(); } catch(e) { console.error((fn.name||'')+' error:', e); if(window._diagShow) window._diagShow((fn.name||'?')+' PLANTÉ: '+(e&&(e.stack||e.message||e))); } });
   }, 0);
 }
 
@@ -17898,9 +17899,9 @@ function gp(name, btn) {
       const agShown = ag && getComputedStyle(ag).display !== 'none';
       const tbShown = tb && getComputedStyle(tb).display !== 'none';
       if(!agShown && !tbShown) { if(ag) ag.style.display='block'; if(tb) tb.style.display='none'; }
-      if(ag && getComputedStyle(ag).display !== 'none') { try{ renderAgenda(); }catch(e){} }
-      else { try{ renderDispatch(); }catch(e){} }
-    } catch(e){}
+      if(ag && getComputedStyle(ag).display !== 'none') { try{ renderAgenda(); }catch(e){ if(window._diagShow) window._diagShow('renderAgenda PLANTÉ: '+(e&&(e.stack||e.message||e))); } }
+      else { try{ renderDispatch(); }catch(e){ if(window._diagShow) window._diagShow('renderDispatch PLANTÉ: '+(e&&(e.stack||e.message||e))); } }
+    } catch(e){ if(window._diagShow) window._diagShow('page dispatch PLANTÉ: '+(e&&(e.stack||e.message||e))); }
   }, 150); }
   if(name==='tarifs') { setTimeout(()=>{ try{ remplirClientsRattrapage(); }catch(e){} }, 200); }
   // Rechargement à l'ouverture d'une page, mais PAS si on vient déjà de charger
