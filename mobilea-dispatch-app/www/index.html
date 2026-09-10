@@ -5711,8 +5711,7 @@ function renderAgenda() {
       <div style="font-size:12px;opacity:0.85;margin-top:3px">${E((c&&c.datetime)||'')} · ${E((c&&c.chauffeur)||'À assigner')}</div>
     </div>`;
    }
-  }).join('')
-  + `<button onclick="openCourseModal()" style="position:fixed;bottom:24px;right:24px;width:60px;height:60px;border-radius:18px;background:#c9d6f0;border:none;font-size:28px;color:#1a3b8b;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,0.25);z-index:90;font-weight:300">+</button>`;
+  }).join('');
 }
 
 
@@ -6904,6 +6903,29 @@ const LIBELLES_ZONE = {
 //   2. Zones PERSONNALISEES : tableau _custom avec des mots-cles depart/arrivee.
 // On teste les personnalisees d'abord (les plus specifiques), comme le fait
 // autoFillPrix a la saisie.
+// Cherche un tarif saisi via "Ajouter tarif" (D.tarifs) correspondant a une
+// course : meme client + meme depart + meme arrivee (souple casse/espaces,
+// sens A->B = B->A). Renvoie { client, chauffeur, route } ou null.
+function tarifSimplePourCourse(client, depart, arrivee, vehicule) {
+  const veh = vehicule || 'berline';
+  const norm = s => String(s||'').toLowerCase().replace(/\s+/g,' ').trim();
+  const cl = norm(client), dp = norm(depart), ar = norm(arrivee);
+  if(!dp || !ar) return null;
+  const tarifs = D.tarifs || [];
+  const t = tarifs.find(x => {
+    const xcl = norm(x.client), xdp = norm(x.depart), xar = norm(x.arrivee);
+    const memeClient = !cl || !xcl || xcl === cl;
+    const memeSens = (xdp===dp && xar===ar);
+    const sensInverse = (xdp===ar && xar===dp);
+    return memeClient && (memeSens || sensInverse);
+  });
+  if(!t) return null;
+  const pc = parseFloat(t[veh]) || 0;
+  const pch = parseFloat(t['prixChauffeur_' + veh]) || 0;
+  if(pc <= 0 && pch <= 0) return null;
+  return { client: pc, chauffeur: pch, route: t.route || (t.depart+' -> '+t.arrivee) };
+}
+
 function tarifPourTrajet(grille, depart, arrivee, vehicule) {
   if(!grille) return null;
   const veh = vehicule || 'berline';
@@ -6984,7 +7006,9 @@ window.analyserPrixManquants = async function() {
 
   const trouves = [], nonTrouves = [];
   candidates.forEach(c => {
-    const t = tarifPourTrajet(grille, c.depart||c.lieu, c.arrivee||c.duree, c.vehicule);
+    // 1) Grille par zones du client, sinon 2) tarif "Ajouter tarif" (client+trajet).
+    let t = tarifPourTrajet(grille, c.depart||c.lieu, c.arrivee||c.duree, c.vehicule);
+    if(!t) t = tarifSimplePourCourse(c.client, c.depart||c.lieu, c.arrivee||c.duree, c.vehicule);
     if(t) trouves.push({ c, t }); else nonTrouves.push(c);
   });
 
@@ -7377,8 +7401,8 @@ window.saveCourse = async function() {
 
   // Get passengers from textarea
   const passagers = getPaxList();
-  const prix = type==='mad' ? parseFloat(document.getElementById('fc-prix-mad').value)||0 : parseFloat(document.getElementById('fc-prix').value)||0;
-  const prixChauffeur = parseFloat(document.getElementById('fc-prix-chauffeur')?.value)||0;
+  let prix = type==='mad' ? parseFloat(document.getElementById('fc-prix-mad').value)||0 : parseFloat(document.getElementById('fc-prix').value)||0;
+  let prixChauffeur = parseFloat(document.getElementById('fc-prix-chauffeur')?.value)||0;
   const marge = prix - prixChauffeur;
   const ch = document.getElementById('fc-ch').value;
   const terminaux = [...document.querySelectorAll('.term-chk:checked')].map(c=>c.value).join('-');
@@ -7389,6 +7413,20 @@ window.saveCourse = async function() {
   const fcClient = document.getElementById('fc-client')?.value?.trim();
   const firstPax = passagers.find(p=>p.present!==false) || passagers[0];
   const clientName = fcClient || (firstPax ? `${firstPax.prenom} ${firstPax.nom}`.trim() : (dep.split(',')[0]||'Course'));
+
+  // Report automatique du tarif : si le prix n'a pas été saisi, on cherche un
+  // tarif correspondant (client + trajet) dans la liste "Ajouter tarif".
+  if(type==='transfert' && (prix<=0 || prixChauffeur<=0)) {
+    try {
+      const veh = document.getElementById('fc-veh')?.value || 'berline';
+      const t = tarifSimplePourCourse(clientName, dep, arr, veh);
+      if(t) {
+        if(prix<=0 && t.client>0) prix = t.client;
+        if(prixChauffeur<=0 && t.chauffeur>0) prixChauffeur = t.chauffeur;
+      }
+    } catch(e){}
+  }
+  const margeCalc = prix - prixChauffeur;
 
   const data = {
     type,
@@ -7403,7 +7441,7 @@ window.saveCourse = async function() {
     pax: passagers.length,
     bags: parseInt(document.getElementById('fc-bagages')?.value)||0,
     chauffeur: ch,
-    prix, prixChauffeur, marge,
+    prix, prixChauffeur, marge: margeCalc,
     fraisAnnulation: parseFloat(document.getElementById('fc-frais-annulation')?.value)||0,
     payMode: document.getElementById('fc-pay-mode')?.value||'simplycab',
     commissionPAB: (document.getElementById('fc-pay-mode')?.value==='direct') ? (parseFloat(document.getElementById('fc-commission-pab')?.value)||0) : 0,
@@ -9503,11 +9541,45 @@ window.openPrintableDoc = function(html) {
   iframe.srcdoc = html;
 
   document.getElementById('printable-doc-close').onclick = function() { overlay.remove(); };
-  document.getElementById('printable-doc-print').onclick = function() {
-    // L'impression d'un iframe est peu fiable sur iOS/Safari. On ouvre le
-    // document dans une vraie fenêtre qui déclenche l'impression elle-même.
+  document.getElementById('printable-doc-print').onclick = async function() {
+    const estNatif = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+
+    // ── APP NATIVE (iPhone) : window.open et iframe.print sont bloqués. ──
+    // On génère un fichier et on ouvre le PARTAGE natif iOS, qui propose
+    // « Imprimer », « Enregistrer dans Fichiers », « Envoyer », etc.
+    if (estNatif) {
+      // 1) Partage natif via le plugin Capacitor Share s'il est présent.
+      try {
+        var Share = (window.Capacitor.Plugins && window.Capacitor.Plugins.Share) || null;
+        var Fs = (window.Capacitor.Plugins && window.Capacitor.Plugins.Filesystem) || null;
+        if (Share && Fs) {
+          // Écrire le HTML en fichier temporaire, puis le partager.
+          var nomFichier = 'mobilea-doc-' + Date.now() + '.html';
+          var w = await Fs.writeFile({ path: nomFichier, data: html, directory: 'CACHE', encoding: 'utf8' });
+          await Share.share({ title: 'Document MOBILEA', url: w.uri, dialogTitle: 'Imprimer ou enregistrer' });
+          return;
+        }
+      } catch(e) {}
+      // 2) Repli : Web Share API (dispo dans les WebView iOS récentes).
+      try {
+        if (navigator.share) {
+          var blob = new Blob([html], { type: 'text/html' });
+          var file = new File([blob], 'document-mobilea.html', { type: 'text/html' });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'Document MOBILEA' });
+            return;
+          }
+          await navigator.share({ title: 'Document MOBILEA', text: 'Document MOBILEA' });
+          return;
+        }
+      } catch(e) {}
+      // 3) Dernier repli : tenter l'impression de l'iframe.
+      try { iframe.contentWindow.focus(); iframe.contentWindow.print(); return; }
+      catch(e){ if(typeof showToast==='function') showToast('Utilisez le bouton Partager de votre iPhone pour imprimer', true); return; }
+    }
+
+    // ── WEB (ordinateur / navigateur) : méthode classique. ──
     let printed = false;
-    // Méthode 1 : nouvelle fenêtre (marche sur ordinateur et Android)
     try {
       const win = window.open('', '_blank');
       if(win && win.document) {
@@ -9515,15 +9587,12 @@ window.openPrintableDoc = function(html) {
         win.document.write(html);
         win.document.close();
         printed = true;
-        // Déclencher l'impression une fois la page rendue.
         setTimeout(function(){ try { win.focus(); win.print(); } catch(e){} }, 500);
       }
     } catch(e) {}
-    // Méthode 2 (repli iOS PWA où window.open est bloqué) : imprimer l'iframe
     if(!printed) {
       try {
         iframe.contentWindow.focus();
-        // Petit délai pour laisser le rendu se stabiliser sur iOS
         setTimeout(function(){
           try { iframe.contentWindow.print(); }
           catch(e3) { if(typeof showToast==='function') showToast('Pour imprimer : appuyez sur Partager puis « Imprimer »', true); }
