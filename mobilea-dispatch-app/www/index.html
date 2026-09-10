@@ -5776,7 +5776,7 @@ window.viewCourseDetail = function(id) {
   ov.style.cssText = 'position:fixed;inset:0;background:#fff;z-index:600;display:flex;flex-direction:column;overflow:hidden';
   ov.innerHTML = `
     <!-- Barre haut style Google -->
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:calc(14px + env(safe-area-inset-top, 0px)) 18px 14px">
       <button onclick="document.getElementById('course-detail-ov').remove()" style="background:none;border:none;font-size:30px;cursor:pointer;color:#333;padding:8px">✕</button>
       <div style="display:flex;align-items:center;gap:20px">
         <button onclick="editCourseGoogle('${c._id}')" style="background:none;border:none;font-size:30px;cursor:pointer;color:#333;padding:8px">✏️</button>
@@ -5925,7 +5925,7 @@ window.editCourseGoogle = function(id) {
   ov.style.cssText = 'position:fixed;inset:0;background:#fff;z-index:650;display:flex;flex-direction:column;overflow:hidden';
   ov.innerHTML = `
     <!-- Barre haut : Annuler / OK -->
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #f0f0f0">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:calc(16px + env(safe-area-inset-top, 0px)) 20px 16px;border-bottom:1px solid #f0f0f0">
       <button onclick="document.getElementById('course-edit-ov').remove()" style="background:none;border:none;font-size:20px;color:#1a73e8;cursor:pointer;font-weight:500">Annuler</button>
       <button onclick="saveCourseGoogle('${c._id}')" style="background:none;border:none;font-size:20px;color:#1a73e8;cursor:pointer;font-weight:700">OK</button>
     </div>
@@ -6207,7 +6207,7 @@ window.viewClientCourses = function(clientName) {
   ov.id = 'client-courses-ov';
   ov.style.cssText = 'position:fixed;inset:0;background:#fff;z-index:620;display:flex;flex-direction:column;overflow:hidden';
   ov.innerHTML = `
-    <div style="display:flex;align-items:center;gap:14px;padding:16px 20px;border-bottom:1px solid #f0f0f0">
+    <div style="display:flex;align-items:center;gap:14px;padding:calc(16px + env(safe-area-inset-top, 0px)) 20px 16px;border-bottom:1px solid #f0f0f0">
       <button onclick="document.getElementById('client-courses-ov').remove()" style="background:none;border:none;font-size:30px;cursor:pointer;color:#333;padding:8px">✕</button>
       <div style="width:18px;height:18px;border-radius:5px;background:${color};flex-shrink:0"></div>
       <div>
