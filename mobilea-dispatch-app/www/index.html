@@ -19035,94 +19035,104 @@ window.importExcel = async function(input) {
   showToast(`Format ${isDUEMEA ? 'DUEMEA détecté' : 'standard'} — ${rows.length-1} lignes`);
 
   if(isDUEMEA) {
-    // === FORMAT DUEMEA ===
-    // Cols: departure date, from, to, Participant number, dep due, course, SEATS, TARIF, véhicule, Multi term, Terminal, dep flight/train number, flight/train departure time, Forename, Surname, Country, Phone number, Comments, Event End time
-    const idxDate=0, idxFrom=1, idxTo=2, idxRef=3, idxDepDue=4, idxCourse=5, idxSeats=6, idxTarif=7, idxVeh=8, idxMultiTerm=9, idxTerm=10, idxFlight=11, idxFlightDep=12, idxForename=13, idxSurname=14, idxCountry=15, idxPhone=16, idxComments=17;
+    // === FORMAT DÉPARTS DELOITTE/DUEMEA ===
+    // Colonnes : departure date, from, to, Participant number, dep due, course,
+    // SEATS, TARIF, véhicule, Multi term, Terminal, dep flight/train number,
+    // flight/train departure time, Forename, Surname, Country, Phone number,
+    // Comments, Event End time.
+    // Sens : from (DUEMEA) -> to (aéroport/gare). Heure = "dep due" (heure de
+    // prise en charge). Regroupement par date + course (comme les arrivées).
+    // Prix laissé à la grille tarifaire (comme les arrivées), pas au TARIF brut.
+    showToast(`Format DÉPARTS détecté — ${rows.length-1} lignes`);
+    const col = (name) => header.indexOf(name);
+    const cDate = col('departure date'), cFrom = col('from'), cTo = col('to'),
+          cRef = col('participant number'), cDepDue = col('dep due'), cCourse = col('course'),
+          cTarif = col('tarif'), cVeh = col('véhicule')>=0?col('véhicule'):col('vehicule'),
+          cTerm = col('terminal'), cFlight = col('dep flight/train number'),
+          cFlightTime = col('flight/train departure time'),
+          cPrenom = col('forename'), cNom = col('surname'), cPays = col('country'),
+          cTel = col('phone number'), cComments = col('comments');
 
-    // Group by date + dep_due + course
+    const vehMap = {'b':'berline','br':'berline','berline':'berline','v':'van','vr':'van','van':'van','sp':'sprinter','spr':'sprinter','sprinter':'sprinter','bu':'bus','bur':'bus','bus':'bus'};
+    const hhmm = _hhmm;
+    const ymd = _ymd;
+    // Regrouper par date + course (les passagers d'un même 'course' = 1 transfert)
     const groups = {};
-    for(let i=1; i<rows.length; i++) {
+    for(let i=1;i<rows.length;i++){
       const r = rows[i];
-      if(!r[idxDate] || !r[idxForename]) continue;
-      const dateStr = _ymd(r[idxDate]);
-      const depDue = _hhmm(r[idxDepDue]) || '08:00';
-      const course = r[idxCourse] ? r[idxCourse].toString() : '';
-      const key = `${dateStr}|${depDue}|${course}`;
-      if(!groups[key]) groups[key] = {date:dateStr, depDue, course, rows:[]};
+      if(!r || (!r[cPrenom] && !r[cNom])) continue;
+      const dateStr = ymd(r[cDate]);
+      const course = (r[cCourse]!=null?r[cCourse]:'').toString().trim();
+      const depDue = hhmm(r[cDepDue]);
+      const key = course ? `${dateStr}|c:${course}` : `${dateStr}|h:${depDue}|${i}`;
+      if(!groups[key]) groups[key] = {date:dateStr, course, depDue, rows:[]};
       groups[key].rows.push(r);
     }
 
-    for(const [key, g] of Object.entries(groups)) {
+    for(const key of Object.keys(groups)){
       try {
+        const g = groups[key];
         const r0 = g.rows[0];
-        const from_ = r0[idxFrom] || 'DUEMEA';
-        const to_ = r0[idxTo] || 'CDG';
-        const depDue = g.depDue.slice(0,5);
-        const datetime = `${g.date}T${depDue.includes(':')?depDue:'08:00'}`;
-
-        // Vehicle detection
-        let veh = 'berline';
-        for(const r of g.rows) {
-          if(r[idxVeh]) {
-            const v = r[idxVeh].toString().toLowerCase().trim();
-            if(v === 'v' || v === 'van') veh = 'van';
-            else if(v === 'b' || v === 'berline') veh = 'berline';
-            else if(v === 'sp' || v === 'sprinter') veh = 'sprinter';
-            else if(v === 'bu' || v === 'bus') veh = 'bus';
-            else if(v.includes('van')) veh = 'van';
-            else if(v.includes('sprinter')) veh = 'sprinter';
-            else if(v.includes('bus')) veh = 'bus';
-            break;
-          }
-        }
-
-        // Prix
-        let prix = 0;
-        for(const r of g.rows) { if(r[idxTarif]) { prix = parseFloat(r[idxTarif])||0; break; } }
-
-        // Passagers
-        const passagers = [];
+        const from_ = (cFrom>=0 ? (r0[cFrom]||'DUEMEA') : 'DUEMEA').toString().trim();
+        let to_ = (r0[cTo]||'CDG').toString().trim();
+        // "NO INFO" = destination non renseignée dans le fichier source : on
+        // garde la ligne (le dispatch complètera), mais on le signale clairement.
+        const destInconnue = !to_ || to_.toUpperCase() === 'NO INFO';
+        if(destInconnue) to_ = 'À confirmer';
+        const heure = g.depDue || hhmm(r0[cDepDue]) || '08:00';
+        const datetime = `${g.date}T${heure}`;
+        // Véhicule (colonne 'véhicule' prioritaire, sinon déduit du code TARIF)
+        let vraw = (cVeh>=0 && r0[cVeh]!=null ? r0[cVeh] : '').toString().toLowerCase().trim();
+        if(!vraw && cTarif>=0) vraw = (r0[cTarif]||'').toString().toLowerCase().trim();
+        const veh = vehMap[vraw] || 'berline';
+        // Terminaux + passagers
         const terminals = new Set();
-        for(const r of g.rows) {
-          const prenom = (r[idxForename]||'').toString().trim();
-          const nom = (r[idxSurname]||'').toString().trim();
+        const passagers = [];
+        for(const r of g.rows){
+          const prenom = (cPrenom>=0?r[cPrenom]:'')?.toString().trim() || '';
+          const nom = (cNom>=0?r[cNom]:'')?.toString().trim() || '';
           if(!prenom && !nom) continue;
-          const term = (r[idxTerm]||'').toString().trim();
-          const cleanTerm = term && !['none','ok','nan','','OK'].includes(term.toLowerCase()) ?
-            (term.startsWith('CDG') ? term.replace('CDG','') : term.startsWith('ORY') ? term : term) : '';
-          if(cleanTerm) terminals.add(cleanTerm);
-          const depTime = _hhmm(r[idxFlightDep]);
+          const term = cTerm>=0 ? (r[cTerm]||'').toString().trim() : '';
+          if(term && !['none','ok','nan',''].includes(term.toLowerCase())) terminals.add(term);
           passagers.push({
             prenom, nom,
-            tel: (r[idxPhone]||'').toString().trim(),
-            vol: (r[idxFlight]||'').toString().trim(),
-            terminal: cleanTerm,
-            harrivee: depTime,
-            refClient: (r[idxRef]||'').toString().trim(),
-            notes: (r[idxComments]||'').toString().trim(),
+            tel: cTel>=0 ? (r[cTel]||'').toString().trim() : '',
+            vol: cFlight>=0 ? (r[cFlight]||'').toString().trim() : '',
+            terminal: term,
+            hdepart: hhmm(r[cFlightTime]),
+            refClient: cRef>=0 ? (r[cRef]||'').toString().trim() : '',
+            pays: cPays>=0 ? (r[cPays]||'').toString().trim() : '',
+            notes: cComments>=0 ? (r[cComments]||'').toString().trim() : '',
             present: true
           });
         }
-
         const vehL = {berline:'B',van:'V',sprinter:'SP',bus:'BU'}[veh]||'B';
-        const ref = g.course || `${to_}/${vehL}/D${count+1}`;
         const terminaux = [...terminals].join('-');
+        const ref = g.course ? `${from_}/${vehL}/D${g.course}` : `${from_}/${vehL}/D${count+1}`;
 
         await fbPush('courses', {
           type:'transfert',
-          client: from_,
+          client: 'DUEMEA',
           datetime, depart: from_, arrivee: to_,
           vehicule: veh, pax: passagers.length,
-          passagers, ref, terminaux, prix,
+          passagers, ref, terminaux,
+          prix: 0,               // laissé à la grille tarifaire Deloitte (à appliquer)
+          codeTarif: cTarif>=0 ? (r0[cTarif]||'').toString().trim() : '',
           statut: 'nouvelle',
-          source: 'import_excel',
-          noLogipax: true,
+          source: 'import_excel_departs',
+          noLogipax: true,        // vient deja de Deloitte : ne pas renvoyer vers LogiPax (evite doublons)
+          destinationAConfirmer: destInconnue || undefined,
           importedFrom: file.name,
           createdAt: new Date().toISOString()
         });
         count++;
-      } catch(e) { errors++; console.log('Error:', e); }
+      } catch(e){ errors++; console.log('Erreur import départ:', e); }
     }
+
+    await addLog(`Import DÉPARTS ${file.name} : ${count} transfert(s) créé(s)`);
+    await loadAll();
+    showToast(`✓ ${count} transfert(s) importé(s)${errors>0?' • '+errors+' erreurs':''}`);
+    return;
 
   } else {
     // === FORMAT STANDARD CSV ===
