@@ -6968,14 +6968,27 @@ const LIBELLES_ZONE = {
 // Cherche un tarif saisi via "Ajouter tarif" (D.tarifs) correspondant a une
 // course : meme client + meme depart + meme arrivee (souple casse/espaces,
 // sens A->B = B->A). Renvoie { client, chauffeur, route } ou null.
+// Alias de noms client : certains clients sont désignés différemment selon
+// l'endroit (ex. "DUEMEA" dans les imports Excel Deloitte, mais "Deloitte
+// University" dans la fiche tarif). On les traite comme le même client.
+const CLIENT_ALIASES = [
+  ['duemea', 'deloitte university', 'deloitte']
+];
+function _clientCanonique(nomNorm) {
+  for(const groupe of CLIENT_ALIASES) {
+    if(groupe.includes(nomNorm)) return groupe[0]; // 1ère entrée = forme canonique
+  }
+  return nomNorm;
+}
+
 function tarifSimplePourCourse(client, depart, arrivee, vehicule) {
   const veh = vehicule || 'berline';
   const norm = s => String(s||'').toLowerCase().replace(/\s+/g,' ').trim();
-  const cl = norm(client), dp = norm(depart), ar = norm(arrivee);
+  const cl = _clientCanonique(norm(client)), dp = norm(depart), ar = norm(arrivee);
   if(!dp || !ar) return null;
   const tarifs = D.tarifs || [];
   const t = tarifs.find(x => {
-    const xcl = norm(x.client), xdp = norm(x.depart), xar = norm(x.arrivee);
+    const xcl = _clientCanonique(norm(x.client)), xdp = norm(x.depart), xar = norm(x.arrivee);
     const memeClient = !cl || !xcl || xcl === cl;
     const memeSens = (xdp===dp && xar===ar);
     const sensInverse = (xdp===ar && xar===dp);
