@@ -6929,7 +6929,7 @@ function zoneDuTrajet(depart, arrivee) {
   const isCDG   = s => s.includes('cdg')||s.includes('roissy')||s.includes('charles');
   const isOrly  = s => s.includes('orly');
   const isParis = s => s.includes('paris')||s.includes('gare')||s.includes('nord')||s.includes('lyon')||s.includes('montparnasse')||s.includes('austerlitz')||s.includes('est');
-  const isDisney= s => s.includes('chessy')||s.includes('disney')||s.includes('val d')||s.includes('vallee')||s.includes('vallée')||s.includes('serris')||s.includes('lvv');
+  const isDisney= s => s.includes('chessy')||s.includes('disney')||s.includes('val d')||s.includes('vallee')||s.includes('vallée')||s.includes('serris')||s.includes('lvv')||s.includes('duemea');
 
   const paris  = isParis(depTxt)||isParis(arrTxt);
   const cdg    = isCDG(depTxt)||isCDG(arrTxt);
@@ -7071,8 +7071,12 @@ window.analyserPrixManquants = async function() {
   }
 
   // Courses du client sans prix chauffeur (ou sans prix du tout)
+  // On compare via l'alias client (DUEMEA = Deloitte University = Deloitte),
+  // pas en texte strict, sinon les imports utilisant un nom différent de celui
+  // choisi dans le menu ne sont jamais retrouvés.
+  const clientCanon = _clientCanonique(String(client||'').toLowerCase().trim());
   const candidates = (D.courses||[]).filter(c => {
-    if(c.client !== client) return false;
+    if(_clientCanonique(String(c.client||'').toLowerCase().trim()) !== clientCanon) return false;
     if(depuis && (c.datetime||'').slice(0,10) < depuis) return false;
     const sansPrixCh = !c.prixChauffeur || parseFloat(c.prixChauffeur) === 0;
     const sansPrix = !c.prix || parseFloat(c.prix) === 0;
