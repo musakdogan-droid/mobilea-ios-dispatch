@@ -2,54 +2,6 @@
 <html lang="fr">
 <head>
 <script>
-/* DIAGNOSTIC TEMPORAIRE : capture toute erreur JS non gérée et l'affiche à
-   l'écran (utile en app native où il n'y a pas de console accessible). */
-(function(){
-  function afficherErreur(msg) {
-    try {
-      var d = document.getElementById('js-error-diag');
-      if(!d){
-        d = document.createElement('div');
-        d.id = 'js-error-diag';
-        d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;max-height:40vh;overflow-y:auto;background:#7f1d1d;color:#fff;padding:10px;font:11px monospace;white-space:pre-wrap';
-        document.addEventListener('DOMContentLoaded', function(){ document.body.appendChild(d); });
-        if(document.body) document.body.appendChild(d);
-      }
-      d.textContent += (d.textContent?'\\n---\\n':'') + msg;
-    } catch(e){}
-  }
-  window._diagShow = afficherErreur;
-  window.addEventListener('error', function(ev){
-    afficherErreur('ERREUR: ' + ev.message + ' | ' + (ev.filename||'').split('/').pop() + ':' + ev.lineno + (ev.error&&ev.error.stack ? ' | STACK: '+String(ev.error.stack).slice(0,300) : ''));
-  });
-  window.addEventListener('unhandledrejection', function(ev){
-    afficherErreur('PROMESSE REJETÉE: ' + (ev.reason && (ev.reason.stack||ev.reason.message) || ev.reason));
-  });
-  // Surveille loadAll : dit si elle démarre, combien de temps elle prend, si
-  // elle plante, et combien de courses/chauffeurs sont chargés à la fin.
-  window._diagLoadAllPatch = function() {
-    if(typeof window.loadAll !== 'function' || window._loadAllPatched) return;
-    window._loadAllPatched = true;
-    const orig = window.loadAll;
-    window.loadAll = async function(...args) {
-      const t0 = Date.now();
-      afficherErreur('loadAll DÉBUT');
-      try {
-        const r = await orig.apply(this, args);
-        const dt = Date.now()-t0;
-        afficherErreur('loadAll FIN (' + dt + 'ms) courses=' + ((window.D&&D.courses)?D.courses.length:'?') + ' chauffeurs=' + ((window.D&&D.chauffeurs)?D.chauffeurs.length:'?') + ' role=' + (window.SESSION&&SESSION.role));
-        return r;
-      } catch(e) {
-        afficherErreur('loadAll PLANTÉ: ' + (e && (e.stack||e.message||e)));
-        throw e;
-      }
-    };
-  };
-  const _tryPatch = setInterval(function(){ window._diagLoadAllPatch(); if(window._loadAllPatched) clearInterval(_tryPatch); }, 200);
-  setTimeout(function(){ clearInterval(_tryPatch); }, 15000);
-})();
-</script>
-<script>
 (function(){ try { var h=(location.hash||'').toLowerCase(); if(h!=='#dispatch'&&h.indexOf('#c/')!==0){ location.hash='dispatch'; } } catch(e){} })();
 </script>
 <meta charset="UTF-8">
@@ -593,7 +545,6 @@ tr:last-child td{border-bottom:none}
       <div class="tbl">
         <button class="mob-btn" onclick="toggleMob()"><i class="fas fa-bars"></i></button>
         <div class="tb-title" id="page-title">Dashboard</div>
-        <span style="font-size:9px;color:var(--muted2);opacity:0.5;margin-left:8px" title="Version de build (diagnostic)">b20260908-1</span>
       </div>
       <div class="tbr">
         <div class="tb-clock" id="clock">--:--</div>
