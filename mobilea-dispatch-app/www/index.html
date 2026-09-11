@@ -114,6 +114,25 @@
         firebase.initializeApp(firebaseConfig);
       }
       window.fbAuth = firebase.auth();
+      // PERSISTANCE explicite : indispensable en app native (WebView), sinon la
+      // session Firebase n'est pas restaurée au redémarrage — l'app croit être
+      // connectée (localStorage) mais currentUser reste null → 401 partout.
+      try {
+        window.fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL)
+          .catch(function(e){ if(window._diagShow) window._diagShow('setPersistence échec: '+(e&&e.message)); });
+      } catch(e) {}
+      // Attendre que Firebase ait FINI de restaurer la session (currentUser est
+      // null tant que cette restauration n'est pas terminée). On expose une
+      // promesse que getAuthToken pourra attendre.
+      window._fbAuthReady = new Promise(function(resolve){
+        try {
+          const unsub = window.fbAuth.onAuthStateChanged(function(u){
+            window._fbAuthRestored = true;
+            try { unsub(); } catch(e){}
+            resolve(u || null);
+          });
+        } catch(e) { window._fbAuthRestored = true; resolve(null); }
+      });
       try { window.fbDB = firebase.database(); } catch(e) { console.warn('Realtime DB indisponible:', e); }
       console.log('Firebase Auth initialisé ✓');
     } catch(e) {
@@ -2797,19 +2816,32 @@ let D = { courses:[], chauffeurs:[], clients:[], tarifs:[], vehicules:[], logs:[
 // Récupérer le token Firebase Auth pour les requêtes sécurisées
 async function getAuthToken() {
   try {
-    // Attente bornee que la session Firebase soit prete. En app native
-    // (WebView), l'initialisation de Firebase est plus lente qu'en navigateur :
-    // 1,2 s ne suffisait pas, toutes les requetes partaient alors SANS token
-    // (401 -> donnees vides). On attend jusqu'a ~8 s.
+    // 1) Attendre que Firebase ait FINI de restaurer la session (sinon
+    // currentUser est null alors qu'une session existe).
+    if (window._fbAuthReady) {
+      try { await Promise.race([window._fbAuthReady, new Promise(r=>setTimeout(r,6000))]); } catch(e) {}
+    }
+    // 2) Petite attente complémentaire au cas où.
     let tries = 0;
-    while((!window.fbAuth || !window.fbAuth.currentUser) && tries < 80) {
+    while((!window.fbAuth || !window.fbAuth.currentUser) && tries < 20) {
       await new Promise(r=>setTimeout(r,100));
       tries++;
     }
     if(window.fbAuth && window.fbAuth.currentUser) {
       return await window.fbAuth.currentUser.getIdToken();
     }
-    if(window._diagShow) window._diagShow('getAuthToken: AUCUN TOKEN apres ' + (tries*100) + 'ms (fbAuth=' + !!window.fbAuth + ' user=' + !!(window.fbAuth&&window.fbAuth.currentUser) + ')');
+    // 3) Aucune session Firebase : la session locale est "fantôme". On le
+    // signale une seule fois et on renvoie l'utilisateur vers la connexion,
+    // au lieu d'afficher une app vide avec des 401 en boucle.
+    if(!window._sessionFantomeSignalee) {
+      window._sessionFantomeSignalee = true;
+      if(window._diagShow) window._diagShow('Session Firebase absente — reconnexion nécessaire');
+      try {
+        localStorage.removeItem(ADMIN_KEY);
+        if(typeof showToast === 'function') showToast('Session expirée — veuillez vous reconnecter', true);
+        setTimeout(function(){ location.reload(); }, 1500);
+      } catch(e) {}
+    }
   } catch(e) {
     if(window._diagShow) window._diagShow('getAuthToken ERREUR: ' + (e&&(e.message||e)));
   }
