@@ -2797,16 +2797,22 @@ let D = { courses:[], chauffeurs:[], clients:[], tarifs:[], vehicules:[], logs:[
 // Récupérer le token Firebase Auth pour les requêtes sécurisées
 async function getAuthToken() {
   try {
-    // Petite attente bornee (max ~1.2s) que la session soit prete, sans jamais figer.
+    // Attente bornee que la session Firebase soit prete. En app native
+    // (WebView), l'initialisation de Firebase est plus lente qu'en navigateur :
+    // 1,2 s ne suffisait pas, toutes les requetes partaient alors SANS token
+    // (401 -> donnees vides). On attend jusqu'a ~8 s.
     let tries = 0;
-    while((!window.fbAuth || !window.fbAuth.currentUser) && tries < 12) {
+    while((!window.fbAuth || !window.fbAuth.currentUser) && tries < 80) {
       await new Promise(r=>setTimeout(r,100));
       tries++;
     }
     if(window.fbAuth && window.fbAuth.currentUser) {
       return await window.fbAuth.currentUser.getIdToken();
     }
-  } catch(e) {}
+    if(window._diagShow) window._diagShow('getAuthToken: AUCUN TOKEN apres ' + (tries*100) + 'ms (fbAuth=' + !!window.fbAuth + ' user=' + !!(window.fbAuth&&window.fbAuth.currentUser) + ')');
+  } catch(e) {
+    if(window._diagShow) window._diagShow('getAuthToken ERREUR: ' + (e&&(e.message||e)));
+  }
   return null;
 }
 
@@ -3302,7 +3308,16 @@ async function fbGet(path) {
   }
   const token = await getAuthToken();
   const r = await fetch(`${FB_URL}/${path}.json${authParam(token)}`);
+  // Détecter les échecs (401, 403, réseau) au lieu de les traiter comme "vide".
+  if (!r.ok) {
+    if(window._diagShow) window._diagShow('fbGet ÉCHEC ' + path + ' → HTTP ' + r.status + (token?' (token OK)':' (SANS TOKEN)'));
+    return [];
+  }
   const data = await r.json();
+  if (data && data.error) {
+    if(window._diagShow) window._diagShow('fbGet ERREUR ' + path + ' → ' + JSON.stringify(data.error).slice(0,150));
+    return [];
+  }
   if (!data) { _fbCache.set(path, {t: Date.now(), data: []}); return []; }
   const arr = Object.entries(data).map(([k,v]) => ({_id:k,...v}));
   _fbCache.set(path, {t: Date.now(), data: arr});
