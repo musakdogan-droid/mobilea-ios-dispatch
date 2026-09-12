@@ -3151,8 +3151,24 @@ function startMessagesListener() {
       // Signal discret à la réception d'un nouveau message (pas au chargement
       // initial, et jamais pour ses propres messages).
       if(window._msgListenerPret && nonLus > avant) {
-        try { if(typeof showToast === 'function') showToast('💬 Nouveau message'); } catch(e){}
-        try { if(navigator.vibrate) navigator.vibrate(120); } catch(e){}
+        // Retrouver le tout dernier message non lu reçu, pour nommer l'expéditeur.
+        let dernier = null;
+        for(let i = arr.length - 1; i >= 0; i--) {
+          const mm = arr[i];
+          if(!mm.read && mm.from !== SESSION.uid) { dernier = mm; break; }
+        }
+        const nomExp = (dernier && (dernier.fromName || '')) || 'Nouveau message';
+        const apercu = dernier && dernier.text ? (dernier.text.length > 60 ? dernier.text.slice(0,57)+'…' : dernier.text) : '';
+        try { if(typeof showToast === 'function') showToast('💬 ' + nomExp + (apercu ? ' : ' + apercu : '')); } catch(e){}
+        try { if(navigator.vibrate) navigator.vibrate([120,60,120]); } catch(e){}
+        // Petit son de notification (léger, ignoré si le navigateur le bloque).
+        try {
+          const ctx = window._notifAudioCtx || (window._notifAudioCtx = new (window.AudioContext||window.webkitAudioContext)());
+          const o = ctx.createOscillator(), g = ctx.createGain();
+          o.connect(g); g.connect(ctx.destination);
+          o.frequency.value = 880; g.gain.value = 0.05;
+          o.start(); o.stop(ctx.currentTime + 0.15);
+        } catch(e){}
       }
       window._msgListenerPret = true;
     }, (err) => { console.warn('Écoute messages interrompue:', err); stopMessagesListener(); });
@@ -12733,13 +12749,26 @@ function renderConvList() {
 
   contacts = contacts.filter(c=>!q||c.name.toLowerCase().includes(q));
 
-  // Par défaut, on n'affiche QUE les conversations ayant des messages, pour ne
-  // pas noyer la liste sous des centaines de contacts "Aucun message". La liste
-  // complète (pour démarrer un nouvel échange) s'ouvre via le bouton "Nouvelle
-  // conversation" — window._msgNouvelleConv — ou dès qu'on tape une recherche.
+  // Par défaut, on n'affiche QUE les conversations pertinentes, pour ne pas
+  // noyer la liste. Règle demandée :
+  //   - fils chauffeur/support : visibles UNIQUEMENT s'ils ont des non-lus
+  //     (une fois traités/lus, ils disparaissent — ils restent trouvables via
+  //     la recherche et "Nouvelle conversation") ;
+  //   - autres fils (clients, dispatch, support général) : visibles dès qu'ils
+  //     ont des messages.
   const _aDesMessages = (c) => (D.messages||[]).some(m=>m.conv===c.id);
+  const _aDesNonLus = (c) => (D.messages||[]).some(m=>m.conv===c.id && !m.read && m.from!==SESSION.uid);
+  const _estFilChauffeur = (c) => c.role==='Chauffeur' || (c.id||'').startsWith('support_drv_');
+  const _visibleParDefaut = (c) => {
+    if(!_aDesMessages(c)) return false;              // jamais les fils vides
+    // Le masquage des fils chauffeurs lus ne concerne QUE l'admin/dispatch
+    // (côté chauffeur, son fil support est son unique canal, on le garde).
+    const staff = SESSION.role==='admin' || SESSION.role==='dispatch';
+    if(staff && _estFilChauffeur(c)) return _aDesNonLus(c);
+    return true;
+  };
   if(!q && !window._msgNouvelleConv) {
-    contacts = contacts.filter(_aDesMessages);
+    contacts = contacts.filter(_visibleParDefaut);
   }
   if(!contacts.length){
     if(window._msgNouvelleConv || q) {
@@ -12848,6 +12877,16 @@ window.openConv = async function(convId, name, role) {
   // Sur mobile : basculer vers l'affichage du chat (masque la liste)
   const msgWrap = document.getElementById('msg-wrap');
   if(msgWrap) msgWrap.classList.add('msg-chat-active');
+  // Sur écran étroit (app mobile), on force l'affichage d'un SEUL panneau à la
+  // fois — le CSS media query ne se déclenche pas toujours dans la WebView
+  // native (largeur logique différente). On bascule donc aussi par JS.
+  try {
+    if(msgWrap && window.innerWidth <= 900) {
+      msgWrap.classList.add('msg-mobile');
+      msgWrap.querySelector('.msg-list-panel').style.display = 'none';
+      msgWrap.querySelector('.msg-chat-panel').style.display = 'flex';
+    }
+  } catch(e){}
 
   // Vérifier si le client peut encore écrire à ce chauffeur
   let canWrite = true;
@@ -12910,7 +12949,19 @@ window.openConv = async function(convId, name, role) {
 // Sur mobile : revenir à la liste des conversations depuis le chat
 window.backToConvList = function() {
   const msgWrap = document.getElementById('msg-wrap');
-  if(msgWrap) msgWrap.classList.remove('msg-chat-active');
+  if(msgWrap) {
+    msgWrap.classList.remove('msg-chat-active');
+    currentConv = null;
+    // Annuler la bascule JS mobile : réafficher la liste, masquer le chat.
+    if(msgWrap.classList.contains('msg-mobile')) {
+      msgWrap.classList.remove('msg-mobile');
+      try {
+        msgWrap.querySelector('.msg-list-panel').style.display = 'flex';
+        msgWrap.querySelector('.msg-chat-panel').style.display = 'none';
+      } catch(e){}
+    }
+    try { renderConvList(); } catch(e){}
+  }
 };
 
 async function loadMessages(convId) {
