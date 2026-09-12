@@ -1295,8 +1295,9 @@ tr:last-child td{border-bottom:none}
         <div id="msg-wrap" style="display:grid;grid-template-columns:280px 1fr;gap:0;height:calc(100vh - 120px);background:var(--card);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
           <!-- Liste conversations -->
           <div class="msg-list-panel" style="border-right:1px solid var(--border);display:flex;flex-direction:column">
-            <div style="padding:14px 16px;border-bottom:1px solid var(--border);font-family:'Syne',sans-serif;font-size:14px;font-weight:700">
-              <i class="fas fa-comments" style="color:var(--gold)"></i> Conversations
+            <div style="padding:14px 16px;border-bottom:1px solid var(--border);font-family:'Syne',sans-serif;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:space-between">
+              <span><i class="fas fa-comments" style="color:var(--gold)"></i> Conversations</span>
+              <button id="btn-nouvelle-conv" onclick="ouvrirNouvelleConv()" title="Nouvelle conversation" style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--gold2));border:none;color:var(--black);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center"><i class="fas fa-plus"></i></button>
             </div>
             <div style="padding:10px">
               <div class="sbw"><i class="fas fa-search"></i><input type="text" placeholder="Rechercher..." id="msg-search" oninput="renderConvList()" maxlength="200"></div>
@@ -12621,6 +12622,25 @@ window.driverNoShow = async function(id) {
 let currentConv = null;
 let msgRefreshInterval = null;
 
+// Bascule "Nouvelle conversation" : affiche TOUS les contacts (pour démarrer
+// un échange), au lieu des seules conversations en cours. Un 2e appui referme.
+window.ouvrirNouvelleConv = function() {
+  window._msgNouvelleConv = true;
+  const s = document.getElementById('msg-search');
+  if(s){ s.value=''; s.placeholder='Choisir un contact à qui écrire...'; setTimeout(()=>s.focus(),50); }
+  const b = document.getElementById('btn-nouvelle-conv');
+  if(b){ b.innerHTML='<i class="fas fa-times"></i>'; b.title='Fermer'; b.setAttribute('onclick','fermerNouvelleConv()'); }
+  renderConvList();
+};
+window.fermerNouvelleConv = function() {
+  window._msgNouvelleConv = false;
+  const s = document.getElementById('msg-search');
+  if(s){ s.value=''; s.placeholder='Rechercher...'; }
+  const b = document.getElementById('btn-nouvelle-conv');
+  if(b){ b.innerHTML='<i class="fas fa-plus"></i>'; b.title='Nouvelle conversation'; b.setAttribute('onclick','ouvrirNouvelleConv()'); }
+  renderConvList();
+};
+
 function renderConvList() {
   const q = (document.getElementById('msg-search')?.value||'').toLowerCase();
   const list = document.getElementById('conv-list');
@@ -12712,7 +12732,28 @@ function renderConvList() {
   }
 
   contacts = contacts.filter(c=>!q||c.name.toLowerCase().includes(q));
-  if(!contacts.length){list.innerHTML='<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Aucun contact disponible</div>';return;}
+
+  // Par défaut, on n'affiche QUE les conversations ayant des messages, pour ne
+  // pas noyer la liste sous des centaines de contacts "Aucun message". La liste
+  // complète (pour démarrer un nouvel échange) s'ouvre via le bouton "Nouvelle
+  // conversation" — window._msgNouvelleConv — ou dès qu'on tape une recherche.
+  const _aDesMessages = (c) => (D.messages||[]).some(m=>m.conv===c.id);
+  if(!q && !window._msgNouvelleConv) {
+    contacts = contacts.filter(_aDesMessages);
+  }
+  if(!contacts.length){
+    if(window._msgNouvelleConv || q) {
+      list.innerHTML='<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Aucun contact ne correspond</div>';
+    } else {
+      // Aucune conversation en cours : inviter à en démarrer une.
+      list.innerHTML='<div style="padding:30px 20px;text-align:center;color:var(--muted);font-size:13px">'
+        +'<div style="font-size:32px;margin-bottom:10px">💬</div>'
+        +'Aucune conversation pour le moment.<br>'
+        +'<button onclick="ouvrirNouvelleConv()" style="margin-top:14px;padding:10px 18px;background:linear-gradient(135deg,var(--gold),var(--gold2));border:none;border-radius:20px;color:var(--black);font-weight:700;font-size:13px;cursor:pointer">+ Nouvelle conversation</button>'
+        +'</div>';
+    }
+    return;
+  }
 
   // ── TRI DES CONVERSATIONS ──────────────────────────────────────────────
   // Sans tri, avec des centaines de chauffeurs listés, un message non lu se
@@ -12783,6 +12824,9 @@ function renderConvList() {
 }
 
 window.openConv = async function(convId, name, role) {
+  // Quitter le mode "Nouvelle conversation" dès qu'un contact est choisi, pour
+  // revenir à la liste normale (conversations en cours) au retour.
+  if(window._msgNouvelleConv) { try { fermerNouvelleConv(); } catch(e){ window._msgNouvelleConv = false; } }
   // Un expéditeur (client, chauffeur, dispatch) qui ouvre le Support est
   // redirigé vers SON canal personnel, pour que chaque fil reste séparé côté
   // support technique.
