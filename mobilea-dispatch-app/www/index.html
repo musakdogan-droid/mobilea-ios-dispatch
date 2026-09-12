@@ -331,6 +331,12 @@ tr:last-child td{border-bottom:none}
 @media(max-width:768px){
   #msg-wrap{grid-template-columns:1fr!important;height:calc(100vh - 90px)!important}
   #msg-wrap .msg-list-panel{display:flex}
+  /* Conversation non lue : pastille + fond qui pulsent doucement pour attirer
+     l'oeil de l'admin/dispatch sans être agressif. */
+  @keyframes convPulse{0%,100%{background:rgba(231,76,60,0.10)}50%{background:rgba(231,76,60,0.22)}}
+  .conv-unread{animation:convPulse 1.8s ease-in-out infinite}
+  @keyframes badgePulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.18);opacity:.85}}
+  .conv-badge-pulse{animation:badgePulse 1.2s ease-in-out infinite}
   #msg-wrap .msg-chat-panel{display:none}
   #msg-wrap.msg-chat-active .msg-list-panel{display:none}
   #msg-wrap.msg-chat-active .msg-chat-panel{display:flex}
@@ -1202,6 +1208,13 @@ tr:last-child td{border-bottom:none}
             </div>
             <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700">🔄 Synchronisation LogiPax</div>
+                <button class="btn btn-s btn-sm" onclick="relancerSyncLogipax()"><i class="fas fa-sync-alt"></i> Relancer les échecs</button>
+              </div>
+              <div style="font-size:11px;color:var(--muted2)">Quand LogiPax est en panne (erreur 502, délai dépassé), MOBILEA continue de fonctionner normalement : les courses sont enregistrées et marquées à resynchroniser. Cliquez ici une fois LogiPax revenu en ligne. <span id="lgpx-pending" style="color:var(--gold);font-weight:600"></span></div>
+            </div>
+            <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
                 <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700">📍 Zones d'alerte (géofence)</div>
                 <button class="btn btn-p btn-sm" onclick="openGeofenceZone('')"><i class="fas fa-plus"></i> Ajouter</button>
               </div>
@@ -1291,16 +1304,16 @@ tr:last-child td{border-bottom:none}
             <div id="conv-list" style="flex:1;overflow-y:auto"></div>
           </div>
           <!-- Zone chat -->
-          <div class="msg-chat-panel" style="display:flex;flex-direction:column;min-width:0">
+          <div class="msg-chat-panel" style="display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden">
             <div id="chat-header" style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;min-height:54px">
               <div style="color:var(--muted);font-size:13px">Sélectionner une conversation</div>
             </div>
-            <div id="chat-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px"></div>
-            <div id="chat-input-wrap" style="padding:12px 16px;border-top:1px solid var(--border);display:none">
+            <div id="chat-messages" style="flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px"></div>
+            <div id="chat-input-wrap" style="padding:12px 16px;border-top:1px solid var(--border);display:none;flex:0 0 auto;background:var(--card)">
               <div style="display:flex;gap:8px">
                 <input type="text" id="chat-input" placeholder="Écrire un message..." 
                   style="flex:1;background:var(--dark);border:1px solid var(--border2);border-radius:20px;padding:10px 16px;color:var(--white);font-size:13px;outline:none"
-                  onkeydown="if(event.key==='Enter')sendMsg()" maxlength="200">
+                  onkeydown="if(event.key==='Enter')sendMsg()" maxlength="1000">
                 <button onclick="sendMsg()" style="background:linear-gradient(135deg,var(--gold),var(--gold2));border:none;border-radius:50%;width:40px;height:40px;cursor:pointer;font-size:16px;color:var(--black)">➤</button>
               </div>
             </div>
@@ -1508,6 +1521,11 @@ tr:last-child td{border-bottom:none}
           <div class="sec-h">
             <div class="sec-t"><i class="fas fa-route" style="color:var(--gold)"></i> <span data-t="active_transfers">Transferts en cours</span></div>
             <button class="btn btn-ghost btn-sm" onclick="loadAll()"><i class="fas fa-sync-alt"></i> Actualiser</button>
+          </div>
+          <div style="padding:10px 16px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <div class="sbw" style="flex:1;min-width:200px"><i class="fas fa-search"></i><input type="text" placeholder="Rechercher un passager (nom, prénom)..." id="cp-search" oninput="renderClientPortal()" maxlength="100"></div>
+            <button class="btn btn-ghost btn-sm" onclick="window._cpDay=new Date().toISOString().slice(0,10);document.getElementById('cp-search').value='';renderClientPortal()"><i class="fas fa-calendar-day"></i> Aujourd'hui</button>
+            <input type="date" id="cp-date-picker" onchange="if(this.value){window._cpDay=this.value;document.getElementById('cp-search').value='';renderClientPortal();}" style="padding:8px 10px;border-radius:10px;border:1px solid var(--border2);background:var(--dark);color:var(--white);font-size:12px">
           </div>
           <div id="cp-day-strip" style="display:flex;gap:6px;overflow-x:auto;padding:10px 16px 4px"></div>
           <div id="cp-active-list" style="padding:16px"></div>
@@ -2889,17 +2907,20 @@ async function fbGetMesCourses(nomChauffeur) {
 }
 
 // Lecture des courses d'un PARTENAIRE — cloisonnée par les règles RTDB.
+// Filtre par SOCIÉTÉ (champ "client" de la course), pas par UID individuel :
+// tous les comptes d'une même société partenaire voient ainsi les mêmes
+// réservations, pas seulement celles créées par leur propre compte.
 // Le partenaire n'a le droit de lire /courses QUE via cette query filtrée
-// (orderByChild('partenaireUid').equalTo(sonUid)). On NE retombe donc PAS sur
+// (orderByChild('client').equalTo(sa_societe)). On NE retombe donc PAS sur
 // un fbGet('courses') global en cas d'erreur : ce serait un 401 garanti.
-async function fbGetCoursesPartenaire(partenaireUid) {
-  if(!partenaireUid) return [];
+async function fbGetCoursesPartenaire(societe) {
+  if(!societe) return [];
   try {
     const token = await getAuthToken();
     const p = new URLSearchParams();
     if(token) p.set('auth', token);
-    p.set('orderBy', JSON.stringify('partenaireUid'));
-    p.set('equalTo', JSON.stringify(partenaireUid));
+    p.set('orderBy', JSON.stringify('client'));
+    p.set('equalTo', JSON.stringify(societe));
     const r = await fetch(`${FB_URL}/courses.json?${p.toString()}`);
     if(!r.ok) throw new Error('filtre partenaire refuse: ' + r.status);
     const d = await r.json();
@@ -3092,6 +3113,56 @@ function stopMaJourneeFallback() {
 // jour, on synchronise SESSION.pointeuse, et on rafraîchit la vue concernée.
 let _chauffeursListenerRef = null;
 let _chauffeursListenerCb = null;
+
+// ── ÉCOUTE TEMPS RÉEL DES MESSAGES ───────────────────────────────────────
+// Sans elle, un message n'apparaissait qu'au bout du cycle de sondage (2 min).
+// Avec elle, le message arrive instantanément : badge mis à jour, liste des
+// conversations retriée, et fil ouvert rafraîchi — comme une vraie messagerie.
+let _messagesListenerRef = null, _messagesListenerCb = null;
+function startMessagesListener() {
+  if(_messagesListenerRef) return;
+  if(!window.fbDB) { if((window._msgBootTries=(window._msgBootTries||0)+1) < 20) setTimeout(startMessagesListener, 500); return; }
+  if(!SESSION) return;
+  try {
+    _messagesListenerRef = window.fbDB.ref('messages');
+    _messagesListenerCb = _messagesListenerRef.on('value', (snap) => {
+      const val = snap.val();
+      const arr = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
+      // Trier par date pour que "dernier message" soit fiable partout.
+      arr.sort((a,b) => new Date(a.at||0) - new Date(b.at||0));
+      const avant = (D.messages||[]).filter(m => !m.read && m.from !== SESSION.uid).length;
+      D.messages = arr;
+      try { _fbCache.set('messages', { t: Date.now(), data: arr.map(o=>({...o})) }); } catch(e){}
+
+      // Badge global (menu Messagerie)
+      const nonLus = arr.filter(m => !m.read && m.from !== SESSION.uid).length;
+      const nb = document.getElementById('nb-msg');
+      if(nb) { nb.textContent = nonLus || '0'; nb.style.display = nonLus ? '' : 'none'; }
+
+      // Badge côté portail client/partenaire
+      const badgeCp = document.getElementById('cp-msg-badge');
+      if(badgeCp) { badgeCp.textContent = nonLus; badgeCp.style.display = nonLus > 0 ? 'inline' : 'none'; }
+
+      // Rafraîchir la liste des conversations et le fil ouvert
+      try { if(typeof renderConvList === 'function') renderConvList(); } catch(e){}
+      try { if(currentConv && typeof loadMessages === 'function') loadMessages(currentConv); } catch(e){}
+
+      // Signal discret à la réception d'un nouveau message (pas au chargement
+      // initial, et jamais pour ses propres messages).
+      if(window._msgListenerPret && nonLus > avant) {
+        try { if(typeof showToast === 'function') showToast('💬 Nouveau message'); } catch(e){}
+        try { if(navigator.vibrate) navigator.vibrate(120); } catch(e){}
+      }
+      window._msgListenerPret = true;
+    }, (err) => { console.warn('Écoute messages interrompue:', err); stopMessagesListener(); });
+    console.log('🔊 Écoute temps réel des messages active');
+  } catch(e) { console.warn('startMessagesListener:', e); _messagesListenerRef = null; }
+}
+
+function stopMessagesListener() {
+  try { if(_messagesListenerRef && _messagesListenerCb) _messagesListenerRef.off('value', _messagesListenerCb); } catch(e){}
+  _messagesListenerRef = null; _messagesListenerCb = null; window._msgListenerPret = false;
+}
 
 function startChauffeursListener() {
   if(_chauffeursListenerRef) return;
@@ -3475,6 +3546,22 @@ async function fbSetRole(uid, role) {
   }
 }
 
+// Enregistre la société d'un partenaire sous /partner_societies/<uid>. Les
+// règles Firebase lisent ce chemin pour autoriser un partenaire à voir TOUTES
+// les courses de sa société (client === sa société), pas seulement les
+// siennes — plusieurs comptes de la même société partagent ainsi les mêmes
+// réservations.
+async function fbSetPartnerSociety(uid, societe) {
+  if(!uid || !societe) return false;
+  try {
+    const token = await getAuthToken();
+    const r = await fetch(`${FB_URL}/partner_societies/${uid}.json${authParam(token)}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(societe)
+    });
+    return r.ok;
+  } catch(e) { return false; }
+}
+
 // MIGRATION (admin) : rattache les anciens transferts d'un partenaire à son
 // partenaireUid, en se basant sur le champ "client" (= sa société). À lancer
 // UNE fois depuis la console, connecté en admin :
@@ -3734,8 +3821,8 @@ async function loadAll() {
       // Un fbGet('courses') global lui renverrait 401. On utilise donc la query
       // filtrée serveur ; le client normal garde la lecture complète.
       let courses;
-      if(SESSION.isPartenaire && SESSION.partenaireUid) {
-        courses = await fbGetCoursesPartenaire(SESSION.partenaireUid);
+      if(SESSION.isPartenaire && SESSION.societe) {
+        courses = await fbGetCoursesPartenaire(SESSION.societe);
       } else {
         courses = await fbGet('courses');
       }
@@ -3945,6 +4032,18 @@ function renderAll() {
   prioritaires.forEach(fn => { try { fn(); } catch(e) { console.error((fn.name||'')+' error:', e); if(window._diagShow) window._diagShow((fn.name||'?')+' PLANTÉ: '+(e&&(e.stack||e.message||e))); } });
   try { renderAlertesZone(); } catch(e){}
   try { if(typeof renderGeofenceZones==='function') renderGeofenceZones(); } catch(e){}
+  // Filet de sécurité : réparer les chauffeurUid manquants sur les courses
+  // actives (évite les PERMISSION_DENIED côté chauffeur). Non bloquant.
+  try { if(typeof reparerChauffeurUidAuto==='function') reparerChauffeurUidAuto(); } catch(e){}
+  // Compteur de courses en attente de resynchronisation LogiPax (Paramètres).
+  try {
+    const el = document.getElementById('lgpx-pending');
+    if(el) {
+      const n = (D.courses||[]).filter(c => c.logipaxARelancer === true || (c.logipaxSynced === false && c.logipaxErreur)).length;
+      el.textContent = n ? ('· ' + n + ' course(s) en attente') : '· tout est synchronisé ✓';
+      el.style.color = n ? 'var(--orange)' : 'var(--green)';
+    }
+  } catch(e){}
   // Le reste est rendu juste après, laissant le navigateur peindre l'écran d'abord.
   setTimeout(() => {
     autres.forEach(fn => { try { fn(); } catch(e) { console.error((fn.name||'')+' error:', e); if(window._diagShow) window._diagShow((fn.name||'?')+' PLANTÉ: '+(e&&(e.stack||e.message||e))); } });
@@ -4426,6 +4525,7 @@ window.doLogout = function() {
   try { stopCoursesListener(); } catch(e){}
   try { stopPointagesListener(); } catch(e){}
   try { stopChauffeursListener(); } catch(e){}
+  try { stopMessagesListener(); } catch(e){}
   try { stopMaJourneeFallback(); } catch(e){}
   // Déconnexion Firebase Auth
   if(window.fbAuth) { try { window.fbAuth.signOut(); } catch(e){} }
@@ -4633,6 +4733,9 @@ function startApp() {
   // (règles RTDB) : les lancer déclencherait des 401 (pointages, chauffeurs,
   // courses_archive) qui perturbent son chargement. On les saute donc.
   const _staff = SESSION && ['admin','dispatch','chauffeur'].includes(SESSION.role);
+  // Messagerie : /messages est lisible par tout utilisateur authentifié, donc
+  // l'écoute temps réel vaut pour TOUS les rôles (y compris client/partenaire).
+  try { startMessagesListener(); } catch(e){ console.warn('startMessagesListener:', e); }
   if(_staff) {
     try { startCoursesListener(); } catch(e){ console.warn('startCoursesListener:', e); }
     try { startPointagesListener(); } catch(e){ console.warn('startPointagesListener:', e); }
@@ -4937,6 +5040,29 @@ function chauffeurIdByName(name) {
 // securite basees sur chauffeurUid, sinon les chauffeurs ne voient plus leurs
 // courses. Usage : ouvrir la console (connecte en admin) et taper :
 //    await migrerChauffeurUid()
+// FILET DE SÉCURITÉ (auto, silencieux) — répare les courses ACTIVES dont le
+// chauffeurUid manque. Cas typique : la course a été assignée AVANT que le
+// chauffeur se connecte pour la première fois (son uid n'existait pas encore),
+// et Firebase supprime les champs null → chauffeurUid absent → le chauffeur
+// reçoit PERMISSION_DENIED (401) quand il veut accepter ou changer le statut.
+// Ne tourne que pour admin/dispatch (seuls habilités à écrire) et se limite
+// aux courses encore exploitables, pour ne pas générer d'écritures inutiles.
+async function reparerChauffeurUidAuto() {
+  if(!SESSION || (SESSION.role !== 'admin' && SESSION.role !== 'dispatch')) return;
+  const statutsActifs = ['attribuee','acceptee','en_route','sur_place','onboard','offre_en_cours'];
+  const aReparer = (D.courses||[]).filter(c =>
+    c.chauffeur && !c.chauffeurUid && statutsActifs.includes(c.statut)
+  );
+  if(!aReparer.length) return;
+  let ok = 0;
+  for(const c of aReparer) {
+    const uid = chauffeurUidByName(c.chauffeur);
+    if(!uid) continue;   // chauffeur sans compte Firebase : rien à faire ici
+    try { await fbUpdate('courses', c._id, { chauffeurUid: uid }); ok++; } catch(e){}
+  }
+  if(ok) console.log('[auto] chauffeurUid réparé sur ' + ok + ' course(s) active(s)');
+}
+
 window.migrerChauffeurUid = async function() {
   if(!SESSION || SESSION.role !== 'admin') { console.warn('Reserve a admin'); return; }
   const courses = await fbGet('courses');
@@ -5250,7 +5376,7 @@ function renderDash() {
   tb.innerHTML=active.map(c=>`<tr>
     <td><strong>${E(c.client||'—')}</strong></td>
     <td>${tBdg(c.type)}</td>
-    <td style="font-size:11px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(c.depart||c.lieu||'—')} → ${E(c.arrivee||c.duree||'—')}</td>
+    <td style="font-size:11px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(raccourcirLieu(c.depart||c.lieu))} → ${E(raccourcirLieu(c.arrivee||c.duree))}</td>
     <td>${c.chauffeur ? E(c.chauffeur) : '<span style="color:var(--muted)">—</span>'}</td>
     <td>${sBdg(c.statut)}</td>
     <td class="text-gold fw7">${fp(c.prix)}</td>
@@ -5416,7 +5542,7 @@ function renderDispatch() {
     else tb.innerHTML=list.map(c=>`<tr>
       <td><input type="checkbox" class="row-chk" data-id="${c._id}" onchange="onChkChange()" style="cursor:pointer;width:14px;height:14px"></td>
       <td class="col-dt" style="font-size:10px;white-space:nowrap">${fdt(c.datetime)}</td>
-      <td class="col-dep" style="font-size:11px;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(c.depart||c.lieu||'—')}</td>
+      <td class="col-dep" style="font-size:11px;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(raccourcirLieu(c.depart||c.lieu))}</td>
       <td class="col-arr" style="font-size:11px;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(c.arrivee||c.duree||'—')}</td>
       <td class="col-veh" style="font-size:11px">${vI(c.vehicule)}</td>
       <td class="col-chauff" style="font-size:11px">${c.chauffeur ? E(c.chauffeur) : '<span style="color:var(--muted)">—</span>'}</td>
@@ -5458,7 +5584,7 @@ function renderDispatch() {
       return`<div class="kb-col"><div class="kb-ch"><div class="kb-ct"><span style="color:${col.c}">●</span> ${col.l}</div><span class="kb-cc">${items.length}</span></div>
       <div class="kb-items">${items.map(c=>`<div class="kb-card" onclick="openAssign('${c._id}')">
         <div style="font-size:12px;font-weight:600;margin-bottom:4px">${E(c.client)} ${tBdg(c.type)}</div>
-        <div style="font-size:10px;color:var(--muted2);margin-bottom:6px">${(c.depart||c.lieu||'').slice(0,30)}</div>
+        <div style="font-size:10px;color:var(--muted2);margin-bottom:6px">${E(raccourcirLieu(c.depart||c.lieu))}</div>
         <div style="display:flex;justify-content:space-between"><span style="font-size:10px;color:var(--muted)">${fdt(c.datetime)}</span><span class="text-gold fw7" style="font-size:11px">${fp(c.prix)}</span></div>
         ${c.chauffeur?`<div style="margin-top:4px;font-size:10px;color:var(--blue)">👤 ${E(c.chauffeur)}</div>`:''}
       </div>`).join('')}</div></div>`;
@@ -5523,6 +5649,32 @@ function isArrival(course) {
 // Couleurs personnalisées choisies par l'admin (chargées depuis Firebase).
 // Clé = nom du client en MAJUSCULES, valeur = { arr, dep, label }.
 let CUSTOM_CLIENT_COLORS = {};
+
+// Raccourcit un lieu pour l'affichage compact des cartes (agenda, dispatch) :
+// reconnaît les lieux fréquents (aéroports, Val d'Europe, gares parisiennes)
+// même quand l'adresse complète a été saisie, et les résume à un nom court.
+// Fonctionne à l'aller comme au retour (aucune notion de sens dans ce texte).
+// Si le lieu n'est pas reconnu, le texte d'origine est renvoyé tel quel
+// (mais tronqué s'il est très long, pour ne pas casser la mise en page).
+function raccourcirLieu(texte) {
+  const t = String(texte||'').trim();
+  if(!t) return '—';
+  const low = t.toLowerCase();
+  if(low.includes('duemea')) return 'DUEMEA';
+  if(low.includes('roissy') || low.includes('charles de gaulle') || /\bcdg\b/.test(low)) return 'CDG';
+  if(low.includes('orly')) return 'Orly';
+  if(low.includes('beauvais')) return 'Beauvais';
+  if(low.includes('lvv') || low.includes("val d'europe") || low.includes('val d europe') || low.includes('la vallée village') || low.includes('la vallee village')) return 'LVV';
+  if(low.includes('disney') || low.includes('chessy') || low.includes('serris') || low.includes('marne la vallée') || low.includes('marne la vallee')) return 'Disney';
+  if(low.includes('gare du nord')) return 'Gare du Nord';
+  if(low.includes('gare de lyon')) return 'Gare de Lyon';
+  if(low.includes('montparnasse')) return 'Montparnasse';
+  if(low.includes('austerlitz')) return 'Austerlitz';
+  if(low.includes('paris')) return 'Paris';
+  // Lieu non reconnu : on garde le texte saisi, juste raccourci s'il est long
+  // (ex: adresse complète) pour ne pas casser l'affichage des cartes.
+  return t.length > 24 ? t.slice(0, 22) + '…' : t;
+}
 
 function getClientInfo(clientName) {
   const name = (clientName||'').toUpperCase();
@@ -5743,7 +5895,7 @@ function renderAgenda() {
     const terms = c.terminaux ? c.terminaux.replace(/CDG/g,'') : '';
     const info = getClientInfo(c.client);
     const dirIcon = getDirectionIcon(c);
-    const ligne1 = (c.depart||c.lieu||'—') + ' / ' + (c.arrivee||c.duree||'—') + (terms?' / '+terms:'');
+    const ligne1 = raccourcirLieu(c.depart||c.lieu) + ' / ' + raccourcirLieu(c.arrivee||c.duree) + (terms?' / '+terms:'');
     // Code facturation : REF / VEHICULE / NUM / CHAUFFEUR — ex: BR / B / 9 / Mustafa
     const codeFact = (c.codeFact||c.ref||'').split('/').filter(x=>x&&x!=='NC').slice(0,3).join(' / ');
     // Libelle vehicule lisible : facilite l'affectation d'un chauffeur au bon
@@ -5769,7 +5921,7 @@ function renderAgenda() {
     // Une course malformée ne doit pas casser tout l'agenda : carte de secours.
     console.error('Carte course en erreur:', c && c._id, cardErr);
     return `<div onclick="viewCourseDetail('${c&&c._id}')" style="background:#7c2d2d;border-radius:10px;padding:12px 14px;margin-bottom:6px;color:#fff;cursor:pointer">
-      <div style="font-size:14px;font-weight:700">⚠️ ${E((c&&(c.depart||c.lieu))||'Course')} → ${E((c&&c.arrivee)||'—')}</div>
+      <div style="font-size:14px;font-weight:700">⚠️ ${E(raccourcirLieu(c&&(c.depart||c.lieu)))} → ${E(raccourcirLieu(c&&c.arrivee))}</div>
       <div style="font-size:12px;opacity:0.85;margin-top:3px">${E((c&&c.datetime)||'')} · ${E((c&&c.chauffeur)||'À assigner')}</div>
     </div>`;
    }
@@ -6271,7 +6423,7 @@ window.viewClientCourses = function(clientName) {
             const codeFact = (c.codeFact||c.ref||'').split('/').filter(x=>x&&x!=='NC').slice(0,3).join(' / ');
             return `<div onclick="document.getElementById('client-courses-ov').remove();viewCourseDetail('${c._id}')"
               style="background:${color};border-radius:10px;padding:12px 14px;margin-bottom:6px;cursor:pointer;color:#fff">
-              <div style="font-size:20px;font-weight:700;line-height:1.3">${E(c.depart||c.lieu||'—')} / ${E(c.arrivee||c.duree||'—')}${terms?' / '+terms:''}</div>
+              <div style="font-size:20px;font-weight:700;line-height:1.3">${E(raccourcirLieu(c.depart||c.lieu))} / ${E(raccourcirLieu(c.arrivee||c.duree))}${terms?' / '+terms:''}</div>
               <div style="font-size:20px;opacity:0.92;margin-top:3px">${time} à ${codeFact?codeFact+' / ':''}${E(c.chauffeur||'À assigner')}</div>
             </div>`;
           }).join('');
@@ -6981,6 +7133,45 @@ function _clientCanonique(nomNorm) {
   return nomNorm;
 }
 
+// Calcul du prix "tout compris" pour une course, utilisé à l'IMPORT (arrivées
+// et départs) pour remplir le prix automatiquement — sans passer par le bouton
+// "Analyser". Essaie dans l'ordre : 1) grille par zones du client (avec
+// supplément terminaux), 2) tarif simple "Ajouter tarif". Renvoie
+// { client, chauffeur } ou null si rien ne correspond.
+async function calculerPrixAutoImport(client, depart, arrivee, vehicule, terminaux) {
+  try {
+    const nbArrets = terminaux ? String(terminaux).split('-').filter(Boolean).length : 1;
+    const clientCanon = _clientCanonique(String(client||'').toLowerCase().trim());
+
+    // 1) Grille par zones : on cherche la grille dont le NOM (une fois passé à
+    // la forme canonique) correspond au client de la course. La grille peut
+    // être enregistrée sous un nom différent (ex: "Deloitte University" pour
+    // des courses au client "DUEMEA") — d'où le besoin de lister toutes les
+    // grilles plutôt que de deviner une seule clé.
+    try {
+      const tok = await getAuthToken();
+      const r = await fetch(`${FB_URL}/client_grids.json${authParam(tok)}`);
+      const toutesGrilles = await r.json();
+      if(toutesGrilles) {
+        for(const nomGrille of Object.keys(toutesGrilles)) {
+          // Les clés Firebase remplacent les espaces/points par "_" : on
+          // compare donc aussi en normalisant les "_" en espaces.
+          const nomLisible = nomGrille.replace(/_/g, ' ');
+          if(_clientCanonique(nomLisible.toLowerCase().trim()) === clientCanon) {
+            const t = tarifPourTrajet(toutesGrilles[nomGrille], depart, arrivee, vehicule, nbArrets);
+            if(t && ((t.client||0) > 0 || (t.chauffeur||0) > 0)) return { client: t.client||0, chauffeur: t.chauffeur||0 };
+          }
+        }
+      }
+    } catch(e){}
+
+    // 2) Tarif simple "Ajouter tarif" (pas de notion de supplément terminal ici).
+    const t2 = tarifSimplePourCourse(client, depart, arrivee, vehicule);
+    if(t2) return { client: t2.client||0, chauffeur: t2.chauffeur||0 };
+  } catch(e){}
+  return null;
+}
+
 function tarifSimplePourCourse(client, depart, arrivee, vehicule) {
   const veh = vehicule || 'berline';
   const norm = s => String(s||'').toLowerCase().replace(/\s+/g,' ').trim();
@@ -7001,11 +7192,14 @@ function tarifSimplePourCourse(client, depart, arrivee, vehicule) {
   return { client: pc, chauffeur: pch, route: t.route || (t.depart+' -> '+t.arrivee) };
 }
 
-function tarifPourTrajet(grille, depart, arrivee, vehicule) {
+function tarifPourTrajet(grille, depart, arrivee, vehicule, nbArrets) {
   if(!grille) return null;
   const veh = vehicule || 'berline';
   const depTxt = String(depart||'').toLowerCase();
   const arrTxt = String(arrivee||'').toLowerCase();
+  // Supplément terminal(aux) multiple(s) : chaque arrêt au-delà du 1er ajoute
+  // le montant "suppClient"/"suppChauffeur" défini sur la zone/tarif.
+  const extraStops = Math.max(0, (nbArrets||1) - 1);
 
   // 1) Zones personnalisees (mots-cles definis par l'admin)
   const zones = Array.isArray(grille._custom) ? grille._custom : [];
@@ -7019,7 +7213,12 @@ function tarifPourTrajet(grille, depart, arrivee, vehicule) {
     if(match && zone.prix && zone.prix[veh]) {
       const pc = zone.prix[veh];
       if((pc.client||0) > 0 || (pc.chauffeur||0) > 0) {
-        return { client: pc.client||0, chauffeur: pc.chauffeur||0, label: zone.label||'trajet personnalisé' };
+        return {
+          client: (pc.client||0) + extraStops*(pc.suppClient||0),
+          chauffeur: (pc.chauffeur||0) + extraStops*(pc.suppChauffeur||0),
+          label: zone.label||'trajet personnalisé',
+          terminauxSupp: extraStops
+        };
       }
     }
   }
@@ -7030,8 +7229,9 @@ function tarifPourTrajet(grille, depart, arrivee, vehicule) {
     const pc = grille[zone + '_' + veh];
     if(pc && ((pc.client||0) > 0 || (pc.chauffeur||0) > 0)) {
       return {
-        client: pc.client||0,
-        chauffeur: pc.chauffeur||0,
+        client: (pc.client||0) + extraStops*(pc.suppClient||0),
+        chauffeur: (pc.chauffeur||0) + extraStops*(pc.suppChauffeur||0),
+        terminauxSupp: extraStops,
         label: LIBELLES_ZONE[zone] || zone,
       };
     }
@@ -7086,7 +7286,11 @@ window.analyserPrixManquants = async function() {
   const trouves = [], nonTrouves = [];
   candidates.forEach(c => {
     // 1) Grille par zones du client, sinon 2) tarif "Ajouter tarif" (client+trajet).
-    let t = tarifPourTrajet(grille, c.depart||c.lieu, c.arrivee||c.duree, c.vehicule);
+    // Nombre d'arrêts = nombre de terminaux distincts (ex: "2F-2D" = 2 arrêts).
+    // Au-delà du 1er, chaque terminal supplémentaire applique le supplément
+    // défini sur le tarif (suppClient/suppChauffeur).
+    const nbArrets = c.terminaux ? String(c.terminaux).split('-').filter(Boolean).length : 1;
+    let t = tarifPourTrajet(grille, c.depart||c.lieu, c.arrivee||c.duree, c.vehicule, nbArrets);
     if(!t) t = tarifSimplePourCourse(c.client, c.depart||c.lieu, c.arrivee||c.duree, c.vehicule);
     if(t) trouves.push({ c, t }); else nonTrouves.push(c);
   });
@@ -7109,7 +7313,7 @@ window.analyserPrixManquants = async function() {
           <td style="font-size:11px">${E(c.vehicule||'berline')}</td>
           <td class="text-gold fw7" style="font-size:12px">${t.client}€</td>
           <td style="font-size:12px;color:var(--blue)">${t.chauffeur}€</td>
-          <td style="font-size:10px;color:var(--muted)">${E(t.label)}</td>
+          <td style="font-size:10px;color:var(--muted)">${E(t.label)}${t.terminauxSupp?`<br><span style="color:var(--orange)">➕ ${t.terminauxSupp} terminal(aux) suppl.</span>`:''}</td>
         </tr>`).join('')
       + '</tbody></table></div>'
       + (trouves.length > 50 ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">… et ' + (trouves.length-50) + ' autres</div>' : '')
@@ -12510,25 +12714,69 @@ function renderConvList() {
   contacts = contacts.filter(c=>!q||c.name.toLowerCase().includes(q));
   if(!contacts.length){list.innerHTML='<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Aucun contact disponible</div>';return;}
 
+  // ── TRI DES CONVERSATIONS ──────────────────────────────────────────────
+  // Sans tri, avec des centaines de chauffeurs listés, un message non lu se
+  // retrouvait noyé au milieu. Ordre retenu :
+  //   1. conversations avec messages NON LUS (les plus récentes d'abord)
+  //   2. conversations avec historique (dernier message le plus récent d'abord)
+  //   3. contacts sans aucun message (ordre alphabétique)
+  const _infoConv = (c) => {
+    const msgs = (D.messages||[]).filter(m=>m.conv===c.id)
+      .sort((a,b)=> new Date(a.at||0) - new Date(b.at||0));
+    const last = msgs.length ? msgs[msgs.length-1] : null;
+    return {
+      unread: msgs.filter(m=>!m.read && m.from!==SESSION.uid).length,
+      lastAt: last ? new Date(last.at||0).getTime() : 0,
+      hasMsg: msgs.length > 0
+    };
+  };
+  const _cache = new Map();
+  const _inf = (c) => { if(!_cache.has(c.id)) _cache.set(c.id, _infoConv(c)); return _cache.get(c.id); };
+  contacts.sort((a,b) => {
+    const ia = _inf(a), ib = _inf(b);
+    if((ia.unread>0) !== (ib.unread>0)) return ia.unread>0 ? -1 : 1;   // non lus d'abord
+    if(ia.hasMsg !== ib.hasMsg) return ia.hasMsg ? -1 : 1;             // puis ceux qui ont un historique
+    if(ia.lastAt !== ib.lastAt) return ib.lastAt - ia.lastAt;          // puis le plus récent
+    return a.name.localeCompare(b.name);                               // sinon alphabétique
+  });
+
+  // Heure lisible du dernier message ("14:32", "hier", "12/09").
+  const _heureMsg = (ts) => {
+    if(!ts) return '';
+    const d = new Date(ts), now = new Date();
+    const memeJour = d.toDateString() === now.toDateString();
+    if(memeJour) return d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+    const hier = new Date(now); hier.setDate(hier.getDate()-1);
+    if(d.toDateString() === hier.toDateString()) return 'hier';
+    return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'});
+  };
+
   list.innerHTML = contacts.map(c=>{
-    const msgs = (D.messages||[]).filter(m=>m.conv===c.id);
+    const msgs = (D.messages||[]).filter(m=>m.conv===c.id)
+      .sort((a,b)=> new Date(a.at||0) - new Date(b.at||0));
     const last = msgs[msgs.length-1];
     const unread = msgs.filter(m=>!m.read&&m.from!==SESSION.uid).length;
     const isActive = currentConv===c.id;
     const bgColor = c.role==='Chauffeur'?'linear-gradient(135deg,var(--gold),var(--orange))':c.role==='Client'?'linear-gradient(135deg,#f472b6,#ec4899)':c.role==='Support'?'linear-gradient(135deg,#6366f1,#8b5cf6)':'linear-gradient(135deg,var(--blue),var(--purple))';
-    return `<div onclick="openConv('${c.id}','${c.name}','${c.role}')"
-      style="padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);background:${isActive?'var(--gold-dim)':'transparent'};transition:background 0.15s"
-      onmouseover="if('${c.id}'!==currentConv)this.style.background='rgba(255,255,255,0.03)'" onmouseout="if('${c.id}'!==currentConv)this.style.background='transparent'">
+    // Clignotement doux sur les conversations non lues et non ouvertes, pour
+    // attirer l'attention de l'admin/dispatch sur un message en attente.
+    const _clignote = unread>0 && !isActive && (SESSION.role==='admin' || SESSION.role==='dispatch');
+    return `<div onclick="openConv('${c.id}','${c.name}','${c.role}')" class="${_clignote?'conv-unread':''}"
+      style="padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);${isActive?'background:var(--gold-dim);':(_clignote?'':'background:transparent;')}transition:background 0.15s"
+      onmouseover="if('${c.id}'!==currentConv&&!this.classList.contains('conv-unread'))this.style.background='rgba(255,255,255,0.03)'" onmouseout="if('${c.id}'!==currentConv&&!this.classList.contains('conv-unread'))this.style.background='transparent'">
       <div style="width:36px;height:36px;border-radius:50%;background:${bgColor};display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">${c.icon}</div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center">
-          <span>${c.name}</span>
-          <div style="display:flex;gap:4px;align-items:center">
+        <div style="font-size:13px;font-weight:${unread>0?'800':'600'};display:flex;justify-content:space-between;align-items:center;gap:6px">
+          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</span>
+          <div style="display:flex;gap:4px;align-items:center;flex-shrink:0">
             ${c.courseRef?`<span style="font-size:9px;color:var(--gold);background:var(--gold-dim);padding:1px 5px;border-radius:8px">${c.courseRef}</span>`:''}
-            ${unread>0?`<span style="background:var(--red);color:#fff;font-size:9px;padding:2px 6px;border-radius:10px">${unread}</span>`:''}
+            ${last?`<span style="font-size:10px;color:${unread>0?'var(--gold)':'var(--muted)'}">${_heureMsg(last.at)}</span>`:''}
+            ${unread>0?`<span class="${_clignote?'conv-badge-pulse':''}" style="background:var(--red);color:#fff;font-size:9px;padding:2px 6px;border-radius:10px;font-weight:700">${unread}</span>`:''}
           </div>
         </div>
-        <div style="font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${last?last.text:'Aucun message'}</div>
+        <div style="font-size:11px;color:${unread>0?'var(--white2)':'var(--muted)'};font-weight:${unread>0?'600':'400'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px">
+          ${last ? ((last.from===SESSION.uid?'<span style="color:var(--muted)">Vous : </span>':'') + E(last.text)) : '<span style="opacity:0.6">Aucun message</span>'}
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -12687,7 +12935,27 @@ window.sendMsg = async function() {
     read: false
   });
   await loadMessages(convId);
-  await sendPushNotification(`💬 ${E(displayName)}`, text);
+
+  // ── NOTIFICATION CIBLÉE ────────────────────────────────────────────────
+  // Avant, la notification partait SANS cible : tout le monde (chauffeurs +
+  // staff) recevait le message de tout le monde. On cible maintenant le vrai
+  // destinataire du fil.
+  try {
+    const apercu = text.length > 120 ? text.slice(0,117) + '…' : text;
+    if(SESSION.role === 'admin' || SESSION.role === 'dispatch') {
+      // Le staff répond : notifier UNIQUEMENT le chauffeur concerné par ce fil.
+      const m = convId.match(/^(?:support_drv_|drv_)(.+)$/);
+      if(m && m[1]) {
+        await sendPushNotification(`💬 MOBILEA Support`, apercu, null, [m[1]]);
+      }
+      // Fils client/partenaire : ces comptes ne sont pas abonnés au push,
+      // ils verront le message en ouvrant leur espace.
+    } else {
+      // Chauffeur, client ou partenaire écrit : notifier le staff (tag staff).
+      const qui = SESSION.name || SESSION.societe || 'Message';
+      await sendPushNotification(`💬 ${E(qui)}`, apercu, null, null, { key:'role', value:'staff' });
+    }
+  } catch(e) { console.warn('notif message:', e); }
 };
 
 // ── ATTRIBUTION AUTOMATIQUE DE SECOURS ──────────────────────────────────────
@@ -12764,9 +13032,9 @@ function startMsgRefresh() {
       // PARTENAIRE : lecture cloisonnée par partenaireUid (un fbGet('courses')
       // global renverrait 401 et viderait la liste → "affiche puis disparaît").
       // On ne charge pas non plus la liste chauffeurs (interdite/inutile pour lui).
-      if(SESSION.isPartenaire && SESSION.partenaireUid) {
+      if(SESSION.isPartenaire && SESSION.societe) {
         try {
-          const courses = await fbGetCoursesPartenaire(SESSION.partenaireUid);
+          const courses = await fbGetCoursesPartenaire(SESSION.societe);
           if(Array.isArray(courses)) {
             D.courses = courses.sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
             renderClientPortal();
@@ -13855,9 +14123,11 @@ function renderClientPortal() {
   const cpName=document.getElementById('cp-company-name');const cpUser=document.getElementById('cp-user-name');
   if(cpName)cpName.textContent=societe||'Mon espace';if(cpUser)cpUser.textContent=SESSION.name;
   const myCourses=D.courses.filter(c=>{
-    // PARTENAIRE : correspondance stricte par partenaireUid (les courses sont
-    // déjà pré-filtrées côté serveur, ce test garde la cohérence locale).
-    if(SESSION.isPartenaire) return c.partenaireUid === SESSION.partenaireUid;
+    // PARTENAIRE : correspondance par société (les courses sont déjà
+    // pré-filtrées côté serveur par client===société ; ce test garde la
+    // cohérence locale). Tous les comptes d'une même société partagent ainsi
+    // les mêmes réservations, pas seulement celles créées par ce compte.
+    if(SESSION.isPartenaire) return (c.client||'').trim().toUpperCase() === (societe||'').trim().toUpperCase();
     // Correspondance par identifiant de compte client (le plus fiable)
     if(c.clientUser && SESSION.clientUser && c.clientUser===SESSION.clientUser) return true;
     const cn=(c.client||'').trim().toUpperCase();
@@ -13936,7 +14206,28 @@ function renderClientPortal() {
   // Ne garder que les transferts du jour sélectionné
   // Partenaire : toutes ses courses du jour (y compris terminées), pour que les
   // jours passés ne paraissent pas vides.
-  const activeJour = (SESSION.isPartenaire ? myCourses : active).filter(c=>_ymdOf(c)===window._cpDay);
+  // Recherche passager : quand du texte est saisi, on cherche PARMI TOUS LES
+  // JOURS (pas seulement celui sélectionné) — facilite de retrouver un client
+  // déjà réservé sans devoir naviguer jour par jour.
+  const _searchTxt = (document.getElementById('cp-search')?.value||'').trim().toLowerCase();
+  const _matchPassager = (c) => {
+    if(!_searchTxt) return true;
+    const dansPax = (c.passagers||[]).some(p => `${p.prenom||''} ${p.nom||''}`.toLowerCase().includes(_searchTxt) || (p.tel||'').includes(_searchTxt));
+    const dansNomClient = (c.client||'').toLowerCase().includes(_searchTxt);
+    return dansPax || dansNomClient;
+  };
+  const stripEl = document.getElementById('cp-day-strip');
+  const _datePicker = document.getElementById('cp-date-picker');
+  if(_datePicker && window._cpDay && _datePicker.value !== window._cpDay) _datePicker.value = window._cpDay;
+  if(_searchTxt) {
+    // Recherche active : masquer la barre de jours, montrer tous les résultats.
+    if(stripEl) stripEl.style.display = 'none';
+  } else if(stripEl) {
+    stripEl.style.display = '';
+  }
+  const activeJour = _searchTxt
+    ? (SESSION.isPartenaire ? myCourses : active).filter(_matchPassager).sort((a,b)=>(b.datetime||'').localeCompare(a.datetime||''))
+    : (SESSION.isPartenaire ? myCourses : active).filter(c=>_ymdOf(c)===window._cpDay);
   if(activeList){
     if(!activeJour.length){
       activeList.innerHTML = SESSION.isPartenaire
@@ -13999,6 +14290,7 @@ function renderClientPortal() {
             <div><div style="font-size:14px;font-weight:700">${dirIcon} ${date} à ${time}</div>
               <div style="font-size:12px;color:var(--white2);margin-top:3px">${E(c.depart||c.lieu||'—')} → ${E(c.arrivee||c.duree||'—')}</div>
               ${c.terminaux?`<div style="font-size:11px;color:var(--muted2)">📍 ${E(c.terminaux)}</div>`:''}
+              ${(c.passagers && c.passagers.length)?`<div style="font-size:11px;color:var(--white2);margin-top:3px">👤 ${E(c.passagers.map(p=>`${p.prenom||''} ${p.nom||''}`.trim()).filter(Boolean).slice(0,3).join(', '))}${c.passagers.length>3?` +${c.passagers.length-3}`:''}</div>`:''}
               <div style="font-size:10px;color:var(--gold);margin-top:4px">Voir le détail ›</div>
             </div>
             <div style="text-align:right">${sBdg(c.statut)}<div style="font-size:11px;color:var(--muted2);margin-top:4px">${vehIco} ${E(c.chauffeur||t('assignment_pending'))}</div>${c.ref?`<div style="font-size:10px;color:var(--gold)">${E(c.ref)}</div>`:''}</div>
@@ -15058,6 +15350,35 @@ window.openClientCourseDetail = function(courseId) {
       ${row('Référence', c.ref?E(c.ref):'—')}
       ${fmtPrix?row('Montant TTC', fmtPrix):''}
       ${c.notes?`<div style="margin-top:12px;padding:12px;background:#f7f7f8;border-radius:10px;font-size:13px;color:#555"><strong>Notes :</strong><br>${E(c.notes)}</div>`:''}
+
+      ${(c.passagers && c.passagers.length)?`<div style="margin-top:16px;padding:14px;background:#f7f7f8;border-radius:12px">
+        <div style="font-size:12px;color:#999;margin-bottom:10px;font-weight:600">PASSAGERS (${c.passagers.length})</div>
+        ${c.passagers.map((p,i)=>{
+          const nomComplet = `${p.prenom||''} ${p.nom||''}`.trim() || ('Passager '+(i+1));
+          const tel = (p.tel||'').trim();
+          const vol = (p.vol||'').trim();
+          const term = (p.terminal||'').trim();
+          const heure = (p.harrivee||p.hdepart||'').trim();
+          const ref = (p.refClient||'').trim();
+          const notes = (p.notes||'').trim();
+          const details = [
+            vol ? '✈️ '+E(vol) : '',
+            term ? '🛄 Terminal '+E(term) : '',
+            heure ? '🕐 '+E(heure) : '',
+            ref ? '🔖 '+E(ref) : ''
+          ].filter(Boolean).join(' · ');
+          return `<div style="padding:10px 0${i < c.passagers.length-1 ? ';border-bottom:1px solid #e6e6e8' : ''}">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+              <div style="min-width:0;flex:1">
+                <div style="font-size:14px;font-weight:700">👤 ${E(nomComplet)}</div>
+                ${details?`<div style="font-size:12px;color:#888;margin-top:3px">${details}</div>`:''}
+                ${notes?`<div style="font-size:11px;color:#aaa;margin-top:2px;font-style:italic">${E(notes)}</div>`:''}
+              </div>
+              ${tel?`<a href="tel:${E(tel).replace(/\s/g,'')}" style="width:38px;height:38px;flex-shrink:0;border-radius:50%;background:#22c55e;display:flex;align-items:center;justify-content:center;color:#fff;text-decoration:none;font-size:15px">📞</a>`:''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`:''}
 
       ${drvInfo?`<div style="margin-top:16px;padding:14px;background:#f7f7f8;border-radius:12px">
         <div style="font-size:12px;color:#999;margin-bottom:8px;font-weight:600">VOTRE CHAUFFEUR</div>
@@ -16368,11 +16689,44 @@ window.saveClientAccount=async function(){
   if(editId){
     const estPartenaire = document.getElementById('ca-partner')?.checked === true;
     const compte = (D.client_accounts||[]).find(x=>x._id===editId) || {};
+    if(pass && pass.length<6){showToast('Min. 6 caractères',true);return;}
     const update={prenom,nom,societe,email,tel,updatedAt:new Date().toISOString()};
-    if(pass){if(pass.length<6){showToast('Min. 6 caractères',true);return;}update.pass=pass;}
+    // IMPORTANT : le mot de passe ne doit JAMAIS être stocké tel quel dans la
+    // fiche (update.pass) — ça ne change pas le vrai mot de passe de connexion
+    // (Firebase Auth), donc le client ne pouvait jamais se reconnecter avec le
+    // nouveau mot de passe. On passe par le worker sécurisé (même mécanisme
+    // que pour les chauffeurs), qui met à jour le VRAI compte Auth.
+    const ancienEmail = (compte.email||'').toLowerCase();
+    const emailChange = email && email !== ancienEmail;
+    if(pass || emailChange) {
+      if(!email || !isValidEmail(email)) { showToast('Email valide requis pour changer le mot de passe ou l\'email', true); return; }
+      try {
+        const idToken = await getAuthToken();
+        if(!idToken) { showToast('Session expirée — reconnectez-vous', true); return; }
+        const resp = await fetch(CHAUFFEUR_AUTH_URL, {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ idToken, chauffeurId: null, uid: compte.uid||null, email, password: pass||null, oldEmail: ancienEmail||null })
+        });
+        const res = await resp.json().catch(()=>({}));
+        if(!resp.ok || !res.ok) {
+          const map = {
+            not_authorized: 'Action réservée à l\'administrateur.',
+            invalid_caller_token: 'Session invalide — reconnectez-vous.',
+            create_failed: 'Création du compte impossible' + (res.detail?' : '+res.detail:'') + '.',
+            update_failed: 'Mise à jour du compte impossible' + (res.detail?' : '+res.detail:'') + '.',
+            service_auth_failed: 'Service de comptes indisponible. Réessayez.',
+          };
+          showToast(map[res.error] || ('Erreur compte' + (res.error?' ('+res.error+')':'')), true);
+          return;
+        }
+        if(res.uid) update.uid = res.uid;
+      } catch(e) { showToast('Erreur réseau lors de la mise à jour du compte', true); return; }
+    }
     // Conversion en partenaire : marquer le type. On a besoin de l'UID Firebase
-    // du compte pour poser le rôle dans /roles.
-    let partnerUid = compte.uid || null;
+    // du compte pour poser le rôle dans /roles. On utilise en priorité l'UID
+    // que le worker vient de renvoyer (update.uid, cas création/MAJ via le
+    // worker ci-dessus) — sinon celui déjà connu sur la fiche.
+    let partnerUid = update.uid || compte.uid || null;
     if(estPartenaire) {
       update.type = 'partner';
       // Si l'UID n'est pas connu, tenter de le récupérer via l'email + mot de passe
@@ -16394,6 +16748,10 @@ window.saveClientAccount=async function(){
       if(partnerUid) {
         const ok = await fbSetRole(partnerUid, 'partenaire');
         if(!ok) roleMsg = ' — mais le rôle n\'a pas pu être attribué (voir message ci-dessus)';
+        // Enregistrer la société de ce partenaire (utilisée par les règles
+        // Firebase pour que TOUS les comptes d'une même société voient les
+        // mêmes courses, pas seulement celles créées par ce compte précis).
+        try { await fbSetPartnerSociety(partnerUid, societe); } catch(e){}
       } else {
         roleMsg = ' — UID introuvable : entrez le mot de passe du partenaire pour lier son compte, ou attribuez le rôle à la main dans la console';
       }
@@ -16445,6 +16803,7 @@ window.saveClientAccount=async function(){
     let roleOk = true;
     if(estPartenaire && partnerUid) {
       roleOk = await fbSetRole(partnerUid, 'partenaire');
+      try { await fbSetPartnerSociety(partnerUid, societe); } catch(e){}
     }
     closeMo('client-account');await loadAll();
     if(estPartenaire && !partnerUid) {
@@ -17659,12 +18018,52 @@ function shouldSyncToLogipax(course, action) {
 
 // Envoie une course à LogiPax (création ou mise à jour de statut).
 // Ne bloque jamais l'app : les erreurs sont silencieuses (loggées en console).
+// Relance les synchronisations LogiPax qui ont échoué (panne LogiPax, 502,
+// timeout…). Les courses concernées portent logipaxARelancer: true. À lancer
+// quand LogiPax est revenu en ligne — aucune course n'est perdue entre-temps.
+window.relancerSyncLogipax = async function() {
+  if(!SESSION || (SESSION.role !== 'admin' && SESSION.role !== 'dispatch')) {
+    showToast('Réservé à l\'admin / dispatch', true); return;
+  }
+  const aRelancer = (D.courses||[]).filter(c => c.logipaxARelancer === true || (c.logipaxSynced === false && c.logipaxErreur));
+  if(!aRelancer.length) { showToast('Aucune synchronisation LogiPax en attente ✓'); return; }
+  showToast(aRelancer.length + ' course(s) à resynchroniser — en cours...');
+  let ok = 0, ko = 0;
+  for(const c of aRelancer) {
+    try {
+      await syncToLogipax(c, c.logipaxNumBon ? 'update' : 'insert');
+      // syncToLogipax remet logipaxSynced à true en cas de succès : on relit
+      // la course pour savoir si ça a réellement passé cette fois.
+      const fresh = (D.courses||[]).find(x => x._id === c._id);
+      if(fresh && fresh.logipaxSynced === true) { ok++; try { await fbUpdate('courses', c._id, { logipaxARelancer: null }); } catch(e){} }
+      else ko++;
+    } catch(e) { ko++; }
+  }
+  await loadAll();
+  showToast('LogiPax : ' + ok + ' resynchronisée(s)' + (ko ? ' · ' + ko + ' encore en échec' : ''), ko > 0);
+};
+
+// Synchronisation vers LogiPax — VOLONTAIREMENT NON BLOQUANTE.
+// LogiPax est un service externe : quand il tombe (HTTP 502, 504, timeout),
+// MOBILEA doit continuer à fonctionner normalement. Un chauffeur doit pouvoir
+// accepter sa course et faire son transfert même si LogiPax est injoignable.
+// La course est alors marquée "à resynchroniser" (logipaxSynced: false) et le
+// staff peut relancer la synchro plus tard depuis l'admin.
 async function syncToLogipax(course, action) {
   if(!shouldSyncToLogipax(course, action)) return;
   if(!LOGIPAX_SYNC_URL || LOGIPAX_SYNC_URL.includes('XXXX')) return; // non configuré
+  // Les erreurs LogiPax ne concernent que le staff : un chauffeur n'y peut
+  // rien et ne doit pas être alarmé en pleine course.
+  const estStaff = SESSION && (SESSION.role === 'admin' || SESSION.role === 'dispatch');
+  const alerteStaff = (msg) => { if(estStaff && typeof showToast === 'function') showToast(msg, true); };
+  // Timeout : sans lui, un LogiPax en panne peut laisser la requête suspendue
+  // et figer le parcours du chauffeur.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
   try {
     const r = await fetch(LOGIPAX_SYNC_URL, {
       method: 'POST',
+      signal: ctrl.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action: action || 'update',
@@ -17704,8 +18103,8 @@ async function syncToLogipax(course, action) {
     if(!r.ok) {
       const txt = await r.text();
       console.error('LogiPax HTTP ' + r.status + ':', txt.slice(0,400));
-      if(course._id) { try { await fbUpdate('courses', course._id, { logipaxErreur: 'HTTP '+r.status, logipaxSynced: false }); } catch(e){} }
-      showToast('LogiPax : echec HTTP '+r.status, true);
+      if(course._id) { try { await fbUpdate('courses', course._id, { logipaxErreur: 'HTTP '+r.status, logipaxSynced: false, logipaxARelancer: true }); } catch(e){} }
+      alerteStaff('LogiPax indisponible (HTTP '+r.status+') — course enregistrée, à resynchroniser');
       return;
     }
 
@@ -17722,12 +18121,18 @@ async function syncToLogipax(course, action) {
       console.log('LogiPax sync ('+action+'): OK', res);
     } else {
       console.error('LogiPax refus:', res);
-      if(course._id) { try { await fbUpdate('courses', course._id, { logipaxErreur: JSON.stringify(res).slice(0,200), logipaxSynced: false }); } catch(e){} }
-      showToast('LogiPax : ' + (res.error || 'refus'), true);
+      if(course._id) { try { await fbUpdate('courses', course._id, { logipaxErreur: JSON.stringify(res).slice(0,200), logipaxSynced: false, logipaxARelancer: true }); } catch(e){} }
+      alerteStaff('LogiPax : ' + (res.error || 'refus') + ' — course enregistrée, à resynchroniser');
     }
   } catch(e) {
-    console.warn('LogiPax sync erreur:', e);
-    if(course._id) { try { await fbUpdate('courses', course._id, { logipaxErreur: String(e).slice(0,200), logipaxSynced: false }); } catch(e2){} }
+    // Timeout, réseau coupé, LogiPax injoignable : on trace, on marque la
+    // course à resynchroniser, et SURTOUT on ne propage pas l'erreur — le
+    // parcours du chauffeur/dispatch continue normalement.
+    const estTimeout = e && (e.name === 'AbortError');
+    console.warn('LogiPax sync ' + (estTimeout ? 'timeout' : 'erreur') + ':', e);
+    if(course._id) { try { await fbUpdate('courses', course._id, { logipaxErreur: (estTimeout?'timeout':String(e).slice(0,200)), logipaxSynced: false, logipaxARelancer: true }); } catch(e2){} }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -19025,13 +19430,18 @@ window.importExcel = async function(input) {
         const terminaux = [...terminals].join('-');
         const ref = g.course ? `${to_}/${vehL}/D${g.course}` : `${to_}/${vehL}/D${count+1}`;
 
+        // Calcul automatique du prix (grille de zones + supplément terminal,
+        // sinon tarif simple), pour ne pas dépendre du bouton "Analyser".
+        const prixAuto = await calculerPrixAutoImport('DUEMEA', from_, to_, veh, terminaux);
+
         await fbPush('courses', {
           type:'transfert',
           client: 'DUEMEA',
           datetime, depart: from_, arrivee: to_,
           vehicule: veh, pax: passagers.length,
           passagers, ref, terminaux,
-          prix: 0,               // laissé à la grille tarifaire Deloitte (à appliquer)
+          prix: prixAuto?.client || 0,
+          prixChauffeur: prixAuto?.chauffeur || 0,
           codeTarif: cTarif>=0 ? (r0[cTarif]||'').toString().trim() : '',
           statut: 'nouvelle',
           source: 'import_excel_arrivees',
@@ -19127,13 +19537,18 @@ window.importExcel = async function(input) {
         const terminaux = [...terminals].join('-');
         const ref = g.course ? `${from_}/${vehL}/D${g.course}` : `${from_}/${vehL}/D${count+1}`;
 
+        // Calcul automatique du prix — inutile si la destination n'est pas
+        // encore connue ("NO INFO"), le dispatch complètera manuellement.
+        const prixAuto = destInconnue ? null : await calculerPrixAutoImport('DUEMEA', from_, to_, veh, terminaux);
+
         await fbPush('courses', {
           type:'transfert',
           client: 'DUEMEA',
           datetime, depart: from_, arrivee: to_,
           vehicule: veh, pax: passagers.length,
           passagers, ref, terminaux,
-          prix: 0,               // laissé à la grille tarifaire Deloitte (à appliquer)
+          prix: prixAuto?.client || 0,
+          prixChauffeur: prixAuto?.chauffeur || 0,
           codeTarif: cTarif>=0 ? (r0[cTarif]||'').toString().trim() : '',
           statut: 'nouvelle',
           source: 'import_excel_departs',
