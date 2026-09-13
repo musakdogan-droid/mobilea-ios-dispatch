@@ -6399,7 +6399,17 @@ window.saveCourseGoogle = async function(id) {
   if(_ov) _ov.remove();
   // Fermer aussi la modale de course standard si c'est elle qui est ouverte.
   try { if(typeof closeMo === 'function') closeMo('course'); } catch(e){}
-  await loadAll();
+  // Mettre à jour l'objet en mémoire tout de suite, pour que renderAll affiche
+  // la course modifiée sans attendre l'écoute temps réel (évite le clignotement).
+  try {
+    const idx = (D.courses||[]).findIndex(x => x._id === id);
+    if(idx >= 0) D.courses[idx] = { ...D.courses[idx], ...maj };
+  } catch(e){}
+  // Rendu immédiat depuis les données déjà en mémoire (l'écoute temps réel a
+  // déjà, ou va, mettre à jour D.courses). On évite un await loadAll() complet
+  // qui, en se télescopant avec l'écoute, faisait "clignoter" la liste (tout
+  // disparaît puis revient). renderAll rafraîchit l'affichage sans vider.
+  try { renderAll(); } catch(e){}
   showToast('✓ Course mise à jour');
 };
 
@@ -6633,7 +6643,15 @@ window.doAssign = async function() {
 };
 
 async function _doAssignForce(id, drv, c) {
-  await fbUpdate('courses', id, {chauffeur:drv, chauffeurUid:chauffeurUidByName(drv), chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()});
+  const _uidDrv = chauffeurUidByName(drv);
+  const _majCourse = {chauffeur:drv, chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()};
+  if(_uidDrv) _majCourse.chauffeurUid = _uidDrv;
+  await fbUpdate('courses', id, _majCourse);
+  // Sécurité : sans chauffeurUid, le chauffeur recevra "Permission denied" en
+  // voulant accepter/démarrer. On prévient le staff tout de suite.
+  if(!_uidDrv && typeof showToast === 'function') {
+    showToast('⚠️ ' + drv + ' n\'a pas de compte connecté : il ne pourra pas accepter. Créez/ouvrez sa fiche avec un mot de passe.', true);
+  }
   try { await attachVehicleToCourse(id, drv); } catch(e){ console.warn('attachVehicle:', e); }
   // Envoyer le chauffeur + véhicule à LogiPax (relit la course à jour)
   try {
@@ -13778,7 +13796,15 @@ window.assignAgendaGroupe = async function() {
   if(!ids.length){showToast('Sélectionner au moins une course',true);return;}
   showToast(`Assignation de ${ids.length} course(s)...`);
   for(const id of ids) {
-    await fbUpdate('courses', id, {chauffeur:drv, chauffeurUid:chauffeurUidByName(drv), chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()});
+    const _uidDrv = chauffeurUidByName(drv);
+  const _majCourse = {chauffeur:drv, chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()};
+  if(_uidDrv) _majCourse.chauffeurUid = _uidDrv;
+  await fbUpdate('courses', id, _majCourse);
+  // Sécurité : sans chauffeurUid, le chauffeur recevra "Permission denied" en
+  // voulant accepter/démarrer. On prévient le staff tout de suite.
+  if(!_uidDrv && typeof showToast === 'function') {
+    showToast('⚠️ ' + drv + ' n\'a pas de compte connecté : il ne pourra pas accepter. Créez/ouvrez sa fiche avec un mot de passe.', true);
+  }
     await attachVehicleToCourse(id, drv);
   }
   // Envoyer chauffeur + véhicule à LogiPax pour chaque course assignée
@@ -17706,6 +17732,21 @@ window.driverUpd = async function(id, statut, note) {
     const ts = new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Paris'});
     update.notes = existing ? existing+'\n'+ts+' — '+note.trim() : ts+' — '+note.trim();
   }
+  // AUTO-RÉPARATION anti "Permission denied" : si la course est bien à ce
+  // chauffeur (même nom) mais que chauffeurUid manque ou ne correspond pas à
+  // son UID Firebase, l'écriture serait refusée par les règles. On pose donc
+  // son propre UID sur la course avant de changer le statut. Cas typique :
+  // course assignée (ou importée de LogiPax) avant que le chauffeur ait un UID.
+  try {
+    const cc = D.courses.find(x=>x._id===id);
+    const monUid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || null;
+    if(cc && monUid && cc.chauffeurUid !== monUid) {
+      const memeChauffeur = (cc.chauffeur||'').trim() === (SESSION.name||'').trim()
+        || cc.chauffeurId === SESSION.chauffeurId;
+      if(memeChauffeur) update.chauffeurUid = monUid;
+    }
+  } catch(e){}
+
   const ok = await fbUpdate('courses', id, update);
   if(statut) await addLog(`${E(SESSION.name)} → ${statut}${note?' ('+note+')':''}`);
   // Synchroniser le changement de statut vers LogiPax (Deloitte / Magical Shuttle)
@@ -18907,7 +18948,15 @@ async function assignGroupe() {
   if(!ids.length) { showToast('Sélectionner au moins une course', true); return; }
   showToast(`Assignation de ${ids.length} course(s)...`);
   for(const id of ids) {
-    await fbUpdate('courses', id, {chauffeur:drv, chauffeurUid:chauffeurUidByName(drv), chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()});
+    const _uidDrv = chauffeurUidByName(drv);
+  const _majCourse = {chauffeur:drv, chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()};
+  if(_uidDrv) _majCourse.chauffeurUid = _uidDrv;
+  await fbUpdate('courses', id, _majCourse);
+  // Sécurité : sans chauffeurUid, le chauffeur recevra "Permission denied" en
+  // voulant accepter/démarrer. On prévient le staff tout de suite.
+  if(!_uidDrv && typeof showToast === 'function') {
+    showToast('⚠️ ' + drv + ' n\'a pas de compte connecté : il ne pourra pas accepter. Créez/ouvrez sa fiche avec un mot de passe.', true);
+  }
     await attachVehicleToCourse(id, drv);
   }
   // Envoyer chauffeur + véhicule à LogiPax pour chaque course assignée
