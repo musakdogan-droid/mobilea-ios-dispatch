@@ -4998,23 +4998,36 @@ async function sendPushNotification(title, message, url, targetChauffeurIds, tar
   // On neutralise l'ancienne URL web qui traine dans de nombreux appels :
   // sur l'app native elle ouvrirait Safari au lieu de l'application.
   if(url && /musakdogan-droid\.github\.io/.test(url)) url = null;
-  try {
-    await fetch(ONESIGNAL_PROXY, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        message,
-        // Pas d'URL web par defaut : sur l'app native, une URL ouvrirait Safari
-        // au lieu de l'app. Sans URL, le tap ouvre directement l'application.
-        url: url || null,
-        targetChauffeurIds: (targetChauffeurIds && targetChauffeurIds.length) ? targetChauffeurIds : null,
-        targetTag: targetTag || null
-      })
-    });
-  } catch(e) {
-    console.log('Notification non envoyée:', e);
+  const _payload = JSON.stringify({
+    title,
+    message,
+    // Pas d'URL web par defaut : sur l'app native, une URL ouvrirait Safari
+    // au lieu de l'app. Sans URL, le tap ouvre directement l'application.
+    url: url || null,
+    targetChauffeurIds: (targetChauffeurIds && targetChauffeurIds.length) ? targetChauffeurIds : null,
+    targetTag: targetTag || null
+  });
+  // Sécurité : on réessaie jusqu'à 3 fois en cas d'échec réseau ou de réponse
+  // non-OK du proxy, pour éviter qu'une notif se perde silencieusement.
+  const _MAX = 3;
+  for(let _try = 1; _try <= _MAX; _try++) {
+    try {
+      const res = await fetch(ONESIGNAL_PROXY, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: _payload
+      });
+      if(res && res.ok) return true;               // envoi confirmé
+      console.warn('Notif : réponse proxy non-OK (tentative '+_try+'/'+_MAX+') statut', res && res.status);
+    } catch(e) {
+      console.warn('Notif : échec réseau (tentative '+_try+'/'+_MAX+') :', e);
+    }
+    if(_try < _MAX) await new Promise(r => setTimeout(r, 800 * _try)); // pause croissante
   }
+  // Échec après toutes les tentatives : on prévient l'utilisateur au lieu de rester muet.
+  console.error('Notification NON envoyée après '+_MAX+' tentatives :', title);
+  try { if(typeof showToast === 'function') showToast('⚠️ Notification non envoyée au chauffeur — réessayez', true); } catch(_){}
+  return false;
 }
 
 // Notifier tout le staff (admin + dispatch) — ex: nouvelle réservation client.
