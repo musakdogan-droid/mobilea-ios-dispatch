@@ -3222,6 +3222,10 @@ async function handleCoursesSnapshot(courses) {
         const meCh = (D.chauffeurs||[]).find(x => (x.prenom + (x.nom?' '+x.nom:'')) === SESSION.name);
         if(meCh) SESSION.chauffeurId = meCh._id;
       }
+      // On garde TOUJOURS la liste complète à jour (offres + statuts), sinon les
+      // offres et les changements de statut ne s'affichent pas correctement.
+      D.courses = courses;
+
       // Une offre urgente m'est-elle proposée à l'instant ?
       const monOffre = courses.find(c =>
         c.statut === 'offre_en_cours' &&
@@ -3230,20 +3234,32 @@ async function handleCoursesSnapshot(courses) {
       );
       if(monOffre) showOfferModal(monOffre);
 
-      // Nouveaux transferts qui me sont assignés
+      // Mes courses actives (non terminées)
       const myCourses = courses.filter(c =>
         courseEstAuChauffeur(c) &&
         !['terminee','annulee','noshow','payee'].includes(c.statut)
       );
+      // Offres visibles pour moi (à prendre) — pour détecter leur disparition
+      const offresVisibles = courses.filter(c =>
+        (c.statut === 'offre_ouverte' || c.statut === 'offre_prioritaire') && !c.chauffeur
+      );
+      // Signature = id:statut de mes courses + des offres. Change dès qu'une
+      // course est ajoutée, retirée, OU change de statut (ex: offre acceptée).
+      const sig = [
+        ...myCourses.map(c => c._id+':'+c.statut),
+        ...offresVisibles.map(c => 'O'+c._id+':'+c.statut)
+      ].sort().join('|');
+
       const currentIds = new Set(myCourses.map(c => c._id));
-      if(window._lastDriverCourseIds == null) {
+      if(window._lastDriverSig == null) {
+        // Premier snapshot : on mémorise, on affiche.
+        window._lastDriverSig = sig;
         window._lastDriverCourseIds = currentIds;
-        D.courses = courses;
         if(typeof renderMesCourses === 'function') renderMesCourses();
       } else {
+        // Nouvelles courses qui me sont attribuées → alerte sonore + notification
         const nouvelles = myCourses.filter(c => !window._lastDriverCourseIds.has(c._id));
         if(nouvelles.length > 0) {
-          D.courses = myCourses.sort((a,b)=> new Date(b.datetime||0) - new Date(a.datetime||0));
           try { playNewCourseAlert(); } catch(e){}
           try {
             showLocalNotification(
@@ -3252,8 +3268,14 @@ async function handleCoursesSnapshot(courses) {
             );
           } catch(e){}
           try { showNewCourseToast(nouvelles[0], nouvelles.length); } catch(e){}
+        }
+        // Rafraîchir l'affichage dès que QUOI QUE CE SOIT a changé (ajout,
+        // retrait, ou changement de statut : offre acceptée par un autre, ma
+        // course qui passe en 'acceptee', etc.).
+        if(sig !== window._lastDriverSig) {
           if(typeof renderMesCourses === 'function') renderMesCourses();
         }
+        window._lastDriverSig = sig;
         window._lastDriverCourseIds = currentIds;
       }
     }
@@ -12401,6 +12423,26 @@ window.confirmerPointage = async function(id, type) {
 // Le chauffeur accepte une réservation ouverte à tous. Le PREMIER qui accepte
 // gagne : on relit la course juste avant d'écrire pour vérifier qu'elle est
 // encore libre. Si un autre chauffeur l'a prise entre-temps, on prévient.
+// Notifie les chauffeurs qu'un transfert leur est proposé.
+//  mode 'prio' -> uniquement les chauffeurs prioritaires (ciblage par leurs _id)
+//  mode 'tous' -> tous les chauffeurs (ciblage par le tag role=chauffeur)
+async function notifierOffre(c, mode) {
+  if(!c) return;
+  const trajet = (c.depart||c.lieu||'') + ' → ' + (c.arrivee||c.duree||'');
+  const quand = c.datetime ? new Date(c.datetime).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
+  const corps = `${c.ref||''}${c.ref?' | ':''}${quand}${quand?' | ':''}${trajet}`.trim();
+  try {
+    if(mode === 'prio') {
+      const prioIds = (D.chauffeurs||[]).filter(ch => ch.prioritaire === true && !ch.archived && !ch.blocked).map(ch=>ch._id).filter(Boolean);
+      if(!prioIds.length) return;
+      await sendPushNotification('⭐ Transfert proposé (prioritaire)', corps, null, prioIds);
+    } else {
+      // Tous les chauffeurs, via le tag role=chauffeur (chaque appareil l'ajoute au login).
+      await sendPushNotification('🙋 Transfert à prendre', corps, null, null, { key:'role', value:'chauffeur' });
+    }
+  } catch(e) { console.warn('notifierOffre:', e); }
+}
+
 // Admin/dispatch : proposer une course UNIQUEMENT aux chauffeurs prioritaires,
 // à l'avance. Contrairement à ouvrirCourseATous, ça ne s'ouvre PAS à tous après
 // un délai — c'est le dispatch qui décide ensuite d'ouvrir à tous s'il le veut.
@@ -12421,6 +12463,7 @@ window.proposerAuxPrioritaires = async function(id) {
   try {
     await fbUpdate('courses', id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
     await addLog(`⭐ Transfert proposé aux prioritaires (à l'avance) : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')} (par ${SESSION.name})`);
+    await notifierOffre(c, 'prio');
     showToast('⭐ Proposé aux chauffeurs prioritaires');
     const ov = document.getElementById('course-edit-ov'); if(ov) ov.remove();
   } catch(e) { showToast('Erreur', true); }
@@ -12455,10 +12498,16 @@ window.proposerJourAuxPrioritaires = async function(dateStr) {
   for(const c of eligibles) {
     try {
       await fbUpdate('courses', c._id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
+      await notifierOffre(c, 'prio');   // notif par course
       ok++;
     } catch(e) {}
   }
   await addLog(`⭐ ${ok} transfert(s) du ${jourLbl} proposé(s) aux prioritaires (envoi groupé par ${SESSION.name})`);
+  // Récap groupé aux prioritaires
+  try {
+    const prioIds = prioritaires.map(ch=>ch._id).filter(Boolean);
+    if(ok>0 && prioIds.length) await sendPushNotification(`⭐ ${ok} transfert(s) à prendre`, `${ok} transfert(s) du ${jourLbl} vous sont proposés en priorité`, null, prioIds);
+  } catch(e){}
   showToast(`⭐ ${ok} transfert(s) proposé(s) aux prioritaires`);
 };
 
@@ -12480,6 +12529,7 @@ window.ouvrirCourseATous = async function(id) {
     try {
       await fbUpdate('courses', id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:expire, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
       await addLog(`⭐ Transfert proposé aux prioritaires : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')} (par ${SESSION.name})`);
+      await notifierOffre(c, 'prio');
       showToast('⭐ Proposé aux chauffeurs prioritaires');
       const ov = document.getElementById('course-edit-ov'); if(ov) ov.remove();
     } catch(e) { showToast('Erreur', true); }
@@ -12489,6 +12539,7 @@ window.ouvrirCourseATous = async function(id) {
     try {
       await fbUpdate('courses', id, { statut:'offre_ouverte', chauffeur:'', offerChauffeurId:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
       await addLog(`🙋 Transfert ouvert à tous : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')} (par ${SESSION.name})`);
+      await notifierOffre(c, 'tous');
       showToast('🙋 Transfert proposé à tous les chauffeurs');
       const ov = document.getElementById('course-edit-ov'); if(ov) ov.remove();
     } catch(e) { showToast('Erreur', true); }
@@ -12505,6 +12556,7 @@ async function verifierOffresPrioritairesExpirees() {
     try {
       await fbUpdate('courses', c._id, { statut:'offre_ouverte', prioritaireExpire:null });
       await addLog(`🙋 Transfert ouvert à tous (délai prioritaire écoulé) : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')}`);
+      await notifierOffre(c, 'tous');
     } catch(e) {}
   }
 }
@@ -12531,6 +12583,13 @@ window.accepterOffreOuverte = async function(id) {
       accepteeLe: new Date().toISOString()
     });
     await addLog(`🙋 ${SESSION.name} a accepté le transfert ouvert : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')}`);
+    // Mise à jour immédiate en mémoire + affichage, sans attendre le snapshot
+    // temps réel (évite l'écran figé où il faut ressortir/rentrer dans l'app).
+    try {
+      const idx = D.courses.findIndex(x=>x._id===id);
+      if(idx>=0) D.courses[idx] = { ...D.courses[idx], chauffeur:SESSION.name, statut:'acceptee', accepteePar:SESSION.name };
+      if(typeof renderMesCourses === 'function') renderMesCourses();
+    } catch(e){}
     showToast('✅ Transfert accepté ! Il est à vous.');
   } catch(e) {
     showToast('Erreur — réessayez', true);
@@ -19020,6 +19079,7 @@ async function proposerSelectionAuxPrioritaires() {
   for(const c of eligibles) {
     try {
       await fbUpdate('courses', c._id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
+      await notifierOffre(c, 'prio');   // notif par course
       ok++;
     } catch(e) {}
   }
