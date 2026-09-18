@@ -627,19 +627,6 @@ tr:last-child td{border-bottom:none}
             </div>
           </div>
 
-          <!-- INTERRUPTEUR SMS AUTOMATIQUES (admin/dispatch) -->
-          <div id="sms-toggle-wrap" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-radius:12px;margin-bottom:16px;background:rgba(34,197,94,0.12);border:1px solid var(--border)">
-            <div>
-              <div id="sms-toggle-label" style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700">🔔 SMS automatiques…</div>
-              <div style="font-size:11px;color:var(--muted);margin-top:2px">Alertes SMS aux chauffeurs. Désactivez en période calme pour économiser.</div>
-            </div>
-            <label style="position:relative;display:inline-block;width:52px;height:30px;flex-shrink:0;cursor:pointer">
-              <input type="checkbox" id="sms-toggle" onchange="toggleSmsAuto(this)" style="opacity:0;width:0;height:0">
-              <span style="position:absolute;inset:0;background:#22c55e;border-radius:30px;transition:0.3s"></span>
-              <span style="position:absolute;left:3px;top:3px;width:24px;height:24px;background:#fff;border-radius:50%;transition:0.3s;box-shadow:0 2px 4px rgba(0,0,0,0.2)" id="sms-toggle-knob"></span>
-            </label>
-          </div>
-
           <!-- Mini calendrier semaine -->
           <div id="agenda-week-strip" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:16px"></div>
 
@@ -1220,6 +1207,20 @@ tr:last-child td{border-bottom:none}
               </div>
               <div style="font-size:11px;color:var(--muted2);margin-bottom:10px">Le dispatch est alerté quand un chauffeur entre dans une zone. Définissez la position, le rayon et le délai.</div>
               <div id="gz-list"></div>
+            </div>
+            <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
+              <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:10px">📩 SMS automatiques</div>
+              <div id="sms-toggle-wrap" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-radius:12px;background:rgba(34,197,94,0.12);border:1px solid var(--border)">
+                <div>
+                  <div id="sms-toggle-label" style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700">🔔 SMS automatiques…</div>
+                  <div style="font-size:11px;color:var(--muted);margin-top:2px">Alertes SMS aux chauffeurs. Désactivez en période calme pour économiser.</div>
+                </div>
+                <label style="position:relative;display:inline-block;width:52px;height:30px;flex-shrink:0;cursor:pointer">
+                  <input type="checkbox" id="sms-toggle" onchange="toggleSmsAuto(this)" style="opacity:0;width:0;height:0">
+                  <span style="position:absolute;inset:0;background:#22c55e;border-radius:30px;transition:0.3s"></span>
+                  <span style="position:absolute;left:3px;top:3px;width:24px;height:24px;background:#fff;border-radius:50%;transition:0.3s;box-shadow:0 2px 4px rgba(0,0,0,0.2)" id="sms-toggle-knob"></span>
+                </label>
+              </div>
             </div>
             <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
               <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:10px">⚡ Réservations immédiates</div>
@@ -3222,10 +3223,6 @@ async function handleCoursesSnapshot(courses) {
         const meCh = (D.chauffeurs||[]).find(x => (x.prenom + (x.nom?' '+x.nom:'')) === SESSION.name);
         if(meCh) SESSION.chauffeurId = meCh._id;
       }
-      // On garde TOUJOURS la liste complète à jour (offres + statuts), sinon les
-      // offres et les changements de statut ne s'affichent pas correctement.
-      D.courses = courses;
-
       // Une offre urgente m'est-elle proposée à l'instant ?
       const monOffre = courses.find(c =>
         c.statut === 'offre_en_cours' &&
@@ -3234,32 +3231,20 @@ async function handleCoursesSnapshot(courses) {
       );
       if(monOffre) showOfferModal(monOffre);
 
-      // Mes courses actives (non terminées)
+      // Nouveaux transferts qui me sont assignés
       const myCourses = courses.filter(c =>
         courseEstAuChauffeur(c) &&
         !['terminee','annulee','noshow','payee'].includes(c.statut)
       );
-      // Offres visibles pour moi (à prendre) — pour détecter leur disparition
-      const offresVisibles = courses.filter(c =>
-        (c.statut === 'offre_ouverte' || c.statut === 'offre_prioritaire') && !c.chauffeur
-      );
-      // Signature = id:statut de mes courses + des offres. Change dès qu'une
-      // course est ajoutée, retirée, OU change de statut (ex: offre acceptée).
-      const sig = [
-        ...myCourses.map(c => c._id+':'+c.statut),
-        ...offresVisibles.map(c => 'O'+c._id+':'+c.statut)
-      ].sort().join('|');
-
       const currentIds = new Set(myCourses.map(c => c._id));
-      if(window._lastDriverSig == null) {
-        // Premier snapshot : on mémorise, on affiche.
-        window._lastDriverSig = sig;
+      if(window._lastDriverCourseIds == null) {
         window._lastDriverCourseIds = currentIds;
+        D.courses = courses;
         if(typeof renderMesCourses === 'function') renderMesCourses();
       } else {
-        // Nouvelles courses qui me sont attribuées → alerte sonore + notification
         const nouvelles = myCourses.filter(c => !window._lastDriverCourseIds.has(c._id));
         if(nouvelles.length > 0) {
+          D.courses = myCourses.sort((a,b)=> new Date(b.datetime||0) - new Date(a.datetime||0));
           try { playNewCourseAlert(); } catch(e){}
           try {
             showLocalNotification(
@@ -3268,14 +3253,8 @@ async function handleCoursesSnapshot(courses) {
             );
           } catch(e){}
           try { showNewCourseToast(nouvelles[0], nouvelles.length); } catch(e){}
-        }
-        // Rafraîchir l'affichage dès que QUOI QUE CE SOIT a changé (ajout,
-        // retrait, ou changement de statut : offre acceptée par un autre, ma
-        // course qui passe en 'acceptee', etc.).
-        if(sig !== window._lastDriverSig) {
           if(typeof renderMesCourses === 'function') renderMesCourses();
         }
-        window._lastDriverSig = sig;
         window._lastDriverCourseIds = currentIds;
       }
     }
@@ -4010,25 +3989,34 @@ async function loadAll() {
   }
 }
 
+// Affiche une notification système fiable, y compris dans l'app installée.
+// Sur iOS/Android en mode standalone, « new Notification() » est ignoré : seul
+// le Service Worker (registration.showNotification) peut afficher la notif.
+// On privilégie donc le SW, avec repli sur new Notification() sur navigateur.
+function afficherNotifZone(titre, corps) {
+  try {
+    if(!('Notification' in window) || Notification.permission !== 'granted') return;
+    var opts = { body: corps, icon: '/icons/chauffeur-192.png', badge: '/icons/chauffeur-192.png', tag: 'zone-alerte', renotify: true, vibrate: [120,60,120] };
+    if(navigator.serviceWorker && navigator.serviceWorker.ready) {
+      navigator.serviceWorker.ready.then(function(reg){
+        try { reg.showNotification(titre, opts); }
+        catch(e){ try { new Notification(titre, opts); } catch(_){} }
+      }).catch(function(){ try { new Notification(titre, opts); } catch(_){} });
+    } else {
+      try { new Notification(titre, opts); } catch(e){}
+    }
+  } catch(e){}
+}
+
 // Bandeau d'alerte (admin/dispatch) : chauffeurs entrés dans la zone 7 km.
 // Affiche un bandeau flottant + déclenche une notification push une fois.
 function renderAlertesZone() {
   if(!SESSION || (SESSION.role !== 'admin' && SESSION.role !== 'dispatch')) return;
   const enZone = (D.chauffeurs||[]).filter(c => c.dansZoneAlerte === true && c.zoneAlerte);
-  let bar = document.getElementById('zone-alerte-bar');
-  if(!enZone.length) { if(bar) bar.remove(); return; }
-  if(!bar) {
-    bar = document.createElement('div');
-    bar.id = 'zone-alerte-bar';
-    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9998;background:#c8a96e;color:#111;padding:10px 14px;font:600 13px/1.4 "DM Sans",system-ui;box-shadow:0 2px 12px rgba(0,0,0,.25);text-align:center';
-    document.body.appendChild(bar);
-  }
-  bar.innerHTML = enZone.map(c => {
-    const nom = (c.prenom||'')+(c.nom?' '+c.nom:'');
-    const eta = c.zoneAlerte.etaMin;
-    const zn = c.zoneAlerte.zoneNom ? ' (' + E(c.zoneAlerte.zoneNom) + ')' : '';
-    return `🚗 <strong>${E(nom)}</strong> entre dans la zone${zn} — arrive dans ~${eta} min <span style="opacity:.7">(${c.zoneAlerte.dist} km)</span>`;
-  }).join(' &nbsp;•&nbsp; ') + ` <span onclick="document.getElementById('zone-alerte-bar').remove()" style="cursor:pointer;margin-left:10px;font-weight:800">✕</span>`;
+  // Bandeau visuel retiré : on ne garde que la notification système.
+  var _oldBar = document.getElementById('zone-alerte-bar');
+  if(_oldBar) _oldBar.remove();
+  if(!enZone.length) return;
 
   // Notification push (une fois par chauffeur/entrée) via OneSignal si présent.
   enZone.forEach(c => {
@@ -4037,21 +4025,7 @@ function renderAlertesZone() {
       window[key] = true;
       const nom = (c.prenom||'')+(c.nom?' '+c.nom:'');
       try {
-        if(window.OneSignalDeferred) {
-          OneSignalDeferred.push(function(OneSignal){
-            // Notification locale au poste dispatch (navigateur).
-            if(Notification && Notification.permission === 'granted') {
-              new Notification('MOBILEA — Chauffeur en approche', {
-                body: nom + ' entre dans la zone — arrive dans ~' + c.zoneAlerte.etaMin + ' min',
-                icon: '/icons/chauffeur-192.png'
-              });
-            }
-          });
-        } else if(window.Notification && Notification.permission === 'granted') {
-          new Notification('MOBILEA — Chauffeur en approche', {
-            body: nom + ' entre dans la zone — arrive dans ~' + c.zoneAlerte.etaMin + ' min'
-          });
-        }
+        afficherNotifZone('MOBILEA — Chauffeur en approche', nom + ' entre dans la zone — arrive dans ~' + c.zoneAlerte.etaMin + ' min');
       } catch(e){}
     }
   });
@@ -5020,36 +4994,23 @@ async function sendPushNotification(title, message, url, targetChauffeurIds, tar
   // On neutralise l'ancienne URL web qui traine dans de nombreux appels :
   // sur l'app native elle ouvrirait Safari au lieu de l'application.
   if(url && /musakdogan-droid\.github\.io/.test(url)) url = null;
-  const _payload = JSON.stringify({
-    title,
-    message,
-    // Pas d'URL web par defaut : sur l'app native, une URL ouvrirait Safari
-    // au lieu de l'app. Sans URL, le tap ouvre directement l'application.
-    url: url || null,
-    targetChauffeurIds: (targetChauffeurIds && targetChauffeurIds.length) ? targetChauffeurIds : null,
-    targetTag: targetTag || null
-  });
-  // Sécurité : on réessaie jusqu'à 3 fois en cas d'échec réseau ou de réponse
-  // non-OK du proxy, pour éviter qu'une notif se perde silencieusement.
-  const _MAX = 3;
-  for(let _try = 1; _try <= _MAX; _try++) {
-    try {
-      const res = await fetch(ONESIGNAL_PROXY, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: _payload
-      });
-      if(res && res.ok) return true;               // envoi confirmé
-      console.warn('Notif : réponse proxy non-OK (tentative '+_try+'/'+_MAX+') statut', res && res.status);
-    } catch(e) {
-      console.warn('Notif : échec réseau (tentative '+_try+'/'+_MAX+') :', e);
-    }
-    if(_try < _MAX) await new Promise(r => setTimeout(r, 800 * _try)); // pause croissante
+  try {
+    await fetch(ONESIGNAL_PROXY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        message,
+        // Pas d'URL web par defaut : sur l'app native, une URL ouvrirait Safari
+        // au lieu de l'app. Sans URL, le tap ouvre directement l'application.
+        url: url || null,
+        targetChauffeurIds: (targetChauffeurIds && targetChauffeurIds.length) ? targetChauffeurIds : null,
+        targetTag: targetTag || null
+      })
+    });
+  } catch(e) {
+    console.log('Notification non envoyée:', e);
   }
-  // Échec après toutes les tentatives : on prévient l'utilisateur au lieu de rester muet.
-  console.error('Notification NON envoyée après '+_MAX+' tentatives :', title);
-  try { if(typeof showToast === 'function') showToast('⚠️ Notification non envoyée au chauffeur — réessayez', true); } catch(_){}
-  return false;
 }
 
 // Notifier tout le staff (admin + dispatch) — ex: nouvelle réservation client.
@@ -6679,9 +6640,7 @@ window.doAssign = async function() {
 
 async function _doAssignForce(id, drv, c) {
   const _uidDrv = chauffeurUidByName(drv);
-  const _majCourse = {chauffeur:drv, chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()};
-  if(_uidDrv) _majCourse.chauffeurUid = _uidDrv;
-  await fbUpdate('courses', id, _majCourse);
+  await fbUpdate('courses', id, {chauffeur:drv, chauffeurUid:_uidDrv||null, chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()});
   // Sécurité : sans chauffeurUid, le chauffeur recevra "Permission denied" en
   // voulant accepter/démarrer. On prévient le staff tout de suite.
   if(!_uidDrv && typeof showToast === 'function') {
@@ -12423,26 +12382,6 @@ window.confirmerPointage = async function(id, type) {
 // Le chauffeur accepte une réservation ouverte à tous. Le PREMIER qui accepte
 // gagne : on relit la course juste avant d'écrire pour vérifier qu'elle est
 // encore libre. Si un autre chauffeur l'a prise entre-temps, on prévient.
-// Notifie les chauffeurs qu'un transfert leur est proposé.
-//  mode 'prio' -> uniquement les chauffeurs prioritaires (ciblage par leurs _id)
-//  mode 'tous' -> tous les chauffeurs (ciblage par le tag role=chauffeur)
-async function notifierOffre(c, mode) {
-  if(!c) return;
-  const trajet = (c.depart||c.lieu||'') + ' → ' + (c.arrivee||c.duree||'');
-  const quand = c.datetime ? new Date(c.datetime).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
-  const corps = `${c.ref||''}${c.ref?' | ':''}${quand}${quand?' | ':''}${trajet}`.trim();
-  try {
-    if(mode === 'prio') {
-      const prioIds = (D.chauffeurs||[]).filter(ch => ch.prioritaire === true && !ch.archived && !ch.blocked).map(ch=>ch._id).filter(Boolean);
-      if(!prioIds.length) return;
-      await sendPushNotification('⭐ Transfert proposé (prioritaire)', corps, null, prioIds);
-    } else {
-      // Tous les chauffeurs, via le tag role=chauffeur (chaque appareil l'ajoute au login).
-      await sendPushNotification('🙋 Transfert à prendre', corps, null, null, { key:'role', value:'chauffeur' });
-    }
-  } catch(e) { console.warn('notifierOffre:', e); }
-}
-
 // Admin/dispatch : proposer une course UNIQUEMENT aux chauffeurs prioritaires,
 // à l'avance. Contrairement à ouvrirCourseATous, ça ne s'ouvre PAS à tous après
 // un délai — c'est le dispatch qui décide ensuite d'ouvrir à tous s'il le veut.
@@ -12463,7 +12402,6 @@ window.proposerAuxPrioritaires = async function(id) {
   try {
     await fbUpdate('courses', id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
     await addLog(`⭐ Transfert proposé aux prioritaires (à l'avance) : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')} (par ${SESSION.name})`);
-    await notifierOffre(c, 'prio');
     showToast('⭐ Proposé aux chauffeurs prioritaires');
     const ov = document.getElementById('course-edit-ov'); if(ov) ov.remove();
   } catch(e) { showToast('Erreur', true); }
@@ -12498,16 +12436,10 @@ window.proposerJourAuxPrioritaires = async function(dateStr) {
   for(const c of eligibles) {
     try {
       await fbUpdate('courses', c._id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
-      await notifierOffre(c, 'prio');   // notif par course
       ok++;
     } catch(e) {}
   }
   await addLog(`⭐ ${ok} transfert(s) du ${jourLbl} proposé(s) aux prioritaires (envoi groupé par ${SESSION.name})`);
-  // Récap groupé aux prioritaires
-  try {
-    const prioIds = prioritaires.map(ch=>ch._id).filter(Boolean);
-    if(ok>0 && prioIds.length) await sendPushNotification(`⭐ ${ok} transfert(s) à prendre`, `${ok} transfert(s) du ${jourLbl} vous sont proposés en priorité`, null, prioIds);
-  } catch(e){}
   showToast(`⭐ ${ok} transfert(s) proposé(s) aux prioritaires`);
 };
 
@@ -12529,7 +12461,6 @@ window.ouvrirCourseATous = async function(id) {
     try {
       await fbUpdate('courses', id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:expire, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
       await addLog(`⭐ Transfert proposé aux prioritaires : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')} (par ${SESSION.name})`);
-      await notifierOffre(c, 'prio');
       showToast('⭐ Proposé aux chauffeurs prioritaires');
       const ov = document.getElementById('course-edit-ov'); if(ov) ov.remove();
     } catch(e) { showToast('Erreur', true); }
@@ -12539,7 +12470,6 @@ window.ouvrirCourseATous = async function(id) {
     try {
       await fbUpdate('courses', id, { statut:'offre_ouverte', chauffeur:'', offerChauffeurId:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
       await addLog(`🙋 Transfert ouvert à tous : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')} (par ${SESSION.name})`);
-      await notifierOffre(c, 'tous');
       showToast('🙋 Transfert proposé à tous les chauffeurs');
       const ov = document.getElementById('course-edit-ov'); if(ov) ov.remove();
     } catch(e) { showToast('Erreur', true); }
@@ -12556,7 +12486,6 @@ async function verifierOffresPrioritairesExpirees() {
     try {
       await fbUpdate('courses', c._id, { statut:'offre_ouverte', prioritaireExpire:null });
       await addLog(`🙋 Transfert ouvert à tous (délai prioritaire écoulé) : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')}`);
-      await notifierOffre(c, 'tous');
     } catch(e) {}
   }
 }
@@ -12583,13 +12512,6 @@ window.accepterOffreOuverte = async function(id) {
       accepteeLe: new Date().toISOString()
     });
     await addLog(`🙋 ${SESSION.name} a accepté le transfert ouvert : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')}`);
-    // Mise à jour immédiate en mémoire + affichage, sans attendre le snapshot
-    // temps réel (évite l'écran figé où il faut ressortir/rentrer dans l'app).
-    try {
-      const idx = D.courses.findIndex(x=>x._id===id);
-      if(idx>=0) D.courses[idx] = { ...D.courses[idx], chauffeur:SESSION.name, statut:'acceptee', accepteePar:SESSION.name };
-      if(typeof renderMesCourses === 'function') renderMesCourses();
-    } catch(e){}
     showToast('✅ Transfert accepté ! Il est à vous.');
   } catch(e) {
     showToast('Erreur — réessayez', true);
@@ -13869,9 +13791,7 @@ window.assignAgendaGroupe = async function() {
   showToast(`Assignation de ${ids.length} course(s)...`);
   for(const id of ids) {
     const _uidDrv = chauffeurUidByName(drv);
-  const _majCourse = {chauffeur:drv, chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()};
-  if(_uidDrv) _majCourse.chauffeurUid = _uidDrv;
-  await fbUpdate('courses', id, _majCourse);
+  await fbUpdate('courses', id, {chauffeur:drv, chauffeurUid:_uidDrv||null, chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()});
   // Sécurité : sans chauffeurUid, le chauffeur recevra "Permission denied" en
   // voulant accepter/démarrer. On prévient le staff tout de suite.
   if(!_uidDrv && typeof showToast === 'function') {
@@ -16602,7 +16522,7 @@ window.refreshClientMap = function() {
   // On utilise la MÊME logique de correspondance élargie que le portail
   // (société, nom, identifiant de compte) — sinon les partenaires dont le nom
   // de société ne correspondait pas exactement ne voyaient jamais la carte.
-  const trackingStatuses = ['en_route','sur_place','onboard'];
+  const trackingStatuses = ['acceptee','en_route','sur_place','onboard'];
   const matchesClient = (c) => {
     if(c.clientUser && SESSION.clientUser && c.clientUser===SESSION.clientUser) return true;
     const cn=(c.client||'').trim().toUpperCase();
@@ -19021,9 +18941,7 @@ async function assignGroupe() {
   showToast(`Assignation de ${ids.length} course(s)...`);
   for(const id of ids) {
     const _uidDrv = chauffeurUidByName(drv);
-  const _majCourse = {chauffeur:drv, chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()};
-  if(_uidDrv) _majCourse.chauffeurUid = _uidDrv;
-  await fbUpdate('courses', id, _majCourse);
+  await fbUpdate('courses', id, {chauffeur:drv, chauffeurUid:_uidDrv||null, chauffeurId:chauffeurIdByName(drv), statut:'attribuee', updatedAt:new Date().toISOString()});
   // Sécurité : sans chauffeurUid, le chauffeur recevra "Permission denied" en
   // voulant accepter/démarrer. On prévient le staff tout de suite.
   if(!_uidDrv && typeof showToast === 'function') {
@@ -19079,7 +18997,6 @@ async function proposerSelectionAuxPrioritaires() {
   for(const c of eligibles) {
     try {
       await fbUpdate('courses', c._id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
-      await notifierOffre(c, 'prio');   // notif par course
       ok++;
     } catch(e) {}
   }
