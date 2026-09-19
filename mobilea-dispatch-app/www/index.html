@@ -1209,6 +1209,16 @@ tr:last-child td{border-bottom:none}
               <div id="gz-list"></div>
             </div>
             <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
+              <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:10px">🔔 Notifications</div>
+              <div style="font-size:11px;color:var(--muted2);margin-bottom:10px">Alerte le dispatch quand un chauffeur entre dans une zone. Sur iPhone, l'app doit être ajoutée à l'écran d'accueil et ouverte depuis son icône.</div>
+              <div id="notif-etat" style="font-size:12px;font-weight:600;margin-bottom:10px;color:var(--orange)">…</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button id="notif-activer-btn" class="btn btn-p btn-sm" onclick="activerNotifications()" style="display:none"><i class="fas fa-bell"></i> Activer les notifications</button>
+                <button class="btn btn-s btn-sm" onclick="testerNotification()"><i class="fas fa-vial"></i> Tester</button>
+              </div>
+              <div id="notif-diag" style="display:none;margin-top:10px;font-size:11px;color:var(--muted2);background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;line-height:1.6"></div>
+            </div>
+            <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
               <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:10px">📩 SMS automatiques</div>
               <div id="sms-toggle-wrap" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-radius:12px;background:rgba(34,197,94,0.12);border:1px solid var(--border)">
                 <div>
@@ -3994,9 +4004,13 @@ async function loadAll() {
 // le Service Worker (registration.showNotification) peut afficher la notif.
 // On privilégie donc le SW, avec repli sur new Notification() sur navigateur.
 function afficherNotifZone(titre, corps) {
+  // 1) Alerte VISIBLE dans l'app (indispensable : quand le dispatch a l'app
+  //    ouverte au 1er plan, iOS n'affiche PAS les notifications système).
+  try { if(typeof showToast === 'function') showToast('🚗 ' + corps); } catch(e){}
+  // 2) Notification système (utile quand l'app est en arrière-plan / téléphone verrouillé).
   try {
     if(!('Notification' in window) || Notification.permission !== 'granted') return;
-    var opts = { body: corps, icon: '/icons/chauffeur-192.png', badge: '/icons/chauffeur-192.png', tag: 'zone-alerte', renotify: true, vibrate: [120,60,120] };
+    var opts = { body: corps, icon: '/icons/chauffeur-192.png', badge: '/icons/chauffeur-192.png', tag: 'zone-alerte', renotify: true, requireInteraction: true, vibrate: [120,60,120] };
     if(navigator.serviceWorker && navigator.serviceWorker.ready) {
       navigator.serviceWorker.ready.then(function(reg){
         try { reg.showNotification(titre, opts); }
@@ -4006,6 +4020,56 @@ function afficherNotifZone(titre, corps) {
       try { new Notification(titre, opts); } catch(e){}
     }
   } catch(e){}
+}
+
+// — Notifications : état lisible, activation (geste utilisateur requis sur iOS), test.
+function _notifEtatTexte() {
+  if(!('Notification' in window)) return { ok:false, txt:"❌ Cet appareil ne supporte pas les notifications. Sur iPhone, l'app doit être AJOUTÉE À L'ÉCRAN D'ACCUEIL (Partager → Sur l'écran d'accueil) et ouverte depuis cette icône." };
+  var p = Notification.permission;
+  if(p === 'granted') return { ok:true,  txt:'✅ Notifications autorisées' };
+  if(p === 'denied')  return { ok:false, txt:"❌ Notifications BLOQUÉES pour cette app. Ouvrez Réglages iPhone → (nom de l'app) → Notifications, ou supprimez l'icône de l'écran d'accueil et ré-ajoutez-la, puis réactivez ici." };
+  return { ok:false, txt:'ℹ️ Notifications non encore activées — touchez « Activer ».' };
+}
+function majEtatNotif() {
+  try {
+    var el = document.getElementById('notif-etat'); if(!el) return;
+    var e = _notifEtatTexte();
+    el.textContent = e.txt;
+    el.style.color = e.ok ? 'var(--green)' : 'var(--orange)';
+    var btn = document.getElementById('notif-activer-btn');
+    if(btn) btn.style.display = (('Notification' in window) && Notification.permission === 'default') ? 'inline-flex' : 'none';
+  } catch(e){}
+}
+window.activerNotifications = async function() {
+  if(!('Notification' in window)) { showToast("Cet appareil ne supporte pas les notifications (ajoutez l'app à l'écran d'accueil)", true); return; }
+  try {
+    var p = await Notification.requestPermission();
+    majEtatNotif();
+    if(p === 'granted') { showToast('✅ Notifications activées'); testerNotification(); }
+    else if(p === 'denied') { showToast('Notifications refusées — à réactiver dans les Réglages iPhone', true); }
+  } catch(e){ showToast('Impossible d\'activer les notifications ici', true); }
+};
+window.testerNotification = function() {
+  var diag = [];
+  var support = ('Notification' in window);
+  var standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || (navigator.standalone === true);
+  diag.push('Support notif : ' + (support ? 'oui' : 'NON'));
+  diag.push('Permission : ' + (support ? Notification.permission : 'n/a'));
+  diag.push('App installée (écran d\'accueil) : ' + (standalone ? 'oui' : 'non'));
+  diag.push('Service Worker : ' + (('serviceWorker' in navigator) ? 'oui' : 'NON'));
+  // Toast in-app (marche toujours, app ouverte).
+  try { showToast('🚗 Test : un chauffeur entre dans la zone — arrive dans ~8 min'); } catch(e){}
+  var box = document.getElementById('notif-diag');
+  if(box){ box.style.display='block'; box.textContent = diag.join('  •  '); }
+  if(!support || Notification.permission !== 'granted') { majEtatNotif(); return; }
+  // Notification système de test.
+  try {
+    var opts = { body: 'Ceci est un test. Si vous voyez ceci hors de l\'app, tout fonctionne.', icon: '/icons/chauffeur-192.png', badge: '/icons/chauffeur-192.png', tag: 'notif-test', renotify: true, requireInteraction: false, vibrate: [120,60,120] };
+    if(navigator.serviceWorker && navigator.serviceWorker.ready) {
+      navigator.serviceWorker.ready.then(function(reg){ try { reg.showNotification('MOBILEA — Test notification', opts); } catch(e){ try { new Notification('MOBILEA — Test notification', opts); } catch(_){} } });
+    } else { try { new Notification('MOBILEA — Test notification', opts); } catch(e){} }
+  } catch(e){}
+  setTimeout(majEtatNotif, 300);
 }
 
 // Bandeau d'alerte (admin/dispatch) : chauffeurs entrés dans la zone 7 km.
@@ -4495,6 +4559,21 @@ async function checkGeofenceZone(lat, lng) {
       if(nouvelleAlerte) { patch.zoneAlerte = nouvelleAlerte; patch.dansZoneAlerte = true; }
       else if(Object.values(updates).every(v => v === false)) { patch.dansZoneAlerte = false; }
       await fbUpdate('chauffeurs', moiCh._id, patch);
+      // Notification HORS APP au staff (dispatch/admin) : vraie push OneSignal,
+      // reçue même app fermée / téléphone verrouillé. Déclenchée ici par le
+      // chauffeur (dont l'app tourne en suivi GPS) au moment où il entre en zone.
+      if(nouvelleAlerte) {
+        try {
+          window._zonePushSent = window._zonePushSent || {};
+          var _zkey = (nouvelleAlerte.zoneNom||'') + '_' + moiCh._id;
+          var _now = Date.now();
+          if(!window._zonePushSent[_zkey] || (_now - window._zonePushSent[_zkey]) > 300000) {
+            window._zonePushSent[_zkey] = _now;
+            var _zn = nouvelleAlerte.zoneNom ? ' (' + nouvelleAlerte.zoneNom + ')' : '';
+            notifierStaff('🚗 Chauffeur en approche', nouvelleAlerte.nom + ' entre dans la zone' + _zn + ' — arrive dans ~' + nouvelleAlerte.etaMin + ' min');
+          }
+        } catch(e){}
+      }
     } catch(e){}
   }
 }
@@ -18437,7 +18516,7 @@ function gp(name, btn) {
   if(name==='soustraitants') { setTimeout(()=>{ try{ renderSoustraitants(); }catch(e){} }, 200); }
   if(name==='gerant-chauffeurs') { setTimeout(()=>{ try{ renderGerantChauffeurs(); }catch(e){} }, 200); }
   if(name==='gerant-vehicules') { setTimeout(()=>{ try{ renderGerantVehicules(); }catch(e){} }, 200); }
-  if(name==='parametres') { setTimeout(()=>{ try{ renderApiKeys(); }catch(e){} try{ renderClientColors(); }catch(e){} try{ loadDriverTimeout(); }catch(e){} }, 200); }
+  if(name==='parametres') { setTimeout(()=>{ try{ renderApiKeys(); }catch(e){} try{ renderClientColors(); }catch(e){} try{ loadDriverTimeout(); }catch(e){} try{ majEtatNotif(); }catch(e){} }, 200); }
   if(name==='pointage') { setTimeout(()=>{ try{ renderPointage(); }catch(e){} }, 200); }
   if(name==='dispatch') { setTimeout(()=>{
     try {
