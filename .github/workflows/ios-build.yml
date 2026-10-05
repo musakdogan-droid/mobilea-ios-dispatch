@@ -35,10 +35,17 @@ jobs:
         run: |
           cd "$PROJ_DIR"
           npm install
+          # IMPORTANT : `cap add ios` et `cap sync ios` lancent un `pod install`
+          # AUTOMATIQUE. A ce stade le Podfile est encore en iOS 13/14 (defaut
+          # Capacitor), alors qu'OneSignal 5.6.0 exige iOS 15 -> ce premier
+          # pod install echoue. On l'ignore avec `|| true` : le Podfile et les
+          # plugins Cordova sont quand meme generes. Le Podfile est passe en
+          # iOS 15 a l'etape suivante, et le vrai pod install a lieu plus bas
+          # (etape "Install CocoaPods"), cette fois avec succes.
           if [ ! -d "ios" ]; then
-            npx cap add ios
+            npx cap add ios || true
           fi
-          npx cap sync ios
+          npx cap sync ios || true
 
       - name: Config iOS (permissions + chiffrement + iOS 15)
         run: |
@@ -124,12 +131,13 @@ jobs:
                 print "      c.build_settings[\"CODE_SIGNING_REQUIRED\"] = \"NO\"";
                 print "      c.build_settings[\"CODE_SIGN_IDENTITY\"] = \"\"";
                 print "      c.build_settings[\"PROVISIONING_PROFILE_SPECIFIER\"] = \"\"";
+                print "      c.build_settings[\"IPHONEOS_DEPLOYMENT_TARGET\"] = \"15.0\"";
                 print "    end";
                 print "  end";
                 next
               }1' Podfile > Podfile.new && mv Podfile.new Podfile
             else
-              printf '\npost_install do |installer|\n  # MOBILEA_NO_POD_SIGNING\n  installer.pods_project.targets.each do |t|\n    t.build_configurations.each do |c|\n      c.build_settings["CODE_SIGNING_ALLOWED"] = "NO"\n    end\n  end\nend\n' >> Podfile
+              printf '\npost_install do |installer|\n  # MOBILEA_NO_POD_SIGNING\n  installer.pods_project.targets.each do |t|\n    t.build_configurations.each do |c|\n      c.build_settings["CODE_SIGNING_ALLOWED"] = "NO"\n      c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "15.0"\n    end\n  end\nend\n' >> Podfile
             fi
           fi
           echo "----- Podfile final -----"
