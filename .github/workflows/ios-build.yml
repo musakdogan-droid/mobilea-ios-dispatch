@@ -251,24 +251,17 @@ jobs:
 
       - name: Upload vers App Store Connect
         env:
-          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-          API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          API_KEY_RAW: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          # PLAN B : authentification avec ton Apple ID + un mot de passe
+          # d'application (cree sur appleid.apple.com -> Connexion et securite
+          # -> Mots de passe pour app). On s'authentifie en tant que toi, donc
+          # l'app t'appartient et reste visible -> fini l'erreur 19 de la cle API.
+          APPLE_ID_EMAIL: ${{ secrets.APPLE_ID_EMAIL }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          mkdir -p ~/private_keys
-          KEY_ID_CLEAN=$(printf '%s' "$API_KEY_ID" | tr -d ' \r\n')
-          ISSUER_CLEAN=$(printf '%s' "$API_ISSUER_ID" | tr -d ' \r\n')
-          KEYFILE=~/private_keys/AuthKey_${KEY_ID_CLEAN}.p8
-          printf '%s' "$API_KEY_RAW" > /tmp/rawkey.txt
-          if grep -q "BEGIN PRIVATE KEY" /tmp/rawkey.txt; then
-            cp /tmp/rawkey.txt "$KEYFILE"
-          else
-            printf '%s' "$API_KEY_RAW" | tr -d ' \r\n' | base64 -d > "$KEYFILE"
-          fi
-          chmod 600 "$KEYFILE"
+          IPA="$(ls "$RUNNER_TEMP"/export/*.ipa)"
+          echo "Upload de : $IPA"
           xcrun altool --upload-app \
-            --file "$(ls "$RUNNER_TEMP"/export/*.ipa)" \
+            --file "$IPA" \
             --type ios \
-            --apiKey "$KEY_ID_CLEAN" \
-            --apiIssuer "$ISSUER_CLEAN"
-          rm -f "$KEYFILE"
+            --username "$APPLE_ID_EMAIL" \
+            --password "$APPLE_APP_PASSWORD"
