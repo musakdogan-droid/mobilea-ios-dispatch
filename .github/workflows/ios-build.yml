@@ -1,4 +1,4 @@
-name: Build iOS MOBILEA Dispatch (Capacitor)
+name: Build iOS MOBILEA Driver (Capacitor)
 on:
   workflow_dispatch:
 
@@ -15,19 +15,19 @@ jobs:
 
       - name: Trouver le dossier du projet Capacitor
         run: |
-          # Dispatch : on identifie le projet par son appId (fr.mobilea.dispatch),
-          # ce qui marche meme si le nom du dossier contient un espace.
+          # Driver : on identifie le projet par son appId (fr.mobilea.driver),
+          # robuste aux espaces / renommages de dossier.
           CFG=""
           while IFS= read -r f; do
-            if grep -q "fr.mobilea.dispatch" "$f"; then CFG="$f"; break; fi
+            if grep -q "fr.mobilea.driver" "$f"; then CFG="$f"; break; fi
           done < <(find . -name capacitor.config.json -not -path '*/node_modules/*')
           if [ -z "$CFG" ]; then
-            echo "ERREUR : capacitor.config.json du dispatch (fr.mobilea.dispatch) introuvable."
+            echo "ERREUR : capacitor.config.json du driver (fr.mobilea.driver) introuvable."
             find . -maxdepth 2 -not -path '*/.git/*' | sort
             exit 1
           fi
           PROJ=$(dirname "$CFG")
-          echo "Projet dispatch: $PROJ"
+          echo "Projet driver: $PROJ"
           echo "Projet trouve dans : $PROJ"
           echo "PROJ_DIR=$PROJ" >> "$GITHUB_ENV"
 
@@ -85,10 +85,11 @@ jobs:
           pb "Delete :UIBackgroundModes" 2>/dev/null || true
           pb "Add :UIBackgroundModes array" || true
           pb "Add :UIBackgroundModes:0 string remote-notification" || true
+          pb "Add :UIBackgroundModes:1 string location" || true
           # 3) Lier le fichier d'entitlements au projet Xcode (CODE_SIGN_ENTITLEMENTS)
           #    pour toutes les configurations de la cible App.
           if ! grep -q "CODE_SIGN_ENTITLEMENTS" App.xcodeproj/project.pbxproj; then
-            /usr/bin/sed -i '' -E 's/(PRODUCT_BUNDLE_IDENTIFIER = fr\.mobilea\.dispatch;)/CODE_SIGN_ENTITLEMENTS = App\/App.entitlements; \1/g' App.xcodeproj/project.pbxproj || true
+            /usr/bin/sed -i '' -E 's/(PRODUCT_BUNDLE_IDENTIFIER = fr\.mobilea\.driver;)/CODE_SIGN_ENTITLEMENTS = App\/App.entitlements; \1/g' App.xcodeproj/project.pbxproj || true
             echo "CODE_SIGN_ENTITLEMENTS injecte dans le projet."
           else
             echo "CODE_SIGN_ENTITLEMENTS deja present."
@@ -203,7 +204,7 @@ jobs:
             -workspace "App.xcworkspace" \
             -scheme "App" \
             -configuration Release \
-            -archivePath "$RUNNER_TEMP/MOBILEA_Dispatch.xcarchive" \
+            -archivePath "$RUNNER_TEMP/MOBILEA_Driver.xcarchive" \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             CODE_SIGN_STYLE="Manual" \
@@ -232,8 +233,8 @@ jobs:
             <string>Apple Distribution</string>
             <key>provisioningProfiles</key>
             <dict>
-              <key>fr.mobilea.dispatch</key>
-              <string>MOBILEA Dispatch Distribution</string>
+              <key>fr.mobilea.driver</key>
+              <string>MOBILEA Driver Distribution</string>
             </dict>
             <key>uploadSymbols</key>
             <true/>
@@ -245,7 +246,7 @@ jobs:
           </plist>
           PLIST
           xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/MOBILEA_Dispatch.xcarchive" \
+            -archivePath "$RUNNER_TEMP/MOBILEA_Driver.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \
             -exportOptionsPlist /tmp/exportOptions.plist
 
