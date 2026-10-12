@@ -1696,6 +1696,70 @@ tr:last-child td{border-bottom:none}
       </div>
 
       <!-- GÉRANT : Mes chauffeurs -->
+      <!-- GÉRANT : Mon tableau de bord -->
+      <div class="page" id="page-gerant-dashboard">
+        <div style="margin-bottom:18px">
+          <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;margin-bottom:4px">Mon tableau de bord</div>
+          <div style="font-size:12px;color:var(--muted)" id="gd-soc">Activité de ma société</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+          <select class="fsel" id="gd-period" onchange="renderGerantDashboard()">
+            <option value="month">Ce mois</option>
+            <option value="all">Tout</option>
+          </select>
+        </div>
+        <div class="sg" style="grid-template-columns:repeat(4,1fr);margin-bottom:18px">
+          <div class="sc cg"><div class="sc-head"><div class="sc-ico"><i class="fas fa-euro-sign"></i></div></div><div class="sc-val" id="gd-ca-client">0€</div><div class="sc-lbl">CA client (TTC)</div></div>
+          <div class="sc cgr"><div class="sc-head"><div class="sc-ico"><i class="fas fa-hand-holding-usd"></i></div></div><div class="sc-val" id="gd-marge">0€</div><div class="sc-lbl">Marge</div></div>
+          <div class="sc cb"><div class="sc-head"><div class="sc-ico"><i class="fas fa-route"></i></div></div><div class="sc-val" id="gd-courses">0</div><div class="sc-lbl">Courses terminées</div></div>
+          <div class="sc co"><div class="sc-head"><div class="sc-ico"><i class="fas fa-users"></i></div></div><div class="sc-val" id="gd-nbch">0</div><div class="sc-lbl">Chauffeurs</div></div>
+        </div>
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t"><i class="fas fa-users"></i> Production par chauffeur</div></div>
+          <div style="padding:16px" id="gd-by-chauff"></div>
+        </div>
+      </div>
+
+      <!-- GÉRANT : Nouveau transfert -->
+      <div class="page" id="page-gerant-nouveau">
+        <div class="sec" style="max-width:660px;margin:0 auto">
+          <div class="sec-h"><div class="sec-t"><i class="fas fa-plus-circle" style="color:#16a34a"></i> Nouveau transfert</div></div>
+          <div style="padding:16px">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">Créez un transfert : attribuez-le à un de vos chauffeurs, ou proposez-le à tous les chauffeurs disponibles du réseau MOBILEA — le premier qui accepte réalise le transfert.</div>
+            <div class="fld"><label>Client</label><input id="gn-client" type="text" placeholder="Nom du client" maxlength="120"></div>
+            <div class="fg2" style="margin-bottom:14px">
+              <div class="fld"><label>Date &amp; heure</label><input id="gn-dt" type="datetime-local"></div>
+              <div class="fld"><label>Véhicule</label><select id="gn-veh"><option value="berline">🚗 Berline</option><option value="van">🚐 Van</option><option value="sprinter">🚌 Sprinter</option><option value="bus">🚍 Bus</option><option value="pmr">♿ Van PMR</option><option value="limousine">🥂 Limousine</option></select></div>
+            </div>
+            <div class="fld"><label>Départ</label><input id="gn-dep" type="text" placeholder="Adresse de prise en charge" maxlength="200"></div>
+            <div class="fld"><label>Arrivée</label><input id="gn-arr" type="text" placeholder="Adresse de destination" maxlength="200"></div>
+            <div class="fg2" style="margin-bottom:14px">
+              <div class="fld"><label>Passagers</label><input id="gn-pax" type="number" min="1" value="1"></div>
+              <div class="fld"><label>Bagages</label><input id="gn-bags" type="number" min="0" value="0"></div>
+            </div>
+            <div class="fg2" style="margin-bottom:6px">
+              <div class="fld"><label>Prix client (€)</label><input id="gn-prix" type="number" min="0" step="0.01" placeholder="0" oninput="gerantMajMarge()"></div>
+              <div class="fld"><label>Prix chauffeur (€)</label><input id="gn-prix-ch" type="number" min="0" step="0.01" placeholder="0" oninput="gerantMajMarge()"></div>
+            </div>
+            <div id="gn-marge" style="font-size:12px;color:var(--gold);font-weight:600;margin-bottom:14px">Marge : — €</div>
+            <div class="fld"><label>Notes</label><textarea id="gn-notes" rows="2" placeholder="Infos (vol, étage, digicode…)" maxlength="500"></textarea></div>
+            <div style="border-top:1px solid var(--border2);margin:8px 0 14px;padding-top:14px">
+              <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;color:var(--white);margin-bottom:12px">Que faire de ce transfert ?</div>
+              <div style="background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:14px;margin-bottom:12px">
+                <div style="font-size:13px;font-weight:700;color:var(--white);margin-bottom:8px">👤 Attribuer à un de mes chauffeurs</div>
+                <div class="fld" style="margin-bottom:10px"><select id="gn-mon-ch"><option value="">— Choisir un de mes chauffeurs —</option></select></div>
+                <button class="btn" style="width:100%;background:#16a34a;border:none;color:#fff;font-weight:700;padding:13px" onclick="gerantCreerTransfert('mon_chauffeur')"><i class="fas fa-user-check"></i> Attribuer à ce chauffeur</button>
+              </div>
+              <div style="background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:14px">
+                <div style="font-size:13px;font-weight:700;color:var(--white);margin-bottom:4px">🙋 Proposer à tout le réseau MOBILEA</div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Envoyé à tous les chauffeurs disponibles — le premier qui accepte réalise le transfert.</div>
+                <button class="btn" style="width:100%;background:#f59e0b;border:none;color:#fff;font-weight:700;padding:13px" onclick="gerantCreerTransfert('reseau')"><i class="fas fa-bullhorn"></i> Proposer à tout le réseau</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="page" id="page-gerant-chauffeurs">
         <div class="sec">
           <div class="sec-h">
@@ -2379,7 +2443,14 @@ tr:last-child td{border-bottom:none}
             <input type="checkbox" id="ch-gerant" style="width:18px;height:18px;cursor:pointer;accent-color:#2563eb">
             <div>
               <div style="font-size:13px;font-weight:700;color:#2563eb">👔 Gérant de la société</div>
-              <div style="font-size:11px;color:#1d4ed8">Ce chauffeur voit le CA et les courses de tous les chauffeurs de sa société</div>
+              <div style="font-size:11px;color:#1d4ed8">Débloque l'accès gérant : Mon tableau de bord, Nouveau transfert (attribuer à ses chauffeurs ou proposer au réseau), Carte de ses chauffeurs, Mes chauffeurs &amp; Mes véhicules, et le CA de sa société. Décochez pour retirer l'accès.</div>
+            </div>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#f5f3ff;border:1px solid #c4b5fd;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-gerant-pro" style="width:18px;height:18px;cursor:pointer;accent-color:#7c3aed">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#7c3aed">⚡ Transferts &amp; tableau de bord</div>
+              <div style="font-size:11px;color:#6d28d9">Débloque : Mon tableau de bord, Nouveau transfert (attribuer à ses chauffeurs ou proposer au réseau) et Carte de ses chauffeurs. Indépendant du statut gérant.</div>
             </div>
           </label>
           <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#f0fdf4;border:1px solid #86efac;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
@@ -4423,7 +4494,7 @@ async function _doChauffeurLoginInner(err) {
     if(window.__loginDone) return;   // garde : une seule fois
     window.__loginDone = true;
     if(window.__loginGeoTimer) { clearTimeout(window.__loginGeoTimer); window.__loginGeoTimer = null; }
-    SESSION = { role:'chauffeur', name:found.prenom+(found.nom?' '+found.nom:''), uid:'driver_'+found._id, chauffeurId:found._id, email, voirPrix:(found.voirPrix !== false), gerant:(found.gerant===true), pointeuse:(found.pointeuse===true), socNom:(found.soc_nom||'') };
+    SESSION = { role:'chauffeur', name:found.prenom+(found.nom?' '+found.nom:''), uid:'driver_'+found._id, chauffeurId:found._id, email, voirPrix:(found.voirPrix !== false), gerant:(found.gerant===true), gerantPro:(found.gerantPro===true), pointeuse:(found.pointeuse===true), socNom:(found.soc_nom||'') };
     window.SESSION = SESSION; // pour le pont natif OneSignal (native-bridge.js)
     localStorage.setItem(ADMIN_KEY, JSON.stringify(SESSION));
     logSecurityEvent('login_success',{role:'chauffeur',email});
@@ -4759,6 +4830,25 @@ function startApp() {
     btnM.onclick = () => gp('messagerie', btnM);
     nav.prepend(btnM); nav.prepend(btnR); nav.prepend(btn);
     // Onglets supplémentaires pour un chauffeur GÉRANT : gestion de sa société
+    // Options "Transferts & tableau de bord" — case admin "ch-gerant-pro" (gerantPro).
+    if(SESSION.gerantPro) {
+      const btnGD = document.createElement('button');
+      btnGD.className = 'ni dyn-nav'; btnGD.dataset.p = 'gerant-dashboard';
+      btnGD.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-chart-line"></i> Mon tableau de bord';
+      btnGD.onclick = () => gp('gerant-dashboard', btnGD);
+      const btnGN = document.createElement('button');
+      btnGN.className = 'ni dyn-nav'; btnGN.dataset.p = 'gerant-nouveau';
+      btnGN.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-plus-circle"></i> Nouveau transfert';
+      btnGN.onclick = () => gp('gerant-nouveau', btnGN);
+      const btnGMap = document.createElement('button');
+      btnGMap.className = 'ni dyn-nav'; btnGMap.dataset.p = 'cartechauffeurs';
+      btnGMap.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-map-marked-alt"></i> Carte chauffeurs';
+      btnGMap.onclick = () => gp('cartechauffeurs', btnGMap);
+      nav.insertBefore(btnGMap, btnM);
+      nav.insertBefore(btnGN, btnGMap);
+      nav.insertBefore(btnGD, btnGN);
+    }
+    // Base gérant (gestion société) — case admin "Gérant de la société" (gerant).
     if(SESSION.gerant) {
       const btnGC = document.createElement('button');
       btnGC.className = 'ni dyn-nav'; btnGC.dataset.p = 'gerant-chauffeurs';
@@ -4768,7 +4858,6 @@ function startApp() {
       btnGV.className = 'ni dyn-nav'; btnGV.dataset.p = 'gerant-vehicules';
       btnGV.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-car"></i> Mes véhicules';
       btnGV.onclick = () => gp('gerant-vehicules', btnGV);
-      // Insérés après "Mes revenus", avant "Messagerie"
       nav.insertBefore(btnGV, btnM);
       nav.insertBefore(btnGC, btnGV);
     }
@@ -8174,6 +8263,7 @@ window.openChauffeurModal = function(id) {
     const setv=(id,v)=>{const el=document.getElementById(id);if(el)el.value=v||'';};
     fillSocieteSelect(c.soc_nom||'');
     const gEl = document.getElementById('ch-gerant'); if(gEl) gEl.checked = !!c.gerant;
+    const gpEl = document.getElementById('ch-gerant-pro'); if(gpEl) gpEl.checked = !!c.gerantPro;
     const ptEl = document.getElementById('ch-pointeuse'); if(ptEl) ptEl.checked = !!c.pointeuse;
     const prEl = document.getElementById('ch-prioritaire'); if(prEl) prEl.checked = !!c.prioritaire;
     setv('ch-soc-nom',c.soc_nom); setv('ch-soc-siret',c.soc_siret); setv('ch-soc-tva',c.soc_tva);
@@ -8193,6 +8283,7 @@ window.openChauffeurModal = function(id) {
     fillSocieteSelect('');
     const nw = document.getElementById('ch-soc-nom-wrap'); if(nw) nw.style.display='none';
     const gEl2 = document.getElementById('ch-gerant'); if(gEl2) gEl2.checked = false;
+    const gpEl2 = document.getElementById('ch-gerant-pro'); if(gpEl2) gpEl2.checked = false;
     const ptEl2 = document.getElementById('ch-pointeuse'); if(ptEl2) ptEl2.checked = false;
     const prEl2 = document.getElementById('ch-prioritaire'); if(prEl2) prEl2.checked = false;
     document.getElementById('mo-ch-title').textContent = 'Ajouter chauffeur';
@@ -8271,6 +8362,7 @@ window.saveChauffeur = async function() {
     soustraitant: document.getElementById('ch-soustraitant')?.checked||false,
     blocked: document.getElementById('ch-blocked')?.checked||false,
     gerant: document.getElementById('ch-gerant')?.checked || false,
+    gerantPro: document.getElementById('ch-gerant-pro')?.checked || false,
     pointeuse: document.getElementById('ch-pointeuse')?.checked || false,
     prioritaire: document.getElementById('ch-prioritaire')?.checked || false,
     soc_nom: document.getElementById('ch-soc-nom')?.value||'',
@@ -11280,6 +11372,165 @@ async function renderGerantVehicules() {
 }
 window.renderGerantVehicules = renderGerantVehicules;
 
+// ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// GÉRANT — Mon tableau de bord : chiffres de SA société uniquement.
+// ══════════════════════════════════════════════════════════════════════
+window.renderGerantDashboard = async function(){
+  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  var socNom = (SESSION.socNom||'').trim();
+  var socEl = document.getElementById('gd-soc'); if(socEl) socEl.textContent = 'Activité de ' + (socNom||'ma société');
+  var period = (document.getElementById('gd-period')||{}).value || 'month';
+  var chauffeurs=[], courses=[];
+  try { chauffeurs = await fbGet('chauffeurs') || []; } catch(e){}
+  try { courses = await fbGet('courses') || []; } catch(e){}
+  var mesCh = chauffeurs.filter(function(c){ return (c.soc_nom||'').trim()===socNom && !c.archived; });
+  var noms = mesCh.map(function(c){ return c.prenom + (c.nom?' '+c.nom:''); });
+  var mois = new Date().toISOString().slice(0,7);
+  function inPeriod(c){ return period==='all' ? true : (c.datetime||'').slice(0,7)===mois; }
+  var totClient=0, totCh=0, nbCourses=0;
+  var parCh = {};
+  noms.forEach(function(n){ parCh[n]={courses:0,caClient:0,caCh:0}; });
+  courses.forEach(function(c){
+    if(noms.indexOf(c.chauffeur)>=0 && ['terminee','payee'].indexOf(c.statut)>=0 && inPeriod(c)){
+      var pcl = parseFloat(c.prix||0)||0, pch = parseFloat(c.prixChauffeur||0)||0;
+      totClient += pcl; totCh += pch; nbCourses++;
+      var l = parCh[c.chauffeur]; if(l){ l.courses++; l.caClient+=pcl; l.caCh+=pch; }
+    }
+  });
+  var marge = totClient - totCh;
+  function fmtE(v){ return (Math.round(v)).toLocaleString('fr-FR')+'€'; }
+  var set = function(id,v){ var e=document.getElementById(id); if(e) e.textContent=v; };
+  set('gd-ca-client', fmtE(totClient));
+  set('gd-marge', fmtE(marge));
+  set('gd-courses', String(nbCourses));
+  set('gd-nbch', String(mesCh.length));
+  var rows = noms.map(function(n){ return {nom:n, d:parCh[n]}; }).sort(function(a,b){ return b.d.caClient - a.d.caClient; });
+  var maxCA = 1;
+  rows.forEach(function(r){ if(r.d.caClient>maxCA) maxCA=r.d.caClient; });
+  var box = document.getElementById('gd-by-chauff');
+  if(box){
+    if(!rows.length){
+      box.innerHTML = '<div style="color:var(--muted);font-size:13px">Aucun chauffeur dans votre société.</div>';
+    } else {
+      box.innerHTML = rows.map(function(r){
+        var pct = Math.round(r.d.caClient / maxCA * 100);
+        return '<div style="margin-bottom:14px">'
+          + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">'
+          +   '<span style="font-size:13px;font-weight:700;color:var(--white)">'+E(r.nom)+'</span>'
+          +   '<span style="font-size:12px;color:var(--muted)">'+r.d.courses+' course'+(r.d.courses>1?'s':'')+' · <strong style="color:var(--white)">'+fmtE(r.d.caClient)+'</strong></span>'
+          + '</div>'
+          + '<div style="height:8px;background:var(--border2);border-radius:5px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:#16a34a;border-radius:5px"></div></div>'
+          + '</div>';
+      }).join('');
+    }
+  }
+};
+
+// GÉRANT — Page "Nouveau transfert" : créer un transfert pour ses propres
+// chauffeurs, OU le proposer à tout le réseau MOBILEA (1er arrivé, 1er servi).
+// ══════════════════════════════════════════════════════════════════════
+window.gerantMajMarge = function(){
+  try {
+    var pc = parseFloat(document.getElementById('gn-prix').value)||0;
+    var pch = parseFloat(document.getElementById('gn-prix-ch').value)||0;
+    var el = document.getElementById('gn-marge');
+    if(el){ var m = pc - pch; el.textContent = 'Marge : ' + m.toFixed(2) + ' €'; el.style.color = (m<0?'#dc2626':'var(--gold)'); }
+  } catch(e){}
+};
+window.renderGerantNouveau = async function(){
+  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  // Pré-remplir la date/heure (prochaine heure pleine) si vide.
+  try {
+    var dt = document.getElementById('gn-dt');
+    if(dt && !dt.value){ var d=new Date(Date.now()+3600000); d.setMinutes(0,0,0); dt.value = d.toISOString().slice(0,16); }
+  } catch(e){}
+  // Charger mes chauffeurs dans le menu déroulant.
+  try {
+    var data = await loadGerantData();
+    var sel = document.getElementById('gn-mon-ch');
+    if(sel && data && data.mesChauffeurs){
+      var opts = '<option value="">— Choisir un de mes chauffeurs —</option>';
+      data.mesChauffeurs.filter(function(ch){ return ch.gerant!==true; }).forEach(function(ch){
+        var nom = ch.prenom + (ch.nom?' '+ch.nom:'');
+        opts += '<option value="'+ch._id+'">'+E(nom)+'</option>';
+      });
+      sel.innerHTML = opts;
+    }
+  } catch(e){}
+  gerantMajMarge();
+};
+window.gerantResetTransfert = function(){
+  ['gn-client','gn-dep','gn-arr','gn-notes','gn-prix','gn-prix-ch'].forEach(function(idf){ var e=document.getElementById(idf); if(e) e.value=''; });
+  var p=document.getElementById('gn-pax'); if(p) p.value='1';
+  var b=document.getElementById('gn-bags'); if(b) b.value='0';
+  var s=document.getElementById('gn-mon-ch'); if(s) s.value='';
+  gerantMajMarge();
+};
+window.gerantCreerTransfert = async function(mode){
+  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  var client = (document.getElementById('gn-client').value||'').trim();
+  var dt = document.getElementById('gn-dt').value;
+  var dep = (document.getElementById('gn-dep').value||'').trim();
+  var arr = (document.getElementById('gn-arr').value||'').trim();
+  var veh = document.getElementById('gn-veh').value;
+  var pax = parseInt(document.getElementById('gn-pax').value)||1;
+  var bags = parseInt(document.getElementById('gn-bags').value)||0;
+  var prix = parseFloat(document.getElementById('gn-prix').value)||0;
+  var prixChauffeur = parseFloat(document.getElementById('gn-prix-ch').value)||0;
+  var notes = (document.getElementById('gn-notes').value||'').trim();
+  if(!dep || !arr){ showToast('Départ et arrivée obligatoires', true); return; }
+  if(!dt){ showToast('Date et heure obligatoires', true); return; }
+  if(!client) client = (dep.split(',')[0]||'Course');
+
+  var base = {
+    type:'transfert', client:client, tel:'', datetime:dt,
+    depart:dep, arrivee:arr, lieu:'', duree:'',
+    vehicule:veh, pax:pax, bags:bags,
+    prix:prix, prixChauffeur:prixChauffeur, marge:(prix-prixChauffeur),
+    payMode:'simplycab', commissionMode:'marge',
+    passagers:[], notes:notes,
+    ref:(typeof genRefVal==='function'?genRefVal():''),
+    soc_nom:(SESSION.socNom||''),
+    createdBy:SESSION.name, creePar:'gerant',
+    createdAt:new Date().toISOString()
+  };
+
+  if(mode==='mon_chauffeur'){
+    var chId = document.getElementById('gn-mon-ch').value;
+    if(!chId){ showToast('Choisissez un de vos chauffeurs', true); return; }
+    var mes = (window._gerantCache && window._gerantCache.mesChauffeurs) || [];
+    var ch = mes.find(function(x){return x._id===chId;}) || (D.chauffeurs||[]).find(function(x){return x._id===chId;});
+    if(!ch){ showToast('Chauffeur introuvable', true); return; }
+    var nomCh = ch.prenom + (ch.nom?' '+ch.nom:'');
+    base.chauffeur = nomCh;
+    base.chauffeurId = ch._id;
+    base.statut = 'attribuee';
+    showToast('Création…');
+    try {
+      var id1 = await fbPush('courses', base);
+      try { await addLog('➕ Transfert gérant ('+SESSION.name+') attribué à '+nomCh+' : '+dep+' → '+arr); } catch(e){}
+      try { await sendPushNotification('🚗 Nouveau transfert', client+' — '+dep+' → '+arr, null, ch._id?[ch._id]:null); } catch(e){}
+      showToast('✅ Transfert attribué à '+nomCh);
+      gerantResetTransfert();
+    } catch(e){ showToast('Erreur lors de la création', true); }
+  } else {
+    base.chauffeur = '';
+    base.statut = 'offre_ouverte';
+    base.ouvertePar = SESSION.name;
+    base.ouverteLe = new Date().toISOString();
+    showToast('Création…');
+    try {
+      var id2 = await fbPush('courses', base);
+      try { await addLog('🙋 Transfert gérant ('+SESSION.name+') proposé au réseau : '+dep+' → '+arr); } catch(e){}
+      try { await sendPushNotification('🙋 Transfert à prendre', client+' — '+dep+' → '+arr+(prixChauffeur?' — '+prixChauffeur+'€':''), null, null, { key:'role', value:'chauffeur' }); } catch(e){}
+      showToast('✅ Transfert proposé à tout le réseau');
+      gerantResetTransfert();
+    } catch(e){ showToast('Erreur lors de la création', true); }
+  }
+};
+
+
 // Affiche les heures travaillées d'un chauffeur (détail par jour + total mois).
 window.gerantVoirHeures = async function(chauffeurId, nomChauffeur) {
   if(!SESSION.gerant) { showToast('Accès non autorisé', true); return; }
@@ -11845,7 +12096,9 @@ function renderMesCourses() {
   // Carrousel horizontal : la course actuelle en 1re position, les suivantes
   // accessibles en glissant de droite à gauche. Chaque carte occupe presque
   // toute la largeur (scroll-snap pour un défilement propre carte par carte).
-  const cartesHtml = active.map((c,idx)=>{
+  // Carte detaillee d'une course — reutilisee telle quelle dans la page plein ecran du suivi.
+  window._buildDriverCourseCard = function(c, idx){
+    const canSeePrix = (SESSION.voirPrix !== false);
     const flow = STATUT_FLOW[c.statut];
     const vehIco = {berline:'🚗',van:'🚐',sprinter:'🚌',bus:'🚍',pmr:'♿',limousine:'🥂',classes:'🖤'}[c.vehicule]||'🚗';
     const paxCount = c.passagers ? c.passagers.filter(p=>p.present!==false).length : (c.pax||1);
@@ -12118,13 +12371,54 @@ function renderMesCourses() {
       + pointeuseHtml
       + actionHtml
       + '</div></div></div>';
-  }).join('');
+  };
 
   // Assembler le carrousel : conteneur à défilement horizontal (scroll-snap).
-  const carrousel = active.length
-    ? hintGlisser + '<div class="mc-carrousel" style="display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;padding:4px 0 8px 0;scrollbar-width:none">' + cartesHtml + '</div>'
-    : '';
-  container.innerHTML = offresHtml + blockBanner + carrousel;
+  // Liste COMPACTE (comme le dispatch) : chaque ligne ouvre la page plein ecran du suivi.
+  const lignes = active.map(function(c){
+    const clientColor = getClientColor(c.client,c);
+    const vehIco = {berline:'🚗',van:'🚐',sprinter:'🚌',bus:'🚍',pmr:'♿',limousine:'🥂',classes:'🖤'}[c.vehicule]||'🚗';
+    const time = c.datetime ? c.datetime.slice(11,16) : '';
+    const date = c.datetime ? parseLocalDT(c.datetime).toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'short',timeZone:'UTC'}) : '';
+    const statusLabel = STATUT_LABELS[c.statut]||c.statut;
+    const isActiveCourse = ['en_route','sur_place','onboard','depose'].includes(c.statut);
+    const trajet = E(c.depart||c.lieu||'?') + '  →  ' + E(c.arrivee||c.duree||'?');
+    return '<div onclick="openCourseFull(\''+c._id+'\')" style="background:#fff;border:1px solid #e0e3e8;border-left:5px solid '+clientColor+';border-radius:12px;padding:12px 14px;margin-bottom:8px;cursor:pointer;box-shadow:0 1px 5px rgba(0,0,0,0.06)">'
+      + (isActiveCourse?'<div style="font-family:Syne,sans-serif;font-size:10px;font-weight:800;color:'+clientColor+';letter-spacing:1px;margin-bottom:6px">● COURSE EN COURS</div>':'')
+      + '<div style="display:flex;align-items:center;gap:12px">'
+      +   '<div style="background:#f5f6f8;border-radius:8px;padding:6px 8px;text-align:center;min-width:56px"><div style="font-size:16px;font-weight:800;color:#111;letter-spacing:-0.5px">'+time+'</div><div style="font-size:9px;color:#777">'+date+'</div></div>'
+      +   '<div style="flex:1;min-width:0">'
+      +     '<div style="font-size:14px;font-weight:800;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+vehIco+' '+E(nomPassagerChauffeur(c))+'</div>'
+      +     '<div style="font-size:12px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px">'+trajet+'</div>'
+      +   '</div>'
+      +   '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0">'
+      +     '<span style="background:'+clientColor+';color:#fff;font-size:10px;font-weight:700;padding:2px 9px;border-radius:10px;white-space:nowrap">'+statusLabel+'</span>'
+      +     '<span style="color:#c0c4cc;font-size:18px;font-weight:800;line-height:1">&#9656;</span>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+  const titreListe = '<div style="margin-bottom:10px"><span style="font-family:Syne,sans-serif;font-size:15px;font-weight:800;color:#111">Mes transferts' + (active.length>1?' ('+active.length+')':'') + '</span><div style="font-size:11px;color:#999;margin-top:2px">Touchez un transfert pour le suivi</div></div>';
+  container.innerHTML = offresHtml + blockBanner + titreListe + lignes;
+  // Si la page plein ecran d'une course est ouverte, la rafraichir (ou la fermer si terminee).
+  if(window._courseFullOpenId){
+    var _cf = (D.courses||[]).find(function(x){return x._id===window._courseFullOpenId;});
+    if(!_cf || ['terminee','annulee','noshow','payee','facturee'].includes(_cf.statut)){
+      // Course terminee/annulee -> on ferme la page plein ecran.
+      window._courseFullOpenId = null;
+      var _ovc = document.getElementById('coursefull-overlay'); if(_ovc) _ovc.remove();
+    } else {
+      // On NE re-rend PAS si le chauffeur est en train de saisir (note, heure…),
+      // sinon le rafraichissement toutes les ~10s effacerait sa saisie.
+      // On re-rend UNIQUEMENT quand le statut a change (En route, Sur place…).
+      var _ovf = document.getElementById('coursefull-overlay');
+      var _foc = document.activeElement;
+      var _typing = _ovf && _foc && _ovf.contains(_foc) && /^(INPUT|TEXTAREA|SELECT)$/.test(_foc.tagName);
+      if(!_typing && _cf.statut !== window._courseFullStatut){
+        try{ openCourseFull(window._courseFullOpenId); }catch(e){}
+      }
+    }
+  }
 
   // Affichage immediat du compteur, sans attendre le premier tick de 10 s.
   if(typeof majCompteursAttente === 'function') majCompteursAttente();
@@ -16430,110 +16724,32 @@ window.showNewReservationModal = showNewReservationModal;
 // Page PLEIN ÉCRAN d'une réservation : accepter puis faire avancer le statut
 // (en route → sur place → à bord → déposé → terminer), naviguer, appeler.
 function openCourseFull(id) {
-  var c = (D.courses||[]).find(x=>x._id===id);
-  if(!c) { showToast('Réservation introuvable', true); return; }
+  var c = (D.courses||[]).find(function(x){return x._id===id;});
+  if(!c){ showToast('Réservation introuvable', true); return; }
+  window._courseFullOpenId = id;
+  window._courseFullStatut = c.statut;
   var ex = document.getElementById('coursefull-overlay'); if(ex) ex.remove();
-  var canSeePrix = (SESSION.voirPrix !== false);
-  var flow = STATUT_FLOW[c.statut];
-  var statutLbl = STATUT_LABELS[c.statut] || c.statut;
-  var dt = c.datetime ? (parseLocalDT(c.datetime).toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long',timeZone:'UTC'})+' • '+c.datetime.slice(11,16)) : '';
-
-  // Navigation : avant "sur place" → prise en charge, après → destination.
-  var goToArr = ['sur_place','onboard','depose'].includes(c.statut);
-  var navTextRaw = goToArr ? bestNavAddress(c.arrivee, c.notes, 'arrivee') : bestNavAddress(c.depart || c.lieu, c.notes, 'depart');
-  var navLat = goToArr ? (c.dropLat||null) : (c.pickupLat||null);
-  var navLng = goToArr ? (c.dropLng||null) : (c.pickupLng||null);
-  var hasCoords = navLat!=null && navLng!=null;
-  var navAddrJs = (navTextRaw||'').replace(/'/g,"\\'");
-  var navBtns = (navTextRaw||hasCoords)
-    ? '<div style="display:flex;gap:8px;margin-bottom:12px">'
-      + '<button onclick="openNav(\'waze\','+(hasCoords?navLat:'null')+','+(hasCoords?navLng:'null')+',\''+navAddrJs+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:#00b4ff;border:none;border-radius:12px;padding:13px;cursor:pointer;color:#fff;font-weight:800;font-size:13px">🧭 Waze</button>'
-      + '<button onclick="openNav(\'gmaps\','+(hasCoords?navLat:'null')+','+(hasCoords?navLng:'null')+',\''+navAddrJs+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:#34a853;border:none;border-radius:12px;padding:13px;cursor:pointer;color:#fff;font-weight:800;font-size:13px">🗺️ Maps</button>'
-      + '</div>'
-    : '';
-
-  // Appel / SMS / WhatsApp client.
-  var telClient = (telPassagerChauffeur(c) || '').toString().trim();
-  var callBtns = '';
-  if(telClient) {
-    var digits = telClient.replace(/[^0-9+]/g,''), telIntl;
-    if(digits.startsWith('+')) telIntl = digits;
-    else if(digits.startsWith('00')) telIntl = '+'+digits.slice(2);
-    else if(digits.startsWith('0')) telIntl = '+33'+digits.slice(1);
-    else telIntl = '+'+digits;
-    var waNum = telIntl.replace(/[^0-9]/g,'');
-    callBtns = '<div style="display:flex;gap:8px;margin-bottom:12px">'
-      + '<a href="tel:'+telIntl+'" style="flex:1;text-align:center;background:#22c55e;border-radius:10px;padding:12px;color:#fff;text-decoration:none;font-size:13px;font-weight:800">📞 Appeler</a>'
-      + '<a href="sms:'+telIntl+'" style="flex:1;text-align:center;background:#2563eb;border-radius:10px;padding:12px;color:#fff;text-decoration:none;font-size:13px;font-weight:800">💬 SMS</a>'
-      + '<a href="https://wa.me/'+waNum+'" target="_blank" style="flex:1;text-align:center;background:#25d366;border-radius:10px;padding:12px;color:#fff;text-decoration:none;font-size:13px;font-weight:800">📱 WhatsApp</a>'
-      + '</div>';
-  }
-
-  // Bouton d'action principal (accepter, puis progression du statut).
-  var actionBtn = '';
-  if(flow) {
-    var activeStatuts = ['en_route','sur_place','onboard','depose'];
-    var autreActive = (D.courses||[]).find(x=>x._id!==c._id && x.chauffeur===SESSION.name && activeStatuts.includes(x.statut));
-    var isBlocked = autreActive && activeStatuts.includes(flow.next);
-    var bg = isBlocked ? '#e0e3e8' : flow.color;
-    var tc2 = isBlocked ? '#999' : '#fff';
-    var lbl = isBlocked ? '⛔ Terminez d\'abord la course en cours' : flow.label;
-    actionBtn = '<button '+(isBlocked?'disabled':'')+' onclick="_courseFullAction(\''+c._id+'\',\''+flow.next+'\')" style="width:100%;background:'+bg+';border:none;border-radius:14px;padding:18px;font-size:16px;font-weight:800;color:'+tc2+';cursor:'+(isBlocked?'not-allowed':'pointer')+';box-shadow:'+(isBlocked?'none':'0 6px 16px '+flow.color+'55')+';margin-bottom:10px">'+lbl+'</button>';
-  } else {
-    actionBtn = '<div style="text-align:center;padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:12px;color:#15803d;font-weight:700;margin-bottom:10px">Course '+statutLbl+'</div>';
-  }
-  var noShowBtn = (flow ? '<button onclick="_courseFullNoShow(\''+c._id+'\')" style="width:100%;background:#fff;border:1px solid #e0e3e8;border-radius:12px;padding:13px;font-size:13px;font-weight:700;color:#555;cursor:pointer;margin-bottom:10px">Client absent (No-show)</button>' : '');
-
-  var prixHtml = (canSeePrix && c.prixChauffeur)
-    ? '<div style="display:flex;justify-content:space-between;align-items:center;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;margin-bottom:12px"><span style="font-size:13px;color:#92400e;font-weight:700">Votre rémunération</span><span style="font-family:Syne,sans-serif;font-size:20px;font-weight:800;color:#b8860b">'+parseFloat(c.prixChauffeur).toFixed(0)+'€</span></div>'
-    : '';
-  var notesHtml = c.notes ? '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#92400e">ℹ️ '+E(c.notes).replace(/\n/g,'<br>')+'</div>' : '';
-
+  var statutLbl = (typeof STATUT_LABELS!=='undefined') ? (STATUT_LABELS[c.statut]||c.statut) : c.statut;
+  var body = '';
+  try { body = window._buildDriverCourseCard ? window._buildDriverCourseCard(c, 0) : ''; }
+  catch(e){ body = '<div style="padding:20px;color:#b00020">Erreur affichage : '+(e&&e.message)+'</div>'; }
   var ov = document.createElement('div');
   ov.id = 'coursefull-overlay';
   ov.style.cssText = 'position:fixed;inset:0;z-index:9999998;background:#f4f5f7;overflow-y:auto;-webkit-overflow-scrolling:touch';
   ov.innerHTML =
-    '<div style="background:#111;color:#fff;padding:calc(14px + env(safe-area-inset-top)) 16px 14px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:2">'
-    +   '<button onclick="document.getElementById(\'coursefull-overlay\').remove()" style="background:rgba(255,255,255,0.15);border:none;border-radius:10px;width:38px;height:38px;color:#fff;font-size:18px;cursor:pointer;flex-shrink:0">✕</button>'
+    '<div style="background:#111;color:#fff;padding:calc(14px + env(safe-area-inset-top)) 16px 14px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:5">'
+    +   '<button onclick="window._courseFullOpenId=null;var o=document.getElementById(\'coursefull-overlay\');if(o)o.remove();" style="background:rgba(255,255,255,0.15);border:none;border-radius:10px;width:38px;height:38px;color:#fff;font-size:18px;cursor:pointer;flex-shrink:0">✕</button>'
     +   '<div><div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800">Réservation</div><div style="font-size:11px;color:#b8860b;font-weight:700">'+statutLbl+'</div></div>'
     + '</div>'
-    + '<div style="max-width:520px;margin:0 auto;padding:16px">'
-    +   '<div style="background:#fff;border-radius:16px;padding:16px;box-shadow:0 2px 10px rgba(0,0,0,0.06);margin-bottom:14px">'
-    +     '<div style="display:inline-block;background:#111;color:#fff;font-weight:800;font-size:12px;padding:4px 12px;border-radius:20px;margin-bottom:12px">'+vI(c.vehicule)+' • '+((c.pax||1))+' pax</div>'
-    +     '<div style="font-size:17px;font-weight:800;color:#111;margin-bottom:4px">'+E(nomPassagerChauffeur(c))+'</div>'
-    +     '<div style="font-size:12px;color:#777;margin-bottom:14px">'+dt+'</div>'
-    +     '<div style="display:flex;gap:10px;margin-bottom:4px"><span style="font-size:16px">📍</span><div><div style="font-size:11px;color:#999;font-weight:600">DÉPART</div><div style="font-size:14px;color:#111;font-weight:600">'+E(c.depart||c.lieu||'—')+'</div></div></div>'
-    +     '<div style="border-left:2px dashed #ddd;height:14px;margin-left:7px"></div>'
-    +     '<div style="display:flex;gap:10px"><span style="font-size:16px">🏁</span><div><div style="font-size:11px;color:#999;font-weight:600">ARRIVÉE</div><div style="font-size:14px;color:#111;font-weight:600">'+E(c.arrivee||c.duree||'—')+'</div></div></div>'
-    +   '</div>'
-    +   prixHtml
-    +   notesHtml
-    +   actionBtn
-    +   navBtns
-    +   callBtns
-    +   noShowBtn
-    +   '<button onclick="generateDriverPDF(\''+c._id+'\')" style="width:100%;background:#fff;border:1px solid #b8860b;border-radius:12px;padding:13px;font-size:13px;font-weight:700;color:#b8860b;cursor:pointer;margin-bottom:10px">📄 Bon de commande PDF</button>'
-    +   '<button onclick="document.getElementById(\'coursefull-overlay\').remove();gp(\'mescourses\',null);" style="width:100%;background:transparent;border:none;padding:10px;font-size:13px;font-weight:700;color:#777;cursor:pointer">Voir toutes mes courses</button>'
+    + '<div style="max-width:560px;margin:0 auto;padding:14px">'
+    +   body
+    +   '<button onclick="window._courseFullOpenId=null;var o=document.getElementById(\'coursefull-overlay\');if(o)o.remove();gp(\'mescourses\',null);" style="width:100%;background:transparent;border:none;padding:12px;font-size:13px;font-weight:700;color:#777;cursor:pointer;margin-top:4px">Voir toutes mes courses</button>'
     + '</div>';
   document.body.appendChild(ov);
+  try { if(typeof majCompteursAttente==='function') majCompteursAttente(); } catch(e){}
+  try { if(typeof renderMaJournee==='function') renderMaJournee(); } catch(e){}
 }
 window.openCourseFull = openCourseFull;
-
-// Action depuis la page plein écran : avance le statut puis rafraîchit la page.
-window._courseFullAction = async function(id, next) {
-  await driverNextStep(id, next);
-  var c = (D.courses||[]).find(x=>x._id===id);
-  // Course terminée → on ferme la page et on revient à la liste.
-  if(!c || ['terminee','annulee','noshow','payee','facturee'].includes(c.statut)) {
-    var ov = document.getElementById('coursefull-overlay'); if(ov) ov.remove();
-    return;
-  }
-  openCourseFull(id); // ré-affiche avec le nouveau statut / bouton suivant
-};
-window._courseFullNoShow = async function(id) {
-  await driverNoShow(id);
-  var ov = document.getElementById('coursefull-overlay'); if(ov) ov.remove();
-};
 
 
 function showOfferModal(course) {
@@ -16642,9 +16858,14 @@ function createCC() {
 }
 
 window.refreshCarteChauffeurs = async function() {
-  const chauffeurs = await fbGet('chauffeurs');
+  let chauffeurs = await fbGet('chauffeurs');
   const courses = await fbGet('courses');
   D.chauffeurs = chauffeurs;
+  // GÉRANT : la carte ne montre QUE les chauffeurs de SA propre société.
+  if(SESSION && SESSION.role==='chauffeur' && (SESSION.gerant || SESSION.gerantPro)){
+    var _soc = (SESSION.socNom||'').trim();
+    chauffeurs = chauffeurs.filter(function(c){ return (c.soc_nom||'').trim() === _soc; });
+  }
   D.courses = courses.sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
   // On affiche tous les chauffeurs qui ont une position connue, mais on
   // distingue "en ligne" (position récente < 10 min) de "hors ligne" (position
@@ -17990,6 +18211,19 @@ window.driverUpd = async function(id, statut, note) {
   }
   showToast(statut?'Statut mis à jour ✓':'Note ajoutée ✓');
 
+  // Si la page plein ecran de suivi est ouverte sur CETTE course et qu'on vient de
+  // changer son statut, on la rafraichit SUR PLACE : le chauffeur reste dans la page
+  // et voit directement le bouton de l'etape suivante (En route, Sur place…).
+  if(statut && window._courseFullOpenId === id) {
+    const _cc = D.courses.find(x=>x._id===id);
+    if(_cc && !['terminee','annulee','noshow','payee','facturee'].includes(_cc.statut)) {
+      try { openCourseFull(id); } catch(e){}
+    } else {
+      window._courseFullOpenId = null;
+      const _o = document.getElementById('coursefull-overlay'); if(_o) _o.remove();
+    }
+  }
+
   // Si sur_place → demander si on envoie un SMS aux passagers
   if(statut === 'sur_place') {
     const c = D.courses.find(x=>x._id===id);
@@ -18002,7 +18236,7 @@ window.driverUpd = async function(id, statut, note) {
 window.askSendSMS = function(c) {
   const present = c.passagers.filter(p=>p.present!==false).length;
   const ov = document.createElement('div');
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:550;display:flex;align-items:center;justify-content:center;padding:20px';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000001;display:flex;align-items:center;justify-content:center;padding:20px';
   ov.innerHTML = `
     <div style="background:#fff;border-radius:18px;width:380px;max-width:100%;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
       <div style="padding:24px 22px;text-align:center">
@@ -18037,7 +18271,7 @@ window.showSMSPopup = function(c) {
   }
 
   const ov = document.createElement('div');
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px)';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10000001;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px)';
   ov.innerHTML = `
     <div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:560px;max-width:100%;max-height:90vh;overflow:hidden;box-shadow:var(--shadow);display:flex;flex-direction:column">
       <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
@@ -18661,11 +18895,13 @@ function gp(name, btn) {
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   const pg=document.getElementById('page-'+name);if(pg)pg.classList.add('on');
   if(btn)btn.classList.add('on');
-  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
+  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres','gerant-dashboard':'Mon tableau de bord','gerant-nouveau':'Nouveau transfert',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
   document.getElementById('page-title').textContent=titles[name]||name;
   closeMob();
   if(name==='cartechauffeurs') { setTimeout(initCarteChauffeurs, 300); }
   if(name==='soustraitants') { setTimeout(()=>{ try{ renderSoustraitants(); }catch(e){} }, 200); }
+  if(name==='gerant-dashboard') { setTimeout(()=>{ try{ renderGerantDashboard(); }catch(e){} }, 150); }
+  if(name==='gerant-nouveau') { setTimeout(()=>{ try{ renderGerantNouveau(); }catch(e){} }, 150); }
   if(name==='gerant-chauffeurs') { setTimeout(()=>{ try{ renderGerantChauffeurs(); }catch(e){} }, 200); }
   if(name==='gerant-vehicules') { setTimeout(()=>{ try{ renderGerantVehicules(); }catch(e){} }, 200); }
   if(name==='parametres') { setTimeout(()=>{ try{ renderApiKeys(); }catch(e){} try{ renderClientColors(); }catch(e){} try{ loadDriverTimeout(); }catch(e){} try{ majEtatNotif(); }catch(e){} }, 200); }
@@ -19277,7 +19513,7 @@ window.viewPax = function(id) {
     if(!c||!c.passagers?.length) return;
 
     const ov = document.createElement('div');
-    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000001;display:flex;align-items:center;justify-content:center;padding:20px';
     ov.innerHTML = '<div style="background:#fff;border-radius:20px;width:100%;max-width:500px;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3)">'
       + '<div style="padding:16px 20px;border-bottom:1px solid #f0f2f5;display:flex;align-items:center;justify-content:space-between">'
       + '<div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800">&#128101; Passagers</div>'
