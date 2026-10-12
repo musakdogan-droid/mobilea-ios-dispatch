@@ -1,4 +1,4 @@
-name: Build iOS MOBILEA Driver (Capacitor)
+name: Build iOS MOBILEA Dispatch (Capacitor)
 on:
   workflow_dispatch:
 
@@ -15,19 +15,19 @@ jobs:
 
       - name: Trouver le dossier du projet Capacitor
         run: |
-          # Driver : on identifie le projet par son appId (fr.mobilea.driver),
-          # robuste aux espaces / renommages de dossier.
+          # Dispatch : on identifie le projet par son appId (fr.mobilea.dispatch),
+          # ce qui marche meme si le nom du dossier contient un espace.
           CFG=""
           while IFS= read -r f; do
-            if grep -q "fr.mobilea.driver" "$f"; then CFG="$f"; break; fi
+            if grep -q "fr.mobilea.dispatch" "$f"; then CFG="$f"; break; fi
           done < <(find . -name capacitor.config.json -not -path '*/node_modules/*')
           if [ -z "$CFG" ]; then
-            echo "ERREUR : capacitor.config.json du driver (fr.mobilea.driver) introuvable."
+            echo "ERREUR : capacitor.config.json du dispatch (fr.mobilea.dispatch) introuvable."
             find . -maxdepth 2 -not -path '*/.git/*' | sort
             exit 1
           fi
           PROJ=$(dirname "$CFG")
-          echo "Projet driver: $PROJ"
+          echo "Projet dispatch: $PROJ"
           echo "Projet trouve dans : $PROJ"
           echo "PROJ_DIR=$PROJ" >> "$GITHUB_ENV"
 
@@ -85,11 +85,10 @@ jobs:
           pb "Delete :UIBackgroundModes" 2>/dev/null || true
           pb "Add :UIBackgroundModes array" || true
           pb "Add :UIBackgroundModes:0 string remote-notification" || true
-          pb "Add :UIBackgroundModes:1 string location" || true
           # 3) Lier le fichier d'entitlements au projet Xcode (CODE_SIGN_ENTITLEMENTS)
           #    pour toutes les configurations de la cible App.
           if ! grep -q "CODE_SIGN_ENTITLEMENTS" App.xcodeproj/project.pbxproj; then
-            /usr/bin/sed -i '' -E 's/(PRODUCT_BUNDLE_IDENTIFIER = fr\.mobilea\.driver;)/CODE_SIGN_ENTITLEMENTS = App\/App.entitlements; \1/g' App.xcodeproj/project.pbxproj || true
+            /usr/bin/sed -i '' -E 's/(PRODUCT_BUNDLE_IDENTIFIER = fr\.mobilea\.dispatch;)/CODE_SIGN_ENTITLEMENTS = App\/App.entitlements; \1/g' App.xcodeproj/project.pbxproj || true
             echo "CODE_SIGN_ENTITLEMENTS injecte dans le projet."
           else
             echo "CODE_SIGN_ENTITLEMENTS deja present."
@@ -204,7 +203,7 @@ jobs:
             -workspace "App.xcworkspace" \
             -scheme "App" \
             -configuration Release \
-            -archivePath "$RUNNER_TEMP/MOBILEA_Driver.xcarchive" \
+            -archivePath "$RUNNER_TEMP/MOBILEA_Dispatch.xcarchive" \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             CODE_SIGN_STYLE="Manual" \
@@ -233,8 +232,8 @@ jobs:
             <string>Apple Distribution</string>
             <key>provisioningProfiles</key>
             <dict>
-              <key>fr.mobilea.driver</key>
-              <string>MOBILEA Driver Distribution</string>
+              <key>fr.mobilea.dispatch</key>
+              <string>MOBILEA Dispatch Distribution</string>
             </dict>
             <key>uploadSymbols</key>
             <true/>
@@ -246,23 +245,40 @@ jobs:
           </plist>
           PLIST
           xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/MOBILEA_Driver.xcarchive" \
+            -archivePath "$RUNNER_TEMP/MOBILEA_Dispatch.xcarchive" \
             -exportPath "$RUNNER_TEMP/export" \
             -exportOptionsPlist /tmp/exportOptions.plist
 
       - name: Upload vers App Store Connect
         env:
-          # PLAN B : authentification avec ton Apple ID + un mot de passe
-          # d'application (cree sur appleid.apple.com -> Connexion et securite
-          # -> Mots de passe pour app). On s'authentifie en tant que toi, donc
-          # l'app t'appartient et reste visible -> fini l'erreur 19 de la cle API.
-          APPLE_ID_EMAIL: ${{ secrets.APPLE_ID_EMAIL }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          API_KEY_RAW: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
         run: |
+          mkdir -p ~/private_keys
+          KEY_ID_CLEAN=$(printf '%s' "$API_KEY_ID" | tr -d ' \r\n')
+          ISSUER_CLEAN=$(printf '%s' "$API_ISSUER_ID" | tr -d ' \r\n')
+          KEYFILE=~/private_keys/AuthKey_${KEY_ID_CLEAN}.p8
+          printf '%s' "$API_KEY_RAW" > /tmp/rawkey.txt
+          if grep -q "BEGIN PRIVATE KEY" /tmp/rawkey.txt; then
+            cp /tmp/rawkey.txt "$KEYFILE"
+          else
+            printf '%s' "$API_KEY_RAW" | tr -d ' \r\n' | base64 -d > "$KEYFILE"
+          fi
+          chmod 600 "$KEYFILE"
+          # Diagnostic SANS fuite de secret (GitHub masque les valeurs) :
+          echo "Longueur Key ID : ${#KEY_ID_CLEAN} (attendu 10)"
+          echo "Longueur Issuer ID : ${#ISSUER_CLEAN} (attendu 36)"
+          if head -1 "$KEYFILE" | grep -q "BEGIN PRIVATE KEY"; then
+            echo ".p8 : OK (commence bien par BEGIN PRIVATE KEY)"
+          else
+            echo "ATTENTION : le .p8 ne commence PAS par BEGIN PRIVATE KEY — le secret APP_STORE_CONNECT_API_KEY_CONTENT est mal colle."
+          fi
           IPA="$(ls "$RUNNER_TEMP"/export/*.ipa)"
           echo "Upload de : $IPA"
           xcrun altool --upload-app \
             --file "$IPA" \
             --type ios \
-            --username "$APPLE_ID_EMAIL" \
-            --password "$APPLE_APP_PASSWORD"
+            --apiKey "$KEY_ID_CLEAN" \
+            --apiIssuer "$ISSUER_CLEAN"
+          rm -f "$KEYFILE"
