@@ -276,30 +276,22 @@ jobs:
           fi
           IPA="$(ls "$RUNNER_TEMP"/export/*.ipa)"
           echo "Upload de : $IPA"
-          # Verif du vrai bundle ID DANS l'IPA : doit etre EXACTEMENT fr.mobilea.dispatch
           BID=$(unzip -p "$IPA" 'Payload/*.app/Info.plist' 2>/dev/null | plutil -extract CFBundleIdentifier raw - 2>/dev/null || echo '?')
           echo "Bundle ID dans l'IPA : [$BID]  (attendu : fr.mobilea.dispatch)"
-          # L'erreur 19 est souvent transitoire cote Apple, surtout avec une cle
-          # API recemment creee. On reessaie donc jusqu'a 6 fois avec des pauses.
-          ok=0
-          for i in 1 2 3 4 5 6; do
-            echo "========== Tentative d'upload $i/6 =========="
-            if xcrun altool --upload-app \
-                --file "$IPA" \
-                --type ios \
-                --apiKey "$KEY_ID_CLEAN" \
-                --apiIssuer "$ISSUER_CLEAN"; then
-              ok=1
-              echo "Upload reussi a la tentative $i."
-              break
-            fi
-            if [ "$i" -lt 6 ]; then
-              echo "Echec tentative $i — nouvelle tentative dans 45s (propagation Apple)..."
-              sleep 45
-            fi
-          done
+          # ===== TEST DECISIF : interroge l'API App Store Connect avec CETTE cle =====
+          # 1) l'app fr.mobilea.dispatch est-elle visible par la cle ?
+          # 2) quelles apps la cle voit-elle au total ?
+          echo "===== L'app fr.mobilea.dispatch est-elle visible par la cle ? ====="
+          echo 'cmVxdWlyZSAnb3BlbnNzbCc7IHJlcXVpcmUgJ2Jhc2U2NCc7IHJlcXVpcmUgJ2pzb24nOyByZXF1aXJlICduZXQvaHR0cCc7IHJlcXVpcmUgJ3VyaScKa2lkLCBpc3MsIHA4cGF0aCA9IEFSR1YKa2V5ID0gT3BlblNTTDo6UEtleTo6RUMubmV3KEZpbGUucmVhZChwOHBhdGgpKQpub3cgPSBUaW1lLm5vdy50b19pCmI2NCA9IC0+KHMpeyBCYXNlNjQudXJsc2FmZV9lbmNvZGU2NChzKS5kZWxldGUoJz0nKSB9CnNlZyA9IGI2NC5jYWxsKEpTT04uZHVtcCh7YWxnOidFUzI1Nicsa2lkOmtpZCx0eXA6J0pXVCd9KSkgKyAnLicgKyBiNjQuY2FsbChKU09OLmR1bXAoe2lzczppc3MsaWF0Om5vdyxleHA6bm93KzYwMCxhdWQ6J2FwcHN0b3JlY29ubmVjdC12MSd9KSkKZGVyID0ga2V5LnNpZ24oT3BlblNTTDo6RGlnZXN0OjpTSEEyNTYubmV3LCBzZWcpCmEgPSBPcGVuU1NMOjpBU04xLmRlY29kZShkZXIpLnZhbHVlCnJhdyA9IGFbMF0udmFsdWUudG9fcygyKS5yanVzdCgzMiwiXHgwMCIpICsgYVsxXS52YWx1ZS50b19zKDIpLnJqdXN0KDMyLCJceDAwIikKand0ID0gc2VnICsgJy4nICsgYjY0LmNhbGwocmF3KQp1cmkgPSBVUkkoJ2h0dHBzOi8vYXBpLmFwcHN0b3JlY29ubmVjdC5hcHBsZS5jb20vdjEvYXBwcz9maWx0ZXIlNUJidW5kbGVJZCU1RD1mci5tb2JpbGVhLmRpc3BhdGNoJmxpbWl0PTUnKQpyZXEgPSBOZXQ6OkhUVFA6OkdldC5uZXcodXJpKTsgcmVxWydBdXRob3JpemF0aW9uJ10gPSAiQmVhcmVyICN7and0fSIKcmVzID0gTmV0OjpIVFRQLnN0YXJ0KHVyaS5ob3N0LCA0NDMsIHVzZV9zc2w6dHJ1ZSl7fGh8IGgucmVxdWVzdChyZXEpfQpwdXRzICJIVFRQICN7cmVzLmNvZGV9IgpiZWdpbgogIGogPSBKU09OLnBhcnNlKHJlcy5ib2R5KQogIGlmIGpbJ2RhdGEnXSAmJiAhalsnZGF0YSddLmVtcHR5PwogICAgalsnZGF0YSddLmVhY2h7fGFwcHwgcHV0cyAiQVBQIFZJU0lCTEU6ICN7YXBwLmRpZygnYXR0cmlidXRlcycsJ25hbWUnKX0gKGlkICN7YXBwWydpZCddfSwgYnVuZGxlICN7YXBwLmRpZygnYXR0cmlidXRlcycsJ2J1bmRsZUlkJyl9KSJ9CiAgZWxzaWYgalsnZXJyb3JzJ10KICAgIHB1dHMgIkVSUkVVUiBBUEkgOiAje2pbJ2Vycm9ycyddLm1hcHt8ZXwgZVsndGl0bGUnXS50b19zICsgJyAtICcgKyBlWydkZXRhaWwnXS50b19zfS5qb2luKCcgfCAnKX0iCiAgZWxzZQogICAgcHV0cyAiQVVDVU5FIGFwcCBhdmVjIGxlIGJ1bmRsZSBmci5tb2JpbGVhLmRpc3BhdGNoIG4nZXN0IHZpc2libGUgcGFyIGNldHRlIGNsZS4iCiAgICBwdXRzICIoTGEgY2xlIHZvaXQgcGV1dC1ldHJlIGQnYXV0cmVzIGFwcHMgOyB0ZXN0IGxhcmdlIGNpLWRlc3NvdXMuKSIKICBlbmQKcmVzY3VlID0+IGUKICBwdXRzICJSZXBvbnNlIGJydXRlOiAje3Jlcy5ib2R5WzAsNjAwXX0iCmVuZAo=' | base64 -d > /tmp/aschk.rb
+          ruby /tmp/aschk.rb "$KEY_ID_CLEAN" "$ISSUER_CLEAN" "$KEYFILE" || true
+          echo "===== Liste des apps visibles par la cle ====="
+          echo 'cmVxdWlyZSAnb3BlbnNzbCc7IHJlcXVpcmUgJ2Jhc2U2NCc7IHJlcXVpcmUgJ2pzb24nOyByZXF1aXJlICduZXQvaHR0cCc7IHJlcXVpcmUgJ3VyaScKa2lkLCBpc3MsIHA4cGF0aCA9IEFSR1YKa2V5ID0gT3BlblNTTDo6UEtleTo6RUMubmV3KEZpbGUucmVhZChwOHBhdGgpKQpub3cgPSBUaW1lLm5vdy50b19pCmI2NCA9IC0+KHMpeyBCYXNlNjQudXJsc2FmZV9lbmNvZGU2NChzKS5kZWxldGUoJz0nKSB9CnNlZyA9IGI2NC5jYWxsKEpTT04uZHVtcCh7YWxnOidFUzI1Nicsa2lkOmtpZCx0eXA6J0pXVCd9KSkgKyAnLicgKyBiNjQuY2FsbChKU09OLmR1bXAoe2lzczppc3MsaWF0Om5vdyxleHA6bm93KzYwMCxhdWQ6J2FwcHN0b3JlY29ubmVjdC12MSd9KSkKZGVyID0ga2V5LnNpZ24oT3BlblNTTDo6RGlnZXN0OjpTSEEyNTYubmV3LCBzZWcpCmEgPSBPcGVuU1NMOjpBU04xLmRlY29kZShkZXIpLnZhbHVlCnJhdyA9IGFbMF0udmFsdWUudG9fcygyKS5yanVzdCgzMiwiXHgwMCIpICsgYVsxXS52YWx1ZS50b19zKDIpLnJqdXN0KDMyLCJceDAwIikKand0ID0gc2VnICsgJy4nICsgYjY0LmNhbGwocmF3KQp1cmkgPSBVUkkoJ2h0dHBzOi8vYXBpLmFwcHN0b3JlY29ubmVjdC5hcHBsZS5jb20vdjEvYXBwcz9saW1pdD01MCcpCnJlcSA9IE5ldDo6SFRUUDo6R2V0Lm5ldyh1cmkpOyByZXFbJ0F1dGhvcml6YXRpb24nXSA9ICJCZWFyZXIgI3tqd3R9IgpyZXMgPSBOZXQ6OkhUVFAuc3RhcnQodXJpLmhvc3QsIDQ0MywgdXNlX3NzbDp0cnVlKXt8aHwgaC5yZXF1ZXN0KHJlcSl9CnB1dHMgIkhUVFAgI3tyZXMuY29kZX0iCmJlZ2luCiAgaiA9IEpTT04ucGFyc2UocmVzLmJvZHkpCiAgaWYgalsnZGF0YSddCiAgICBwdXRzICJOb21icmUgZCdhcHBzIHZpc2libGVzIHBhciBjZXR0ZSBjbGUgOiAje2pbJ2RhdGEnXS5zaXplfSIKICAgIGpbJ2RhdGEnXS5lYWNoe3xhcHB8IHB1dHMgIiAtICN7YXBwLmRpZygnYXR0cmlidXRlcycsJ25hbWUnKX0gIFsje2FwcC5kaWcoJ2F0dHJpYnV0ZXMnLCdidW5kbGVJZCcpfV0gIGlkPSN7YXBwWydpZCddfSJ9CiAgZWxzZQogICAgcHV0cyAiUmVwb25zZTogI3tyZXMuYm9keVswLDYwMF19IgogIGVuZApyZXNjdWUgPT4gZQogIHB1dHMgIlJlcG9uc2UgYnJ1dGU6ICN7cmVzLmJvZHlbMCw2MDBdfSIKZW5kCg==' | base64 -d > /tmp/aschk_all.rb
+          ruby /tmp/aschk_all.rb "$KEY_ID_CLEAN" "$ISSUER_CLEAN" "$KEYFILE" || true
+          echo "===== Tentative d'upload (altool) ====="
+          UPLOAD_FAILED=0
+          xcrun altool --upload-app --file "$IPA" --type ios --apiKey "$KEY_ID_CLEAN" --apiIssuer "$ISSUER_CLEAN" || UPLOAD_FAILED=1
           rm -f "$KEYFILE"
-          if [ "$ok" != "1" ]; then
-            echo "Upload echoue apres 6 tentatives."
+          if [ "$UPLOAD_FAILED" = "1" ]; then
+            echo "altool a echoue — voir le TEST DECISIF ci-dessus pour savoir si la cle voit l'app."
             exit 1
           fi
