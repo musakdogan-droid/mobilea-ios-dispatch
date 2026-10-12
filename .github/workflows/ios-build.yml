@@ -272,20 +272,34 @@ jobs:
           if head -1 "$KEYFILE" | grep -q "BEGIN PRIVATE KEY"; then
             echo ".p8 : OK (commence bien par BEGIN PRIVATE KEY)"
           else
-            echo "ATTENTION : le .p8 ne commence PAS par BEGIN PRIVATE KEY — le secret APP_STORE_CONNECT_API_KEY_CONTENT est mal colle."
+            echo "ATTENTION : le .p8 ne commence PAS par BEGIN PRIVATE KEY — secret mal colle."
           fi
-          # DIAGNOSTIC DECISIF : quelles equipes (providers) cette cle voit-elle ?
-          # L'app fr.mobilea.dispatch est signee sous l'equipe PUZZP2FP89 : il
-          # FAUT que PUZZP2FP89 apparaisse dans cette liste. Sinon la cle est
-          # dans la mauvaise equipe -> c'est la cause de l'erreur 19.
-          echo "===== EQUIPES VISIBLES PAR LA CLE API ====="
-          xcrun altool --list-providers --apiKey "$KEY_ID_CLEAN" --apiIssuer "$ISSUER_CLEAN" || true
-          echo "===== (l'equipe attendue est PUZZP2FP89) ====="
           IPA="$(ls "$RUNNER_TEMP"/export/*.ipa)"
           echo "Upload de : $IPA"
-          xcrun altool --upload-app \
-            --file "$IPA" \
-            --type ios \
-            --apiKey "$KEY_ID_CLEAN" \
-            --apiIssuer "$ISSUER_CLEAN"
+          # Verif du vrai bundle ID DANS l'IPA : doit etre EXACTEMENT fr.mobilea.dispatch
+          BID=$(unzip -p "$IPA" 'Payload/*.app/Info.plist' 2>/dev/null | plutil -extract CFBundleIdentifier raw - 2>/dev/null || echo '?')
+          echo "Bundle ID dans l'IPA : [$BID]  (attendu : fr.mobilea.dispatch)"
+          # L'erreur 19 est souvent transitoire cote Apple, surtout avec une cle
+          # API recemment creee. On reessaie donc jusqu'a 6 fois avec des pauses.
+          ok=0
+          for i in 1 2 3 4 5 6; do
+            echo "========== Tentative d'upload $i/6 =========="
+            if xcrun altool --upload-app \
+                --file "$IPA" \
+                --type ios \
+                --apiKey "$KEY_ID_CLEAN" \
+                --apiIssuer "$ISSUER_CLEAN"; then
+              ok=1
+              echo "Upload reussi a la tentative $i."
+              break
+            fi
+            if [ "$i" -lt 6 ]; then
+              echo "Echec tentative $i — nouvelle tentative dans 45s (propagation Apple)..."
+              sleep 45
+            fi
+          done
           rm -f "$KEYFILE"
+          if [ "$ok" != "1" ]; then
+            echo "Upload echoue apres 6 tentatives."
+            exit 1
+          fi
