@@ -274,6 +274,13 @@ jobs:
           else
             echo "ATTENTION : le .p8 ne commence PAS par BEGIN PRIVATE KEY — le secret APP_STORE_CONNECT_API_KEY_CONTENT est mal colle."
           fi
+          # DIAGNOSTIC DECISIF : quelles equipes (providers) cette cle voit-elle ?
+          # L'app fr.mobilea.dispatch est signee sous l'equipe PUZZP2FP89 : il
+          # FAUT que PUZZP2FP89 apparaisse dans cette liste. Sinon la cle est
+          # dans la mauvaise equipe -> c'est la cause de l'erreur 19.
+          echo "===== EQUIPES VISIBLES PAR LA CLE API ====="
+          xcrun altool --list-providers --apiKey "$KEY_ID_CLEAN" --apiIssuer "$ISSUER_CLEAN" || true
+          echo "===== (l'equipe attendue est PUZZP2FP89) ====="
           IPA="$(ls "$RUNNER_TEMP"/export/*.ipa)"
           echo "Upload de : $IPA"
           xcrun altool --upload-app \
