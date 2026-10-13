@@ -1215,6 +1215,7 @@ tr:last-child td{border-bottom:none}
               <div style="display:flex;gap:8px;flex-wrap:wrap">
                 <button id="notif-activer-btn" class="btn btn-p btn-sm" onclick="activerNotifications()" style="display:none"><i class="fas fa-bell"></i> Activer les notifications</button>
                 <button class="btn btn-s btn-sm" onclick="testerNotification()"><i class="fas fa-vial"></i> Tester</button>
+                <button class="btn btn-s btn-sm" onclick="diagnostiquerPush()"><i class="fas fa-stethoscope"></i> Diagnostic</button>
               </div>
               <div id="notif-diag" style="display:none;margin-top:10px;font-size:11px;color:var(--muted2);background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;line-height:1.6"></div>
             </div>
@@ -1696,6 +1697,18 @@ tr:last-child td{border-bottom:none}
       </div>
 
       <!-- GÉRANT : Mes chauffeurs -->
+      <!-- GÉRANT : Mes transferts -->
+      <div class="page" id="page-gerant-transferts">
+        <div class="sec" style="max-width:660px;margin:0 auto">
+          <div class="sec-h">
+            <div class="sec-t"><i class="fas fa-list-ul" style="color:#f59e0b"></i> Mes transferts <span id="gt-count" class="bdg bdg-gold" style="margin-left:6px">0</span></div>
+            <div class="sec-a"><button class="btn btn-s btn-sm" onclick="renderGerantTransferts()"><i class="fas fa-sync"></i> Actualiser</button></div>
+          </div>
+          <div style="padding:12px 16px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border2)">Suivez les transferts que vous avez créés : attribués à vos chauffeurs ou proposés au réseau. Vous pouvez annuler ceux qui ne sont pas encore pris.</div>
+          <div id="gt-list" style="padding:14px"></div>
+        </div>
+      </div>
+
       <!-- GÉRANT : Mon tableau de bord -->
       <div class="page" id="page-gerant-dashboard">
         <div style="margin-bottom:18px">
@@ -4143,6 +4156,78 @@ window.testerNotification = function() {
   setTimeout(majEtatNotif, 300);
 }
 
+// ── DIAGNOSTIC COMPLET DES NOTIFICATIONS ──────────────────────────────────
+// Teste chaque maillon de la chaîne et affiche lequel casse :
+//   1) support / permission / app installée
+//   2) Service Worker (nécessaire aux notifs locales en arrière-plan)
+//   3) abonnement OneSignal (l'appareil est-il enregistré pour le push ?)
+//   4) appel RÉEL du Worker push → statut HTTP + réponse OneSignal
+//   5) notification locale de test
+window.diagnostiquerPush = async function(){
+  var box = document.getElementById('notif-diag');
+  if(box){ box.style.display='block'; box.innerHTML = '⏳ Diagnostic en cours…'; }
+  var L = [];
+  var esc = (typeof E==='function') ? E : function(s){return String(s==null?'':s);};
+
+  // 1) Support / permission / standalone
+  var support = ('Notification' in window);
+  var standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || (navigator.standalone === true);
+  L.push('Support notifications : ' + (support?'oui':'NON'));
+  L.push('Permission : ' + (support?Notification.permission:'n/a'));
+  L.push('App installée (écran d\'accueil) : ' + (standalone?'oui':'non (navigateur)'));
+
+  // 2) Service Worker
+  if('serviceWorker' in navigator){
+    try {
+      var regs = await navigator.serviceWorker.getRegistrations();
+      L.push('Service Worker enregistré : ' + (regs && regs.length ? (regs.length+' ✔') : 'AUCUN'));
+      L.push('SW actif (contrôleur) : ' + (navigator.serviceWorker.controller ? 'oui' : 'pas encore'));
+    } catch(e){ L.push('Service Worker : erreur (' + (e&&e.message||e) + ')'); }
+  } else { L.push('Service Worker : NON supporté'); }
+
+  // 3) Abonnement OneSignal
+  try {
+    if(window.OneSignal && OneSignal.User && OneSignal.User.PushSubscription){
+      var opted = OneSignal.User.PushSubscription.optedIn;
+      var osid  = OneSignal.User.PushSubscription.id;
+      L.push('OneSignal abonné : ' + (opted?'oui':'NON') + (osid?(' (id '+String(osid).slice(0,8)+'…)'):' (pas d\'id)'));
+    } else {
+      L.push('OneSignal : SDK non chargé (bloqué, hors ligne, ou non initialisé)');
+    }
+  } catch(e){ L.push('OneSignal : erreur (' + (e&&e.message||e) + ')'); }
+
+  // 4) Appel RÉEL du Worker push (bout en bout) — ciblé sur moi si chauffeur,
+  //    sinon sur le staff. Montre le vrai statut HTTP + la réponse du serveur.
+  var cible = null, tag = null;
+  if(window.SESSION && SESSION.role==='chauffeur' && SESSION.chauffeurId) cible = [SESSION.chauffeurId];
+  else tag = { key:'role', value:'staff' };
+  try {
+    var r = await sendPushNotification('MOBILEA — Test diagnostic', 'Test ' + (new Date()).toLocaleTimeString('fr-FR'), null, cible, tag);
+    if(r){
+      L.push('Worker push (' + ONESIGNAL_PROXY.replace('https://','') + ') : ' + (r.ok?('OK ' + (r.status||'')):('ÉCHEC ' + (r.status||'injoignable'))));
+      if(r.body) L.push('Réponse serveur : ' + r.body);
+    } else { L.push('Worker push : pas de réponse'); }
+  } catch(e){ L.push('Worker push : exception (' + (e&&e.message||e) + ')'); }
+
+  // 5) Notification locale de test (visible hors app si permission accordée)
+  try {
+    if(support && Notification.permission==='granted'){
+      var opts = { body:'Si vous voyez ceci hors de l\'app, la notification locale fonctionne.', icon:'/icons/chauffeur-192.png', badge:'/icons/chauffeur-192.png', tag:'notif-diag', renotify:true, vibrate:[120,60,120] };
+      if(navigator.serviceWorker && navigator.serviceWorker.ready){
+        navigator.serviceWorker.ready.then(function(reg){ try{ reg.showNotification('MOBILEA — Test diagnostic', opts); }catch(e){ try{ new Notification('MOBILEA — Test diagnostic', opts); }catch(_){} } });
+      } else { try{ new Notification('MOBILEA — Test diagnostic', opts); }catch(e){} }
+    }
+  } catch(e){}
+
+  if(box){
+    box.innerHTML = L.map(function(x){
+      var warn = /\bNON\b|AUCUN|ÉCHEC|non délivr|erreur|exception|0 destinataire|aucun appareil|refus|BLOQ|denied|non \(nav|SDK non|pas encore|pas d'id|injoignable/i.test(x);
+      return '<div style="'+(warn?'color:#dc2626;font-weight:700':'')+'">• '+esc(x)+'</div>';
+    }).join('');
+  }
+  try { majEtatNotif(); } catch(e){}
+};
+
 // Bandeau d'alerte (admin/dispatch) : chauffeurs entrés dans la zone 7 km.
 // Affiche un bandeau flottant + déclenche une notification push une fois.
 function renderAlertesZone() {
@@ -4840,12 +4925,17 @@ function startApp() {
       btnGN.className = 'ni dyn-nav'; btnGN.dataset.p = 'gerant-nouveau';
       btnGN.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-plus-circle"></i> Nouveau transfert';
       btnGN.onclick = () => gp('gerant-nouveau', btnGN);
+      const btnGT = document.createElement('button');
+      btnGT.className = 'ni dyn-nav'; btnGT.dataset.p = 'gerant-transferts';
+      btnGT.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-list-ul"></i> Mes transferts';
+      btnGT.onclick = () => gp('gerant-transferts', btnGT);
       const btnGMap = document.createElement('button');
       btnGMap.className = 'ni dyn-nav'; btnGMap.dataset.p = 'cartechauffeurs';
       btnGMap.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-map-marked-alt"></i> Carte chauffeurs';
       btnGMap.onclick = () => gp('cartechauffeurs', btnGMap);
       nav.insertBefore(btnGMap, btnM);
-      nav.insertBefore(btnGN, btnGMap);
+      nav.insertBefore(btnGT, btnGMap);
+      nav.insertBefore(btnGN, btnGT);
       nav.insertBefore(btnGD, btnGN);
     }
     // Base gérant (gestion société) — case admin "Gérant de la société" (gerant).
@@ -5162,23 +5252,67 @@ async function sendPushNotification(title, message, url, targetChauffeurIds, tar
   // On neutralise l'ancienne URL web qui traine dans de nombreux appels :
   // sur l'app native elle ouvrirait Safari au lieu de l'application.
   if(url && /musakdogan-droid\.github\.io/.test(url)) url = null;
+  // IMPORTANT : on LIT désormais la réponse du Worker et on la mémorise dans
+  // window._lastPushResult. Avant, toute erreur (Worker HS, clé OneSignal
+  // expirée, 0 abonné…) était avalée en silence → impossible de diagnostiquer.
+  const payload = {
+    title,
+    message,
+    // Pas d'URL web par defaut : sur l'app native, une URL ouvrirait Safari
+    // au lieu de l'app. Sans URL, le tap ouvre directement l'application.
+    url: url || null,
+    targetChauffeurIds: (targetChauffeurIds && targetChauffeurIds.length) ? targetChauffeurIds : null,
+    targetTag: targetTag || null
+  };
   try {
-    await fetch(ONESIGNAL_PROXY, {
+    const resp = await fetch(ONESIGNAL_PROXY, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        message,
-        // Pas d'URL web par defaut : sur l'app native, une URL ouvrirait Safari
-        // au lieu de l'app. Sans URL, le tap ouvre directement l'application.
-        url: url || null,
-        targetChauffeurIds: (targetChauffeurIds && targetChauffeurIds.length) ? targetChauffeurIds : null,
-        targetTag: targetTag || null
-      })
+      body: JSON.stringify(payload)
     });
+    let txt = '';
+    try { txt = await resp.text(); } catch(e){}
+    const res = { ok: resp.ok, status: resp.status, body: (txt||'').slice(0,600), at: Date.now() };
+    window._lastPushResult = res;
+    if(!resp.ok){
+      console.warn('[MOBILEA] Push — échec serveur', resp.status, txt);
+      _signalerEchecPush('Serveur push erreur ' + resp.status);
+    } else {
+      // OneSignal répond en général { id, recipients } ou { errors:[...] }.
+      try {
+        const j = JSON.parse(txt);
+        if(j && j.errors){
+          const em = Array.isArray(j.errors) ? j.errors.join(', ') : (typeof j.errors==='object'?JSON.stringify(j.errors):String(j.errors));
+          console.warn('[MOBILEA] Push — OneSignal errors', em);
+          _signalerEchecPush('OneSignal : ' + em.slice(0,120));
+          res.ok = false;
+        } else if(j && typeof j.recipients === 'number' && j.recipients === 0){
+          console.warn('[MOBILEA] Push — 0 destinataire abonné');
+          _signalerEchecPush('Push envoyé mais aucun appareil abonné');
+        }
+      } catch(e){ /* réponse non JSON : on garde ok=true */ }
+    }
+    return res;
   } catch(e) {
-    console.log('Notification non envoyée:', e);
+    console.warn('[MOBILEA] Push — service injoignable:', e);
+    const res = { ok:false, status:0, body:String(e && e.message || e), at: Date.now() };
+    window._lastPushResult = res;
+    _signalerEchecPush('Service de notifications injoignable');
+    return res;
   }
+}
+
+// Avertit discrètement le staff (admin/dispatch) qu'une notification n'a pas
+// pu partir — au plus une fois par minute, pour éviter le spam quand plusieurs
+// push échouent d'affilée. Le détail complet est dans « Diagnostic » (Réglages).
+function _signalerEchecPush(msg){
+  try {
+    if(!window.SESSION || (SESSION.role!=='admin' && SESSION.role!=='dispatch')) return;
+    const now = Date.now();
+    if(window._lastPushToastAt && (now - window._lastPushToastAt) < 60000) return;
+    window._lastPushToastAt = now;
+    if(typeof showToast==='function') showToast('🔕 Notification non délivrée — ' + msg, true);
+  } catch(e){}
 }
 
 // Notifier tout le staff (admin + dispatch) — ex: nouvelle réservation client.
@@ -11374,6 +11508,64 @@ window.renderGerantVehicules = renderGerantVehicules;
 
 // ══════════════════════════════════════════════════════════════════════
 // ══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// GÉRANT — Mes transferts : voir et gérer les transferts qu'il a créés
+// (attribués à ses chauffeurs OU proposés au réseau).
+// ══════════════════════════════════════════════════════════════════════
+window.renderGerantTransferts = async function(){
+  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  var courses=[];
+  try { courses = await fbGet('courses') || []; } catch(e){}
+  var moi = (SESSION.name||'').trim();
+  var soc = (SESSION.socNom||'').trim();
+  var mine = courses.filter(function(c){
+    return (c.createdBy||'').trim()===moi
+      || (c.ouvertePar||'').trim()===moi
+      || (c.creePar==='gerant' && (c.soc_nom||'').trim()===soc && soc);
+  }).sort(function(a,b){ return (b.datetime||'').localeCompare(a.datetime||''); });
+  var box = document.getElementById('gt-list');
+  var cnt = document.getElementById('gt-count');
+  if(cnt) cnt.textContent = mine.length;
+  if(!box) return;
+  if(!mine.length){ box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">Aucun transfert créé pour le moment.<br>Créez-en un depuis « Nouveau transfert ».</div>'; return; }
+  var info = function(c){
+    if(c.statut==='offre_ouverte' || c.statut==='offre_prioritaire') return {t:'🙋 Proposé au réseau — à prendre', col:'#f59e0b'};
+    if(['terminee','payee'].indexOf(c.statut)>=0) return {t:'✔ Terminé', col:'#16a34a'};
+    if(c.statut==='annulee') return {t:'✕ Annulé', col:'#dc2626'};
+    if(c.statut==='noshow') return {t:'✕ No-show', col:'#dc2626'};
+    if(c.chauffeur){
+      var en = ['en_route','sur_place','onboard','depose'].indexOf(c.statut)>=0;
+      return {t:(en?'🚗 En cours · ':'👤 Attribué · ')+c.chauffeur, col:(en?'#2563eb':'#6b7280')};
+    }
+    return {t:'⏳ '+(STATUT_LABELS[c.statut]||c.statut), col:'#6b7280'};
+  };
+  box.innerHTML = mine.map(function(c){
+    var si = info(c);
+    var dt = c.datetime ? parseLocalDT(c.datetime).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'UTC'}) : '';
+    var prix = c.prix ? parseFloat(c.prix).toFixed(0)+'€' : '';
+    var pch = c.prixChauffeur ? parseFloat(c.prixChauffeur).toFixed(0)+'€' : '';
+    var canCancel = ['offre_ouverte','offre_prioritaire','nouvelle','attribuee','acceptee'].indexOf(c.statut)>=0;
+    return '<div style="background:var(--card);border:1px solid var(--border2);border-left:4px solid '+si.col+';border-radius:12px;padding:14px;margin-bottom:10px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">'
+      +   '<span style="font-size:14px;font-weight:800;color:var(--white)">'+E(c.client||'—')+'</span>'
+      +   '<span style="font-size:11px;font-weight:700;color:'+si.col+';white-space:nowrap;text-align:right">'+si.t+'</span>'
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-bottom:5px">📅 '+dt+(prix?' · client '+prix:'')+(pch?' · chauffeur '+pch:'')+'</div>'
+      + '<div style="font-size:13px;color:var(--white);line-height:1.5">📍 '+E(c.depart||c.lieu||'?')+'<br>🏁 '+E(c.arrivee||c.duree||'?')+'</div>'
+      + (canCancel ? '<button onclick="gerantAnnulerTransfert(\''+c._id+'\')" style="margin-top:10px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:8px 14px;font-size:12px;color:#dc2626;font-weight:700;cursor:pointer">Annuler ce transfert</button>' : '')
+      + '</div>';
+  }).join('');
+};
+window.gerantAnnulerTransfert = async function(id){
+  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  if(!confirm('Annuler ce transfert ?')) return;
+  try {
+    await fbUpdate('courses', id, { statut:'annulee', annuleePar:SESSION.name, annuleeLe:new Date().toISOString() });
+    showToast('Transfert annulé');
+    renderGerantTransferts();
+  } catch(e){ showToast('Erreur lors de l\'annulation', true); }
+};
+
 // GÉRANT — Mon tableau de bord : chiffres de SA société uniquement.
 // ══════════════════════════════════════════════════════════════════════
 window.renderGerantDashboard = async function(){
@@ -11483,6 +11675,20 @@ window.gerantCreerTransfert = async function(mode){
   if(!dt){ showToast('Date et heure obligatoires', true); return; }
   if(!client) client = (dep.split(',')[0]||'Course');
 
+  // Donneur d'ordre = la société du gérant qui crée le transfert. C'est à LUI
+  // que le chauffeur qui réalise la course devra facturer (et non à MOBILEA),
+  // d'où l'enregistrement de ses infos de facturation sur la course.
+  var moiG = (D.chauffeurs||[]).find(function(x){return (x.prenom+(x.nom?' '+x.nom:''))===SESSION.name;}) || {};
+  var donneurOrdre = {
+    nom: (moiG.soc_nom||SESSION.socNom||SESSION.name||'').trim(),
+    siret: (moiG.soc_siret||'').trim(),
+    adresse: (moiG.soc_adresse||'').trim(),
+    tva: (moiG.soc_tva||'').trim(),
+    tvaapp: (moiG.soc_tvaapp||'').trim(),
+    tel: (moiG.tel||'').trim(),
+    contact: SESSION.name
+  };
+
   var base = {
     type:'transfert', client:client, tel:'', datetime:dt,
     depart:dep, arrivee:arr, lieu:'', duree:'',
@@ -11493,6 +11699,7 @@ window.gerantCreerTransfert = async function(mode){
     ref:(typeof genRefVal==='function'?genRefVal():''),
     soc_nom:(SESSION.socNom||''),
     createdBy:SESSION.name, creePar:'gerant',
+    donneurOrdre:donneurOrdre,
     createdAt:new Date().toISOString()
   };
 
@@ -12442,6 +12649,35 @@ function populateDriverInvoiceMonths() {
 }
 
 // Générer la facture du mois pour le chauffeur connecté
+// Détermine À QUI le chauffeur doit facturer une course donnée.
+//  - Course créée par un gérant (creePar==='gerant' / présence d'un donneurOrdre)
+//    → facturée au gérant (sa société), pas à MOBILEA.
+//  - Sinon → facturée à MOBILEA SARL.
+// Retourne un objet buyer normalisé + une clé de regroupement.
+window.billingTargetForCourse = function(c){
+  const d = c && c.donneurOrdre;
+  if((c && c.creePar==='gerant') && d && (d.nom||'').trim()){
+    return {
+      key: 'G:'+(d.siret||d.nom||'').toLowerCase().replace(/\s+/g,''),
+      type: 'gerant',
+      nom: d.nom,
+      ligne2: [ d.siret?('SIRET '+d.siret):'', d.tva?('TVA '+d.tva):'' ].filter(Boolean).join(' — '),
+      adresse: d.adresse||'',
+      tel: d.tel||'',
+      slug: ((d.nom||'G').replace(/[^A-Za-z0-9]/g,'').slice(0,4).toUpperCase()||'GER')
+    };
+  }
+  return {
+    key: 'MOBILEA',
+    type: 'mobilea',
+    nom: 'MOBILEA SARL — MOBILEA',
+    ligne2: 'SIREN 514 879 030 — SIRET 514 879 030 000XX',
+    adresse: '16 avenue Christian Doppler, 77700 Bailly-Romainvilliers — France',
+    tel: '',
+    slug: 'MOB'
+  };
+};
+
 window.generateDriverInvoice = async function() {
   if(SESSION.role !== 'chauffeur') { showToast('Réservé aux chauffeurs', true); return; }
   const sel = document.getElementById('driver-inv-month');
@@ -12463,48 +12699,28 @@ window.generateDriverInvoice = async function() {
   if(!courses.length){ showToast('Aucune course terminée ce mois-ci', true); return; }
 
   const moisNames = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
-  let totalHT = 0;
-  const lines = courses.map(c=>{
-    const prixCh = parseFloat(c.prixChauffeur)||0;
-    const w = (typeof calcWaitFees==='function') ? calcWaitFees(c) : null;
-    const waitCh = w ? w.chauffeurFee : 0;
-    const montant = prixCh + waitCh;
-    totalHT += montant;
-    return { date: c.datetime ? parseLocalDT(c.datetime).toLocaleDateString('fr-FR',{timeZone:'UTC'}) : '—', ref:c.ref||'', trajet:`${E(c.depart||c.lieu||'—')} → ${E(c.arrivee||c.duree||'—')}`, montant };
+
+  // ── Regrouper les courses par DESTINATAIRE de facturation ──
+  // Les courses d'un gérant sont facturées au gérant ; les autres à MOBILEA.
+  // On émet une facture distincte (et légalement autonome) par acheteur.
+  const groupes = {};
+  courses.forEach(c=>{
+    const b = window.billingTargetForCourse(c);
+    if(!groupes[b.key]) groupes[b.key] = { buyer:b, list:[] };
+    groupes[b.key].list.push(c);
   });
 
   const tvaApplicable = me.soc_tvaapp === 'oui';
-  const tva = tvaApplicable ? totalHT * 0.10 : 0;
-  const totalTTC = totalHT + tva;
-  const numFact = `${me.soc_siret?me.soc_siret.slice(0,4):'CH'}-${year}${String(month+1).padStart(2,'0')}-${(me.prenom||'').slice(0,3).toUpperCase()}`;
-
-  // ── Dates normalisées façon Factur-X (profil EN 16931) ──
-  // BT-2 date d'émission, BT-72 date de livraison (dernier jour du mois facturé,
-  // obligatoire pour la conformité), échéance à 30 jours.
   const fmtFR = d => d.toLocaleDateString('fr-FR');
   const dateEmission = new Date();
   const dateLivraison = new Date(year, month+1, 0); // dernier jour du mois facturé
   const dateEcheance = new Date(dateEmission.getTime() + 30*24*3600*1000);
-  const totalHTr = Math.round(totalHT*100)/100;
-  const tvaR = Math.round(tva*100)/100;
-  const totalTTCr = Math.round(totalTTC*100)/100;
 
-  // Enregistrer dans Firebase pour que l'admin la voie
-  try {
-    await fbPush('factures_chauffeurs', {
-      chauffeur: SESSION.name, chauffeurId: me._id,
-      societe: me.soc_nom||'', siret: me.soc_siret||'',
-      mois: month, annee: year, moisLabel: moisNames[month]+' '+year,
-      nbCourses: courses.length, totalHT, tva, totalTTC,
-      numFacture: numFact, createdAt: new Date().toISOString(), statut:'recue'
-    });
-  } catch(e) {}
+  // MOBILEA d'abord, puis les gérants, pour un ordre stable des pages.
+  const cles = Object.keys(groupes).sort((a,b)=> (a==='MOBILEA'?-1:b==='MOBILEA'?1:a.localeCompare(b)));
 
-  // Construire le PDF
-  const lignesHtml = lines.map(l=>`<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${l.date}</td><td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:10px;color:#888">${E(l.ref)}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(l.trajet)}</td><td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:600">${l.montant.toFixed(2)}€</td></tr>`).join('');
-
-  openPrintableDoc(`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Facture ${numFact}</title>
-  <style>
+  // Feuille de style commune à toutes les factures (une par destinataire).
+  const invCss = `
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:'Helvetica Neue',Arial,sans-serif;padding:36px;max-width:760px;margin:auto;color:#111;font-size:13px;line-height:1.6}
     .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #b8860b;padding-bottom:16px;margin-bottom:22px}
@@ -12519,8 +12735,45 @@ window.generateDriverInvoice = async function() {
     .tr{display:flex;justify-content:space-between;padding:5px 0}
     .tf{display:flex;justify-content:space-between;padding:10px 0;border-top:2px solid #b8860b;font-size:17px;font-weight:800;color:#b8860b}
     .foot{margin-top:30px;padding-top:14px;border-top:1px solid #ddd;font-size:10px;color:#888}
-    @media print{body{padding:16px}}
-  </style></head><body>
+    @media print{body{padding:16px}}`;
+
+  // Une FACTURE AUTONOME (document PDF à part entière) par destinataire.
+  const invoices = [];
+  for(const k of cles){
+    const g = groupes[k];
+    const buyer = g.buyer;
+    let totalHT = 0;
+    const lines = g.list.map(c=>{
+      const prixCh = parseFloat(c.prixChauffeur)||0;
+      const w = (typeof calcWaitFees==='function') ? calcWaitFees(c) : null;
+      const waitCh = w ? w.chauffeurFee : 0;
+      const montant = prixCh + waitCh;
+      totalHT += montant;
+      return { date: c.datetime ? parseLocalDT(c.datetime).toLocaleDateString('fr-FR',{timeZone:'UTC'}) : '—', ref:c.ref||'', trajet:`${E(c.depart||c.lieu||'—')} → ${E(c.arrivee||c.duree||'—')}`, montant };
+    });
+    const tva = tvaApplicable ? totalHT * 0.10 : 0;
+    const totalTTC = totalHT + tva;
+    const totalHTr = Math.round(totalHT*100)/100;
+    const tvaR = Math.round(tva*100)/100;
+    const totalTTCr = Math.round(totalTTC*100)/100;
+    const numFact = `${me.soc_siret?me.soc_siret.slice(0,4):'CH'}-${year}${String(month+1).padStart(2,'0')}-${(me.prenom||'').slice(0,3).toUpperCase()}-${buyer.slug}`;
+
+    // Enregistrer dans Firebase pour que l'admin / le gérant la voie
+    try {
+      await fbPush('factures_chauffeurs', {
+        chauffeur: SESSION.name, chauffeurId: me._id,
+        societe: me.soc_nom||'', siret: me.soc_siret||'',
+        destinataire: buyer.nom, destinataireType: buyer.type,
+        mois: month, annee: year, moisLabel: moisNames[month]+' '+year,
+        nbCourses: g.list.length, totalHT, tva, totalTTC,
+        numFacture: numFact, createdAt: new Date().toISOString(), statut:'recue'
+      });
+    } catch(e) {}
+
+    const lignesHtml = lines.map(l=>`<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${l.date}</td><td style="padding:6px 10px;border-bottom:1px solid #eee;font-size:10px;color:#888">${E(l.ref)}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(l.trajet)}</td><td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;font-weight:600">${l.montant.toFixed(2)}€</td></tr>`).join('');
+
+    const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Facture ${numFact}</title>
+  <style>${invCss}</style></head><body>
     <div class="head">
       <div>
         <div class="from">${E(me.soc_nom||SESSION.name)}</div>
@@ -12547,9 +12800,9 @@ window.generateDriverInvoice = async function() {
     </div>
 
     <div class="to">
-      <div class="tol">Facturé à (Acheteur)</div>
-      <div style="font-weight:700;margin-top:2px">MOBILEA SARL — MOBILEA</div>
-      <div style="font-size:11px;color:#555">SIREN 514 879 030 — SIRET 514 879 030 000XX<br>16 avenue Christian Doppler, 77700 Bailly-Romainvilliers — France</div>
+      <div class="tol">Facturé à (Acheteur${buyer.type==='gerant'?' — donneur d\'ordre':''})</div>
+      <div style="font-weight:700;margin-top:2px">${E(buyer.nom)}</div>
+      <div style="font-size:11px;color:#555">${buyer.ligne2?E(buyer.ligne2):''}${buyer.ligne2&&buyer.adresse?'<br>':''}${buyer.adresse?E(buyer.adresse):''}${buyer.tel?'<br>Tél : '+E(buyer.tel):''}</div>
     </div>
 
     <div style="font-weight:700;margin-bottom:6px">Prestations de transport de personnes — ${moisNames[month]} ${year}</div>
@@ -12568,20 +12821,59 @@ window.generateDriverInvoice = async function() {
     </div>
 
     <div class="foot">
-      ${courses.length} course(s) facturée(s) — ${moisNames[month]} ${year}.<br>
+      ${g.list.length} course(s) facturée(s) — ${moisNames[month]} ${year}.<br>
       Conditions de règlement : paiement à 30 jours (échéance ${fmtFR(dateEcheance)}).<br>
       En cas de retard : pénalités au taux de 3 × l'intérêt légal + indemnité forfaitaire de 40 € pour frais de recouvrement (art. L441-10 et D441-5 du Code de commerce).
       ${me.soc_iban?'<br>Règlement par virement — IBAN : '+E(me.soc_iban):''}
       <br><span style="color:#b8860b">Facture conforme au modèle EN 16931 (Factur-X) — profil de données structurées.</span>
     </div>
-  </body></html>`);
+  </body></html>`;
 
-  // On n'ouvre plus l'email automatiquement : sur mobile, window.location vers
-  // un lien mailto quittait la page et empêchait le chauffeur d'imprimer ou
-  // d'enregistrer son PDF. L'aperçu reste affiché avec le bouton Imprimer/PDF ;
-  // le chauffeur enregistre son PDF (via le partage iOS/Android) puis peut
-  // l'envoyer lui-même s'il le souhaite.
-  showToast('Facture générée ✓ — utilisez « Imprimer / PDF » pour l\'enregistrer');
+    invoices.push({ buyer:buyer, numFact:numFact, nbCourses:g.list.length, totalTTC:totalTTCr, html:html });
+  }
+
+  // Une seule facture (ex. uniquement MOBILEA) → ouverture directe, comme avant.
+  // Plusieurs destinataires → chaque facture est un PDF SÉPARÉ : on affiche un
+  // sélecteur pour enregistrer/imprimer chacune indépendamment.
+  if(invoices.length === 1){
+    openPrintableDoc(invoices[0].html);
+    showToast('Facture générée ✓ — utilisez « Imprimer / PDF » pour l\'enregistrer');
+  } else {
+    window._driverInvoices = invoices;
+    window.showInvoiceChooser(invoices, moisNames[month]+' '+year);
+    showToast(invoices.length+' factures séparées ✓ — une par société');
+  }
+};
+
+// Sélecteur : une ligne par facture (= par société destinataire). Chaque
+// bouton génère un PDF SÉPARÉ pour cette société uniquement.
+window.showInvoiceChooser = function(invoices, moisLabel){
+  const old = document.getElementById('invoice-chooser-overlay');
+  if(old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'invoice-chooser-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(10,10,12,0.72);display:flex;align-items:center;justify-content:center;padding:18px;backdrop-filter:blur(3px)';
+  const rows = invoices.map((inv,i)=>{
+    const sous = inv.nbCourses+' course(s) • '+inv.totalTTC.toFixed(2)+' € • N° '+E(inv.numFact);
+    const tag = inv.buyer.type==='gerant' ? 'Donneur d\'ordre' : 'MOBILEA';
+    return `<div style="display:flex;align-items:center;gap:12px;padding:13px 14px;border:1px solid #eee;border-radius:12px;margin-bottom:10px">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:800;font-size:14px;color:#111;overflow:hidden;text-overflow:ellipsis">${E(inv.buyer.nom)}</div>
+        <div style="font-size:11px;color:#888;margin-top:2px">${sous}</div>
+        <div style="font-size:10px;color:#b8860b;font-weight:700;margin-top:2px">${tag}</div>
+      </div>
+      <button onclick="window.openPrintableDoc(window._driverInvoices[${i}].html)" style="flex-shrink:0;background:#b8860b;border:none;border-radius:10px;padding:11px 14px;color:#fff;font-weight:700;font-size:13px;cursor:pointer">🖨️ PDF</button>
+    </div>`;
+  }).join('');
+  ov.innerHTML = `<div style="background:#fff;border-radius:18px;max-width:440px;width:100%;max-height:88vh;overflow:auto;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,0.4)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">
+      <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:#111">Vos factures — ${E(moisLabel)}</div>
+      <button onclick="document.getElementById('invoice-chooser-overlay').remove()" style="background:#f0f0f0;border:none;border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer;flex-shrink:0">✕</button>
+    </div>
+    <div style="font-size:12px;color:#666;margin-bottom:16px">Une facture <b>séparée</b> par société. Touchez « PDF » sur chaque ligne pour l'enregistrer ou l'imprimer individuellement.</div>
+    ${rows}
+  </div>`;
+  document.body.appendChild(ov);
 };
 
 window.generateDriverPDF = function(courseId) {
@@ -12601,6 +12893,11 @@ window.generateDriverPDF = function(courseId) {
   const w = (typeof calcWaitFees==='function') ? calcWaitFees(c) : null;
   const waitCh = w ? w.chauffeurFee : 0;
   const totalCh = prixCh + waitCh;
+  // Donneur d'ordre : si la course a été créée par un gérant, c'est SA société
+  // qui a confié la mission (et à qui le chauffeur facturera), pas MOBILEA.
+  const estGerant = (c.creePar==='gerant' && c.donneurOrdre && (c.donneurOrdre.nom||'').trim());
+  const dondo = estGerant ? c.donneurOrdre : null;
+  const commLabel = estGerant ? ('Commission à reverser à '+ (dondo.nom||'votre donneur d\'ordre')) : 'Commission à reverser à MOBILEA';
   const paxList = (c.passagers||[]).map(p=>{
     const nom = (p.prenom||'')+(p.nom?' '+p.nom:'');
     return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${nom||'—'}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.tel||'—')}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.vol||c.vol||'—')}</td></tr>`;
@@ -12649,6 +12946,17 @@ window.generateDriverPDF = function(courseId) {
       <div class="row"><div class="lbl">Régime TVA</div><div class="val">${drv.soc_tvaapp==='oui'?'Assujetti (TVA 10%)':'Non assujetti — TVA non applicable, art. 293 B du CGI'}</div></div>
     </div>` : ''}
 
+    ${estGerant ? `<div class="sec">
+      <div class="st">Donneur d'ordre</div>
+      <div class="row"><div class="lbl">Raison sociale</div><div class="val">${E(dondo.nom||'—')}</div></div>
+      ${dondo.contact?`<div class="row"><div class="lbl">Contact</div><div class="val">${E(dondo.contact)}</div></div>`:''}
+      ${dondo.siret?`<div class="row"><div class="lbl">SIRET</div><div class="val">${E(dondo.siret)}</div></div>`:''}
+      ${dondo.adresse?`<div class="row"><div class="lbl">Adresse</div><div class="val">${E(dondo.adresse)}</div></div>`:''}
+      ${dondo.tva?`<div class="row"><div class="lbl">N° TVA intra.</div><div class="val">${E(dondo.tva)}</div></div>`:''}
+      ${dondo.tel?`<div class="row"><div class="lbl">Téléphone</div><div class="val">${E(dondo.tel)}</div></div>`:''}
+      <div class="row"><div class="lbl">Facturation</div><div class="val" style="color:#b8860b;font-weight:700">Facture à adresser à ce donneur d'ordre</div></div>
+    </div>` : ''}
+
     <div class="sec">
       <div class="st">Détails de la course</div>
       <div class="row"><div class="lbl">Date</div><div class="val">${dateStr}</div></div>
@@ -12675,7 +12983,7 @@ window.generateDriverPDF = function(courseId) {
           ? `<div class="pline"><span>Prix de la course (à encaisser du client)</span><span>${(parseFloat(c.prix)||0).toFixed(2)}€</span></div>
              <div class="pline"><span>Votre part chauffeur</span><span>${prixCh.toFixed(2)}€</span></div>
              ${waitCh>0?`<div class="pline" style="color:#0891b2"><span>Temps d'attente (${w.chauffeurTranches}×30min)</span><span>+${waitCh.toFixed(2)}€</span></div>`:''}
-             <div class="pline" style="color:#d97706"><span>Commission à reverser à MOBILEA</span><span>−${Math.max(0,(parseFloat(c.prix)||0)-prixCh).toFixed(2)}€</span></div>
+             <div class="pline" style="color:#d97706"><span>${commLabel}</span><span>−${Math.max(0,(parseFloat(c.prix)||0)-prixCh).toFixed(2)}€</span></div>
              <div class="pfinal"><span>À encaisser du client (à bord)</span><span>${(parseFloat(c.prix)||0).toFixed(2)}€</span></div>`
           : `<div class="pline"><span>Course</span><span>${prixCh.toFixed(2)}€</span></div>
              ${waitCh>0?`<div class="pline" style="color:#0891b2"><span>Temps d'attente (${w.chauffeurTranches}×30min)</span><span>+${waitCh.toFixed(2)}€</span></div>`:''}
@@ -12687,8 +12995,9 @@ window.generateDriverPDF = function(courseId) {
 
     <div class="foot">
       <div style="margin-bottom:8px"><b>Mentions légales — Transport public particulier de personnes (VTC)</b></div>
-      Prestation de transport réalisée avec chauffeur (VTC) conformément aux articles L.3122-1 et suivants du Code des transports. Réservation préalable obligatoire — la maraude est interdite (art. L.3120-2). Le présent bon de commande formalise la mission de transport confiée au chauffeur${estSousTraitant?' sous-traitant désigné ci-dessus':''} et vaut ordre de mission.
+      Prestation de transport réalisée avec chauffeur (VTC) conformément aux articles L.3122-1 et suivants du Code des transports. Réservation préalable obligatoire — la maraude est interdite (art. L.3120-2). Le présent bon de commande formalise la mission de transport confiée au chauffeur${estSousTraitant?' sous-traitant désigné ci-dessus':''}${estGerant?' par le donneur d\'ordre '+E(dondo.nom||''):''} et vaut ordre de mission.
       ${estSousTraitant?'<br>Le chauffeur sous-traitant atteste être inscrit au registre VTC, disposer d\'une carte professionnelle VTC en cours de validité, d\'une assurance RC professionnelle transport de personnes, et être à jour de ses obligations légales, sociales et fiscales.':''}
+      ${estGerant?'<br><b>Facturation :</b> la prestation est à facturer par le chauffeur au donneur d\'ordre ci-dessus, et non à MOBILEA.':''}
       <br><br>
       Document généré par l'application MOBILEA. Montant net à percevoir pour la prestation réalisée.<br>
       <b>MOBILEA SARL</b> &bull; SIREN 514 879 030 &bull; Bailly-Romainvilliers 77700 &bull; Inscrite au registre VTC &bull; mobilea.com
@@ -18895,11 +19204,12 @@ function gp(name, btn) {
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   const pg=document.getElementById('page-'+name);if(pg)pg.classList.add('on');
   if(btn)btn.classList.add('on');
-  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres','gerant-dashboard':'Mon tableau de bord','gerant-nouveau':'Nouveau transfert',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
+  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
   document.getElementById('page-title').textContent=titles[name]||name;
   closeMob();
   if(name==='cartechauffeurs') { setTimeout(initCarteChauffeurs, 300); }
   if(name==='soustraitants') { setTimeout(()=>{ try{ renderSoustraitants(); }catch(e){} }, 200); }
+  if(name==='gerant-transferts') { setTimeout(()=>{ try{ renderGerantTransferts(); }catch(e){} }, 150); }
   if(name==='gerant-dashboard') { setTimeout(()=>{ try{ renderGerantDashboard(); }catch(e){} }, 150); }
   if(name==='gerant-nouveau') { setTimeout(()=>{ try{ renderGerantNouveau(); }catch(e){} }, 150); }
   if(name==='gerant-chauffeurs') { setTimeout(()=>{ try{ renderGerantChauffeurs(); }catch(e){} }, 200); }
@@ -20583,6 +20893,7 @@ document.addEventListener('change', function(e) {
 const PLACES_FIELDS = [
   'cb-dep', 'cb-arr',   // modal réservation dispatch
   'fc-dep', 'fc-arr',   // formulaire course admin
+  'gn-dep', 'gn-arr',   // formulaire gérant "Nouveau transfert"
 ];
 
 // Appelé par onload du script Google Maps
