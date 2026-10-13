@@ -11701,6 +11701,10 @@ window.gerantCreerTransfert = async function(mode){
   // que le chauffeur qui réalise la course devra facturer (et non à MOBILEA),
   // d'où l'enregistrement de ses infos de facturation sur la course.
   var moiG = (D.chauffeurs||[]).find(function(x){return (x.prenom+(x.nom?' '+x.nom:''))===SESSION.name;}) || {};
+  // UID Firebase du gérant créateur — requis par les règles de sécurité pour
+  // autoriser un gérant à créer/gérer SES propres transferts.
+  var authUid = '';
+  try { authUid = (firebase.auth().currentUser && firebase.auth().currentUser.uid) || moiG.uid || ''; } catch(e){ authUid = moiG.uid || ''; }
   var donneurOrdre = {
     nom: (moiG.soc_nom||SESSION.socNom||SESSION.name||'').trim(),
     siret: (moiG.soc_siret||'').trim(),
@@ -11720,7 +11724,7 @@ window.gerantCreerTransfert = async function(mode){
     passagers:[], notes:notes,
     ref:(typeof genRefVal==='function'?genRefVal():''),
     soc_nom:(SESSION.socNom||''),
-    createdBy:SESSION.name, creePar:'gerant',
+    createdBy:SESSION.name, creePar:'gerant', createdByUid:authUid,
     donneurOrdre:donneurOrdre,
     createdAt:new Date().toISOString()
   };
