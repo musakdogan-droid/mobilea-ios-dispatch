@@ -11738,10 +11738,13 @@ window.gerantCreerTransfert = async function(mode){
     showToast('Création…');
     try {
       var id1 = await fbPush('courses', base);
+      if(!id1){ showToast('⚠️ Échec : le transfert n\'a pas été enregistré (permissions ?)', true); return; }
+      fbInvalidate('courses'); // purge APRÈS l'écriture → « Mes transferts » lira frais
       try { await addLog('➕ Transfert gérant ('+SESSION.name+') attribué à '+nomCh+' : '+dep+' → '+arr); } catch(e){}
       try { await sendPushNotification('🚗 Nouveau transfert', client+' — '+dep+' → '+arr, null, ch._id?[ch._id]:null); } catch(e){}
       showToast('✅ Transfert attribué à '+nomCh);
       gerantResetTransfert();
+      try { gp('gerant-transferts'); } catch(e){} // ouvrir Mes transferts → confirmation visuelle
     } catch(e){ showToast('Erreur lors de la création', true); }
   } else {
     base.chauffeur = '';
@@ -11751,10 +11754,13 @@ window.gerantCreerTransfert = async function(mode){
     showToast('Création…');
     try {
       var id2 = await fbPush('courses', base);
+      if(!id2){ showToast('⚠️ Échec : le transfert n\'a pas été enregistré (permissions ?)', true); return; }
+      fbInvalidate('courses'); // purge APRÈS l'écriture → « Mes transferts » lira frais
       try { await addLog('🙋 Transfert gérant ('+SESSION.name+') proposé au réseau : '+dep+' → '+arr); } catch(e){}
       try { await sendPushNotification('🙋 Transfert à prendre', client+' — '+dep+' → '+arr+(prixChauffeur?' — '+prixChauffeur+'€':''), null, null, { key:'role', value:'chauffeur' }); } catch(e){}
       showToast('✅ Transfert proposé à tout le réseau');
       gerantResetTransfert();
+      try { gp('gerant-transferts'); } catch(e){} // ouvrir Mes transferts → confirmation visuelle
     } catch(e){ showToast('Erreur lors de la création', true); }
   }
 };
