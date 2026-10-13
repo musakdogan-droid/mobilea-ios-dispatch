@@ -399,6 +399,9 @@ tr:last-child td{border-bottom:none}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 <script>
+  // Marqueur de version — visible dans « Diagnostic » pour confirmer que l'app
+  // (surtout l'app native) charge bien la DERNIÈRE version du code.
+  window.MOBILEA_BUILD = '2026-10-13-notif-diag';
   window.OneSignalDeferred = window.OneSignalDeferred || [];
   OneSignalDeferred.push(async function(OneSignal) {
     await OneSignal.init({
@@ -4176,8 +4179,16 @@ window.diagnostiquerPush = async function(){
   L.push('Permission : ' + (support?Notification.permission:'n/a'));
   L.push('App installée (écran d\'accueil) : ' + (standalone?'oui':'non (navigateur)'));
 
-  // 2) Service Worker
-  if('serviceWorker' in navigator){
+  // Détection APP NATIVE (Capacitor) vs navigateur/PWA — change tout le reste.
+  var estNatif = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  L.push('Contexte : ' + (estNatif ? 'APP NATIVE (iOS/Android)' : 'navigateur / PWA'));
+  // Marqueur de version : permet de vérifier que l\'app charge bien le CODE À JOUR.
+  L.push('Version code : ' + (window.MOBILEA_BUILD || 'diagnostic-v2'));
+
+  // 2) Service Worker (en natif, le SW est volontairement désactivé : normal)
+  if(estNatif){
+    L.push('Service Worker : désactivé en app native (normal) — push via plugin natif');
+  } else if('serviceWorker' in navigator){
     try {
       var regs = await navigator.serviceWorker.getRegistrations();
       L.push('Service Worker enregistré : ' + (regs && regs.length ? (regs.length+' ✔') : 'AUCUN'));
@@ -4185,16 +4196,27 @@ window.diagnostiquerPush = async function(){
     } catch(e){ L.push('Service Worker : erreur (' + (e&&e.message||e) + ')'); }
   } else { L.push('Service Worker : NON supporté'); }
 
-  // 3) Abonnement OneSignal
-  try {
-    if(window.OneSignal && OneSignal.User && OneSignal.User.PushSubscription){
-      var opted = OneSignal.User.PushSubscription.optedIn;
-      var osid  = OneSignal.User.PushSubscription.id;
-      L.push('OneSignal abonné : ' + (opted?'oui':'NON') + (osid?(' (id '+String(osid).slice(0,8)+'…)'):' (pas d\'id)'));
-    } else {
-      L.push('OneSignal : SDK non chargé (bloqué, hors ligne, ou non initialisé)');
-    }
-  } catch(e){ L.push('OneSignal : erreur (' + (e&&e.message||e) + ')'); }
+  // 3) Abonnement au push
+  if(estNatif){
+    // En natif, l'abonnement passe par le plugin OneSignal natif (native-bridge.js),
+    // pas par le Web SDK. On lit l'état exposé par le pont s'il est présent.
+    var pont = (typeof window.mobileaLinkPush === 'function');
+    L.push('Pont natif (native-bridge.js) : ' + (pont ? 'chargé ✔' : 'ABSENT'));
+    try {
+      var nid = window.mobileaPushId || window._mobileaPushId || (window.mobileaPushState && window.mobileaPushState().id);
+      L.push('Abonnement push natif : ' + (nid ? ('oui (id '+String(nid).slice(0,8)+'…)') : 'inconnu — voir OneSignal (clé APNs iOS)'));
+    } catch(e){ L.push('Abonnement push natif : inconnu'); }
+  } else {
+    try {
+      if(window.OneSignal && OneSignal.User && OneSignal.User.PushSubscription){
+        var opted = OneSignal.User.PushSubscription.optedIn;
+        var osid  = OneSignal.User.PushSubscription.id;
+        L.push('OneSignal abonné : ' + (opted?'oui':'NON') + (osid?(' (id '+String(osid).slice(0,8)+'…)'):' (pas d\'id)'));
+      } else {
+        L.push('OneSignal : SDK non chargé (bloqué, hors ligne, ou non initialisé)');
+      }
+    } catch(e){ L.push('OneSignal : erreur (' + (e&&e.message||e) + ')'); }
+  }
 
   // 4) Appel RÉEL du Worker push (bout en bout) — ciblé sur moi si chauffeur,
   //    sinon sur le staff. Montre le vrai statut HTTP + la réponse du serveur.
