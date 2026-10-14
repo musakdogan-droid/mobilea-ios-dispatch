@@ -11624,6 +11624,7 @@ window.renderGerantTransferts = async function(){
     var prix = c.prix ? parseFloat(c.prix).toFixed(0)+'€' : '';
     var pch = c.prixChauffeur ? parseFloat(c.prixChauffeur).toFixed(0)+'€' : '';
     var canCancel = ['offre_ouverte','offre_prioritaire','nouvelle','attribuee','acceptee'].indexOf(c.statut)>=0;
+    var canRepropose = !!c.chauffeur && ['attribuee','acceptee','en_route','sur_place','onboard'].indexOf(c.statut)>=0;
     return '<div style="background:var(--card);border:1px solid var(--border2);border-left:4px solid '+si.col+';border-radius:12px;padding:14px;margin-bottom:10px">'
       + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">'
       +   '<span style="font-size:14px;font-weight:800;color:var(--white)">'+E(c.client||'—')+'</span>'
@@ -11638,6 +11639,7 @@ window.renderGerantTransferts = async function(){
       +   '<div style="color:var(--muted)">🚕 Chauffeur : '+(c.chauffeur?('<span style="color:#16a34a;font-weight:700">'+E(c.chauffeur)+'</span>'):'<span style="color:#f59e0b;font-weight:700">en attente d\'acceptation</span>')+'</div>'
       + '</div>'
       + contactHtml(c)
+      + (canRepropose ? '<button onclick="gerantReproposerTransfert(\''+c._id+'\')" style="margin-top:10px;margin-right:8px;background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:8px 14px;font-size:12px;color:#c2410c;font-weight:700;cursor:pointer">🔄 Reproposer au réseau</button>' : '')
       + (canCancel ? '<button onclick="gerantAnnulerTransfert(\''+c._id+'\')" style="margin-top:10px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:8px 14px;font-size:12px;color:#dc2626;font-weight:700;cursor:pointer">Annuler ce transfert</button>' : '')
       + '</div>';
   }).join('');
@@ -11650,6 +11652,33 @@ window.gerantAnnulerTransfert = async function(id){
     showToast('Transfert annulé');
     renderGerantTransferts();
   } catch(e){ showToast('Erreur lors de l\'annulation', true); }
+};
+
+// GÉRANT — Reproposer un transfert DÉJÀ accepté (le chauffeur s'est trompé ou ne
+// peut finalement pas) : on retire le chauffeur et on remet LE MÊME transfert au
+// réseau, sans créer de nouvelle réservation.
+window.gerantReproposerTransfert = async function(id){
+  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  var c = null;
+  try { c = ((await fbGet('courses'))||[]).find(function(x){return x._id===id;}); } catch(e){}
+  if(!c){ showToast('Transfert introuvable', true); return; }
+  if(!confirm('Reproposer ce transfert au réseau ?\n\nLe chauffeur actuel ('+(c.chauffeur||'—')+') sera retiré et le transfert redeviendra disponible pour un autre chauffeur.')) return;
+  try {
+    await fbUpdate('courses', id, {
+      statut:'offre_ouverte', chauffeur:'', chauffeurUid:null, chauffeurId:null,
+      accepteePar:null, accepteeLe:null, acceptedAt:null, autoDispatched:null,
+      offerCandidateIds:null, offerIndex:null, offerChauffeurId:null, offerExpiresAt:null, offerAttempts:null, autoDispatchDone:null,
+      // Réinitialiser les marqueurs de rappel pour que les rappels repartent.
+      rappel_15_env:null, rappel_30_env:null, rappel_60_env:null, rappel_120_env:null, rappelEnvoye:null, rappel30Envoye:null,
+      ouvertePar:SESSION.name, ouverteLe:new Date().toISOString(),
+      updatedAt:new Date().toISOString()
+    });
+    try { await sendPushNotification('🙋 Transfert à prendre', (c.client||'')+' — '+(c.depart||c.lieu||'')+' → '+(c.arrivee||''), null, null, { key:'role', value:'chauffeur' }); } catch(e){}
+    try { await addLog('🔄 Transfert gérant ('+SESSION.name+') reproposé au réseau — ancien chauffeur : '+(c.chauffeur||'—')); } catch(e){}
+    try { fbInvalidate('courses'); } catch(e){}
+    showToast('🔄 Transfert reproposé au réseau');
+    renderGerantTransferts();
+  } catch(e){ showToast('Erreur — réessayez', true); }
 };
 
 // GÉRANT — Mon tableau de bord : chiffres de SA société uniquement.
