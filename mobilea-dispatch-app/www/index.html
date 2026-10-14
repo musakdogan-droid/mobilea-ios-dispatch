@@ -311,6 +311,8 @@ tr:last-child td{border-bottom:none}
 
 /* MOBILE */
 .mob-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:99999}
+.rappel-chip{display:inline-flex;align-items:center;gap:7px;background:var(--card2);border:1px solid var(--border2);border-radius:20px;padding:8px 14px;font-size:12px;font-weight:600;color:var(--white);cursor:pointer}
+.rappel-chip input{accent-color:#b8860b;width:16px;height:16px;cursor:pointer}
 /* Empêche les cartes Leaflet (marqueurs, popups, contrôles) de passer par-dessus
    le menu latéral : leurs z-index internes élevés débordaient sur le menu. */
 .leaflet-pane,.leaflet-top,.leaflet-bottom{z-index:5 !important}
@@ -1223,6 +1225,26 @@ tr:last-child td{border-bottom:none}
               <div id="notif-diag" style="display:none;margin-top:10px;font-size:11px;color:var(--muted2);background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:8px 10px;line-height:1.6"></div>
             </div>
             <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
+              <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:6px">⏰ Rappels avant chaque course</div>
+              <div style="font-size:11px;color:var(--muted2);margin-bottom:12px">Choisissez quand une notification de rappel est envoyée avant chaque course — au chauffeur concerné <b>et</b> au dispatch/admin.</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+                <label class="rappel-chip"><input type="checkbox" class="rappel-opt" value="15"> 15 min avant</label>
+                <label class="rappel-chip"><input type="checkbox" class="rappel-opt" value="30"> 30 min avant</label>
+                <label class="rappel-chip"><input type="checkbox" class="rappel-opt" value="60"> 1 h avant</label>
+                <label class="rappel-chip"><input type="checkbox" class="rappel-opt" value="120"> 2 h avant</label>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+                <span style="font-size:12px;color:var(--muted)">Ou personnalisé :</span>
+                <input id="rappel-custom" type="number" min="1" max="2880" step="1" placeholder="ex. 45" style="width:90px;background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:8px;color:var(--white);font-size:13px">
+                <select id="rappel-custom-unit" style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:8px;color:var(--white);font-size:13px"><option value="1">minutes</option><option value="60">heures</option></select>
+                <span style="font-size:12px;color:var(--muted)">avant</span>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <button class="btn btn-p btn-sm" onclick="saveRappelConfig()"><i class="fas fa-save"></i> Enregistrer les rappels</button>
+                <span id="rappel-etat" style="font-size:12px;color:var(--muted)"></span>
+              </div>
+            </div>
+            <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
               <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:10px">📩 SMS automatiques</div>
               <div id="sms-toggle-wrap" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-radius:12px;background:rgba(34,197,94,0.12);border:1px solid var(--border)">
                 <div>
@@ -1758,6 +1780,7 @@ tr:last-child td{border-bottom:none}
               <div class="fld"><label>Prix chauffeur (€)</label><input id="gn-prix-ch" type="number" min="0" step="0.01" placeholder="0" oninput="gerantMajMarge()"></div>
             </div>
             <div id="gn-marge" style="font-size:12px;color:var(--gold);font-weight:600;margin-bottom:14px">Marge : — €</div>
+            <div class="fld"><label>Paiement</label><select id="gn-paiement"><option value="compte">🧾 En compte (facturé — rien à encaisser)</option><option value="bord">💵 À bord (le chauffeur encaisse le client)</option></select></div>
             <div class="fld"><label>Notes</label><textarea id="gn-notes" rows="2" placeholder="Infos (vol, étage, digicode…)" maxlength="500"></textarea></div>
             <div style="border-top:1px solid var(--border2);margin:8px 0 14px;padding-top:14px">
               <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;color:var(--white);margin-bottom:12px">Que faire de ce transfert ?</div>
@@ -11554,6 +11577,36 @@ window.renderGerantTransferts = async function(){
   if(cnt) cnt.textContent = mine.length;
   if(!box) return;
   if(!mine.length){ box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">Aucun transfert créé pour le moment.<br>Créez-en un depuis « Nouveau transfert ».</div>'; return; }
+  // Fiches chauffeurs + véhicules → pour afficher le contact du chauffeur qui a
+  // accepté (téléphone, immatriculation, société…).
+  var _chx=[], _veh=[];
+  try { _chx = await fbGet('chauffeurs') || []; } catch(e){}
+  try { _veh = await fbGet('vehicules') || []; } catch(e){}
+  var chauByName = {}; _chx.forEach(function(d){ chauByName[(d.prenom+(d.nom?' '+d.nom:'')).trim()] = d; });
+  var immatByChau = {}; _veh.forEach(function(v){ if(v.chauffeur && v.immat && !immatByChau[(v.chauffeur||'').trim()]) immatByChau[(v.chauffeur||'').trim()]=v.immat; });
+  var contactHtml = function(c){
+    if(!c.chauffeur) return '';
+    var d = chauByName[(c.chauffeur||'').trim()] || {};
+    var tel = (d.tel||c.chauffeurTel||'').trim();
+    var telDigits = tel.replace(/[^+0-9]/g,'');
+    var immat = (d.vehImmatJour||c.vehImmat||c.immat||immatByChau[(c.chauffeur||'').trim()]||'').trim();
+    var vehLbl = {berline:'Berline',van:'Van',sprinter:'Sprinter',bus:'Bus',pmr:'Van PMR',limousine:'Limousine'}[d.vehicule||c.vehicule]||'';
+    var soc = (d.soc_nom||'').trim(), vtc = (d.carteVtc||'').trim();
+    var rows = '';
+    if(tel) rows += '<div style="color:var(--muted)">📞 Tél : <span style="color:var(--white);font-weight:700">'+E(tel)+'</span></div>';
+    if(immat||vehLbl) rows += '<div style="color:var(--muted)">🚗 Véhicule : <span style="color:var(--white);font-weight:700">'+E(vehLbl)+(immat?(vehLbl?' · ':'')+E(immat):'')+'</span></div>';
+    if(soc) rows += '<div style="color:var(--muted)">🏢 Société : <span style="color:var(--white);font-weight:700">'+E(soc)+'</span></div>';
+    if(vtc) rows += '<div style="color:var(--muted)">🪪 Carte VTC : <span style="color:var(--white);font-weight:700">'+E(vtc)+'</span></div>';
+    var btns = telDigits ? ('<div style="display:flex;gap:8px;margin-top:8px">'
+      + '<a href="tel:'+E(telDigits)+'" style="flex:1;text-align:center;background:#16a34a;color:#fff;border-radius:8px;padding:9px;font-size:12px;font-weight:800;text-decoration:none">📞 Appeler</a>'
+      + '<a href="sms:'+E(telDigits)+'" style="flex:1;text-align:center;background:#2563eb;color:#fff;border-radius:8px;padding:9px;font-size:12px;font-weight:800;text-decoration:none">💬 SMS</a>'
+      + '<a href="https://wa.me/'+E(telDigits.replace(/^\+/,''))+'" target="_blank" style="flex:1;text-align:center;background:#25d366;color:#fff;border-radius:8px;padding:9px;font-size:12px;font-weight:800;text-decoration:none">WhatsApp</a>'
+      + '</div>') : '';
+    return '<div style="margin-top:8px;padding:10px 12px;border-radius:10px;background:rgba(22,163,74,0.08);border:1px solid rgba(22,163,74,0.3);font-size:12px;line-height:1.7">'
+      + '<div style="font-weight:800;color:#16a34a;margin-bottom:4px">✅ Chauffeur assigné — '+E(c.chauffeur)+'</div>'
+      + (rows||'<div style="color:var(--muted)">Coordonnées non renseignées</div>') + btns
+      + '</div>';
+  };
   var info = function(c){
     if(c.statut==='offre_ouverte' || c.statut==='offre_prioritaire') return {t:'🙋 Proposé au réseau — à prendre', col:'#f59e0b'};
     if(['terminee','payee'].indexOf(c.statut)>=0) return {t:'✔ Terminé', col:'#16a34a'};
@@ -11581,8 +11634,10 @@ window.renderGerantTransferts = async function(){
       + (trajetLabel(c)?'<div style="font-size:12px;color:var(--gold);font-weight:700;margin-top:5px">'+trajetLabel(c)+'</div>':'')
       + '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border2);font-size:12px;line-height:1.7">'
       +   '<div style="color:var(--muted)">👔 Créé par : <span style="color:var(--white);font-weight:700">'+E((c.donneurOrdre&&c.donneurOrdre.nom)||c.soc_nom||c.createdBy||'—')+'</span></div>'
+      +   '<div style="color:var(--muted)">💳 Paiement : <span style="font-weight:700;color:'+(estPaiementABord(c)?'#16a34a':'#2563eb')+'">'+(estPaiementABord(c)?'💵 À bord (encaisse le client)':'🧾 En compte')+'</span></div>'
       +   '<div style="color:var(--muted)">🚕 Chauffeur : '+(c.chauffeur?('<span style="color:#16a34a;font-weight:700">'+E(c.chauffeur)+'</span>'):'<span style="color:#f59e0b;font-weight:700">en attente d\'acceptation</span>')+'</div>'
       + '</div>'
+      + contactHtml(c)
       + (canCancel ? '<button onclick="gerantAnnulerTransfert(\''+c._id+'\')" style="margin-top:10px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:8px 14px;font-size:12px;color:#dc2626;font-weight:700;cursor:pointer">Annuler ce transfert</button>' : '')
       + '</div>';
   }).join('');
@@ -11688,6 +11743,9 @@ window.gerantResetTransfert = function(){
   var p=document.getElementById('gn-pax'); if(p) p.value='1';
   var b=document.getElementById('gn-bags'); if(b) b.value='0';
   var s=document.getElementById('gn-mon-ch'); if(s) s.value='';
+  var pm=document.getElementById('gn-paiement'); if(pm) pm.value='compte';
+  var _d=document.getElementById('gn-dep'); if(_d){ _d.dataset.lat=''; _d.dataset.lng=''; }
+  var _a=document.getElementById('gn-arr'); if(_a){ _a.dataset.lat=''; _a.dataset.lng=''; }
   gerantMajMarge();
 };
 window.gerantCreerTransfert = async function(mode){
@@ -11702,6 +11760,7 @@ window.gerantCreerTransfert = async function(mode){
   var prix = parseFloat(document.getElementById('gn-prix').value)||0;
   var prixChauffeur = parseFloat(document.getElementById('gn-prix-ch').value)||0;
   var notes = (document.getElementById('gn-notes').value||'').trim();
+  var paiementBord = (document.getElementById('gn-paiement') && document.getElementById('gn-paiement').value === 'bord');
   if(!dep || !arr){ showToast('Départ et arrivée obligatoires', true); return; }
   if(!dt){ showToast('Date et heure obligatoires', true); return; }
   if(!client) client = (dep.split(',')[0]||'Course');
@@ -11741,7 +11800,7 @@ window.gerantCreerTransfert = async function(mode){
     depart:dep, arrivee:arr, lieu:'', duree:'',
     vehicule:veh, pax:pax, bags:bags,
     prix:prix, prixChauffeur:prixChauffeur, marge:(prix-prixChauffeur),
-    payMode:'simplycab', commissionMode:'marge',
+    payMode:(paiementBord?'direct':'simplycab'), mode_paiement:(paiementBord?'onboard':'compte'), commissionMode:'marge',
     passagers:[], notes:notes,
     ref:(typeof genRefVal==='function'?genRefVal():''),
     soc_nom:(SESSION.socNom||''),
@@ -14522,6 +14581,8 @@ window.confirmReservation = async function(id) {
 // ══════════════════════════════════════════
 async function checkRappels() {
   const now = new Date();
+  // Horaires de rappel configurés (minutes avant la course). Défaut : 60 + 30.
+  const offsets = (Array.isArray(window._rappelOffsets) && window._rappelOffsets.length) ? window._rappelOffsets : [60, 30];
   // On regarde toutes les courses a venir attribuees/acceptees.
   const courses = D.courses.filter(c=>['attribuee','acceptee','en_attente'].includes(c.statut)&&c.datetime);
   for(const c of courses) {
@@ -14529,30 +14590,20 @@ async function checkRappels() {
     const diffMin = (dt-now)/60000;
     const _remDrvId = c.chauffeur ? getChauffeurIdByName(c.chauffeur) : null;
 
-    // ── Rappel 1h avant ──────────────────────────────────────────────
-    if(diffMin > 55 && diffMin < 65 && !c.rappelEnvoye) {
-      await sendPushNotification(
-        `⏰ Course dans 1h — ${E(c.chauffeur||'À assigner')}`,
-        `${E(c.ref||'')} | ${E(c.client)} | ${fdt(c.datetime)} | ${E(c.depart||c.lieu||'')}`,
-        'https://musakdogan-droid.github.io/Simplycab-',
-        _remDrvId ? [_remDrvId] : null,
-        _remDrvId ? null : { key:'role', value:'staff' }
-      );
-      await fbUpdate('courses', c._id, {rappelEnvoye:true});
-      await addLog(`Rappel 1h envoyé : ${E(c.client)} à ${fdt(c.datetime)}`);
-    }
-
-    // ── Rappel 30 min avant ──────────────────────────────────────────
-    if(diffMin > 25 && diffMin < 35 && !c.rappel30Envoye) {
-      await sendPushNotification(
-        `⏰ Course dans 30 min — ${E(c.chauffeur||'À assigner')}`,
-        `${E(c.ref||'')} | ${E(c.client)} | ${fdt(c.datetime)} | ${E(c.depart||c.lieu||'')}`,
-        'https://musakdogan-droid.github.io/Simplycab-',
-        _remDrvId ? [_remDrvId] : null,
-        _remDrvId ? null : { key:'role', value:'staff' }
-      );
-      await fbUpdate('courses', c._id, {rappel30Envoye:true});
-      await addLog(`Rappel 30min envoyé : ${E(c.client)} à ${fdt(c.datetime)}`);
+    for(const O of offsets) {
+      // Fenêtre de ±5 min autour de l'échéance (la boucle tourne toutes les 5 min).
+      if(diffMin <= (O-5) || diffMin >= (O+5)) continue;
+      const flag = 'rappel_'+O+'_env';
+      if(c[flag]) continue;
+      const titre = `⏰ Course dans ${_fmtOffset(O)} — ${E(c.chauffeur||'À assigner')}`;
+      const corps = `${E(c.ref||'')} | ${E(c.client)} | ${fdt(c.datetime)} | ${E(c.depart||c.lieu||'')}`;
+      // Rappel au CHAUFFEUR concerné (s'il est assigné)…
+      if(_remDrvId){ try { await sendPushNotification(titre, corps, null, [_remDrvId]); } catch(e){} }
+      // …ET toujours au dispatch/admin.
+      try { await sendPushNotification(titre, corps, null, null, { key:'role', value:'staff' }); } catch(e){}
+      const upd = {}; upd[flag] = true;
+      await fbUpdate('courses', c._id, upd);
+      await addLog(`Rappel ${_fmtOffset(O)} envoyé : ${E(c.client)} à ${fdt(c.datetime)}`);
     }
   }
 }
@@ -17965,8 +18016,44 @@ async function loadDriverTimeout() {
     const smsToggle = document.getElementById('sms-toggle');
     if(smsToggle) smsToggle.checked = window._smsEnabled;
     updateSmsToggleLabel();
+    // Réglage : horaires de rappel avant chaque course (en minutes). Défaut 60 + 30.
+    window._rappelOffsets = (Array.isArray(s?.rappelOffsets) && s.rappelOffsets.length) ? s.rappelOffsets.slice() : [60, 30];
+    try { majRappelUI(); } catch(e){}
   } catch(e) {}
 }
+
+// Reflète la config des rappels dans les cases à cocher des Réglages.
+function majRappelUI(){
+  var offs = window._rappelOffsets || [60,30];
+  document.querySelectorAll('.rappel-opt').forEach(function(cb){ cb.checked = offs.indexOf(parseInt(cb.value))>=0; });
+  // Horaire personnalisé = tout offset qui ne fait pas partie des cases standard.
+  var std = [15,30,60,120];
+  var custom = offs.filter(function(o){ return std.indexOf(o)<0; })[0];
+  var ci = document.getElementById('rappel-custom'), cu = document.getElementById('rappel-custom-unit');
+  if(ci && custom){
+    if(custom%60===0 && cu){ ci.value = custom/60; cu.value='60'; } else { ci.value = custom; if(cu) cu.value='1'; }
+  } else if(ci){ ci.value=''; }
+  var et = document.getElementById('rappel-etat');
+  if(et){ et.textContent = offs.length ? ('Actifs : '+offs.slice().sort(function(a,b){return b-a;}).map(_fmtOffset).join(' · ')) : 'Aucun rappel'; }
+}
+function _fmtOffset(m){ return (m>=60 && m%60===0) ? (m/60)+' h' : m+' min'; }
+
+// Enregistre la config des rappels (admin/dispatch uniquement).
+window.saveRappelConfig = async function(){
+  if(!SESSION || !['admin','dispatch'].includes(SESSION.role)){ showToast('Seul un admin ou dispatch peut modifier les rappels', true); return; }
+  var offs = [];
+  document.querySelectorAll('.rappel-opt:checked').forEach(function(cb){ var v=parseInt(cb.value); if(v>0 && offs.indexOf(v)<0) offs.push(v); });
+  var ci = document.getElementById('rappel-custom'), cu = document.getElementById('rappel-custom-unit');
+  var cv = ci ? parseInt(ci.value) : 0;
+  if(cv>0){ var mins = cv * (cu && cu.value==='60' ? 60 : 1); if(mins>0 && mins<=2880 && offs.indexOf(mins)<0) offs.push(mins); }
+  offs.sort(function(a,b){return b-a;});
+  window._rappelOffsets = offs;
+  try {
+    await fbUpdate('settings', 'global', { rappelOffsets: offs, updatedAt:new Date().toISOString() });
+    majRappelUI();
+    showToast(offs.length ? '✅ Rappels enregistrés' : '🔕 Aucun rappel — désactivés');
+  } catch(e){ showToast('Erreur enregistrement', true); }
+};
 
 function updateSmsToggleLabel() {
   const lbl = document.getElementById('sms-toggle-label');
