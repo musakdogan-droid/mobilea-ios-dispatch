@@ -415,8 +415,10 @@ tr:last-child td{border-bottom:none}
 </script>
 <!-- MOBILEA — Stripe.js -->
 <script src="https://js.stripe.com/v3/"></script>
-<!-- MOBILEA — PayPal SDK -->
-<script src="https://www.paypal.com/sdk/js?client-id=REMPLACE_PAR_TON_CLIENT_ID_PAYPAL&currency=EUR&locale=fr_FR&intent=capture&components=buttons" data-namespace="paypal_sdk"></script>
+<!-- MOBILEA — PayPal SDK (DÉSACTIVÉ pour l'instant : pas encore de Client ID).
+     Pour réactiver PayPal plus tard : décommente la ligne ci-dessous et remplace
+     REMPLACE_PAR_TON_CLIENT_ID_PAYPAL par ton vrai Client ID PayPal Live. -->
+<!-- <script src="https://www.paypal.com/sdk/js?client-id=REMPLACE_PAR_TON_CLIENT_ID_PAYPAL&currency=EUR&locale=fr_FR&intent=capture&components=buttons" data-namespace="paypal_sdk"></script> -->
 <!-- MOBILEA — Google Places Autocomplete -->
 <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyC1tzZPk1ZlhMhtk3hUvhkIcd08U7LyTT8&libraries=places,geometry&language=fr&region=FR" defer onload="initPlacesAutocomplete()"></script>
 </head>
@@ -2109,6 +2111,9 @@ tr:last-child td{border-bottom:none}
           <button onclick="closeMo('client-booking')" style="background:var(--card2);border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;color:var(--muted);font-size:16px;display:flex;align-items:center;justify-content:center">×</button>
         </div>
 
+        <!-- Adresses favorites (Domicile / Travail / lieux enregistrés) -->
+        <div id="cb-fav" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"></div>
+
         <!-- Champs adresse style Uber -->
         <div style="background:var(--card2);border-radius:12px;padding:4px;margin-bottom:14px">
           <div style="display:flex;align-items:center;gap:12px;padding:12px;border-bottom:1px solid var(--border)">
@@ -2262,7 +2267,7 @@ tr:last-child td{border-bottom:none}
             <span style="display:flex;align-items:center;gap:10px"><span style="font-size:18px">💳</span><span><span style="font-size:13px;font-weight:700;display:block">Carte bancaire en ligne</span><span style="font-size:11px;color:var(--muted)">Paiement sécurisé Stripe · immédiat</span></span></span>
             <span class="cb-pm-check" style="font-size:16px;color:var(--gold);opacity:0">✓</span>
           </button>
-          <button type="button" onclick="cbSelectPaiement('paypal')" id="cb-pm-paypal" class="cb-pm-btn" style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--card2);border:2px solid var(--border);border-radius:10px;color:var(--white);cursor:pointer;text-align:left">
+          <button type="button" onclick="cbSelectPaiement('paypal')" id="cb-pm-paypal" class="cb-pm-btn" style="display:none;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--card2);border:2px solid var(--border);border-radius:10px;color:var(--white);cursor:pointer;text-align:left">
             <span style="display:flex;align-items:center;gap:10px"><span style="font-size:18px">🅿️</span><span><span style="font-size:13px;font-weight:700;display:block">PayPal</span><span style="font-size:11px;color:var(--muted)">Payer avec votre compte PayPal</span></span></span>
             <span class="cb-pm-check" style="font-size:16px;color:var(--gold);opacity:0">✓</span>
           </button>
@@ -2951,6 +2956,45 @@ const FB_CACHE_MS = 30000;
 function fbInvalidate(path) {
   if (path) _fbCache.delete(path); else _fbCache.clear();
 }
+
+// ── RÉSILIENCE HORS LIGNE ───────────────────────────────────────────────────
+// Cache persistant (localStorage) de la dernière donnée connue par chemin, pour
+// que l'app affiche quelque chose même sans réseau au lieu d'un écran vide.
+function _lsKey(p){ return 'fbcache_' + p; }
+function _lsCacheSet(path, arr){
+  try { var s = JSON.stringify(arr); if(s.length < 2500000) localStorage.setItem(_lsKey(path), s); } catch(e){}
+}
+function _lsCacheGet(path){
+  try { var s = localStorage.getItem(_lsKey(path)); return s ? JSON.parse(s) : null; } catch(e){ return null; }
+}
+// Indicateur « hors connexion » + bandeau.
+window._appOffline = false;
+function _setOffline(off){
+  if(window._appOffline === off) return;
+  window._appOffline = off;
+  try { _majOfflineBanner(); } catch(e){}
+  // On ne touche l'indicateur que pour signaler le hors-ligne ; le retour en
+  // ligne est reflété par le prochain chargement réussi (code existant).
+  try { if(off){ var s=document.getElementById('fb-status'); if(s) s.innerHTML = '<span style="color:var(--orange);font-size:11px">📡 Hors ligne</span>'; } } catch(e){}
+}
+function _majOfflineBanner(){
+  var b = document.getElementById('offline-banner');
+  if(window._appOffline){
+    if(!b){
+      b = document.createElement('div'); b.id = 'offline-banner';
+      b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147482000;background:#b45309;color:#fff;font-size:12px;font-weight:700;text-align:center;padding:8px 12px;padding-bottom:calc(8px + env(safe-area-inset-bottom));box-shadow:0 -2px 10px rgba(0,0,0,0.25)';
+      b.textContent = '📡 Hors connexion — affichage de la dernière synchro. Reconnexion automatique dès le retour du réseau.';
+      document.body.appendChild(b);
+    }
+  } else if(b){ b.remove(); }
+}
+if(typeof window !== 'undefined'){
+  try {
+    window.addEventListener('offline', function(){ _setOffline(true); });
+    window.addEventListener('online', function(){ _setOffline(false); try { if(typeof loadAll==='function') loadAll(); } catch(e){} try { if(SESSION && SESSION.role==='chauffeur' && typeof renderMesCourses==='function') renderMesCourses(); } catch(e){} });
+    if(navigator && navigator.onLine === false) window._appOffline = true;
+  } catch(e){}
+}
 // Requete FILTREE cote serveur : ne rapatrie que les courses d'UN chauffeur.
 // Firebase trie sur l'index "chauffeur" declare dans les regles ; on recoit
 // une dizaine de courses au lieu des centaines de la base entiere.
@@ -3498,21 +3542,43 @@ async function fbGet(path) {
     // On renvoie une copie pour éviter les modifications partagées
     return hit.data.map(o => ({...o}));
   }
-  const token = await getAuthToken();
-  const r = await fetch(`${FB_URL}/${path}.json${authParam(token)}`);
-  // Détecter les échecs (401, 403, réseau) au lieu de les traiter comme "vide".
-  if (!r.ok) {
-    if(window._diagShow) window._diagShow('fbGet ÉCHEC ' + path + ' → HTTP ' + r.status + (token?' (token OK)':' (SANS TOKEN)'));
-    return [];
+  // Repli « dernière donnée connue » : mémoire (même périmée) sinon localStorage.
+  const stale = function(){
+    if(hit && hit.data) return hit.data;
+    const ls = _lsCacheGet(path);
+    if(ls){ _fbCache.set(path, {t:0, data:ls}); return ls; }
+    return null;
+  };
+  let r = null, netError = false;
+  try {
+    const token = await getAuthToken();
+    r = await fetch(`${FB_URL}/${path}.json${authParam(token)}`);
+  } catch(e) { netError = true; }
+
+  // Erreur RÉSEAU (hors ligne) → on montre la dernière donnée connue, pas du vide.
+  if (netError || !r) {
+    _setOffline(true);
+    const s = stale();
+    return s ? s.map(o => ({...o})) : [];
   }
-  const data = await r.json();
+  if (!r.ok) {
+    if(window._diagShow) window._diagShow('fbGet ÉCHEC ' + path + ' → HTTP ' + r.status);
+    const s = stale();
+    return s ? s.map(o => ({...o})) : [];
+  }
+  let data;
+  try { data = await r.json(); }
+  catch(e){ _setOffline(true); const s = stale(); return s ? s.map(o => ({...o})) : []; }
   if (data && data.error) {
     if(window._diagShow) window._diagShow('fbGet ERREUR ' + path + ' → ' + JSON.stringify(data.error).slice(0,150));
-    return [];
+    const s = stale();
+    return s ? s.map(o => ({...o})) : [];
   }
-  if (!data) { _fbCache.set(path, {t: Date.now(), data: []}); return []; }
+  _setOffline(false); // lecture réussie → on est bien en ligne
+  if (!data) { _fbCache.set(path, {t: Date.now(), data: []}); _lsCacheSet(path, []); return []; }
   const arr = Object.entries(data).map(([k,v]) => ({_id:k,...v}));
   _fbCache.set(path, {t: Date.now(), data: arr});
+  _lsCacheSet(path, arr);
   return arr.map(o => ({...o}));
 }
 
@@ -4904,9 +4970,22 @@ function startApp() {
       if(_stTries > 20) clearInterval(_stLink);
     }, 500);
   }
+  // Enregistrer le CLIENT (particulier) pour recevoir les notifications de SA
+  // course (chauffeur assigné, en route, arrivé). Web push via l'app OneSignal
+  // existante — on cible ensuite par external_id = identifiant client.
+  if(SESSION.role === 'client' && window.OneSignalDeferred){
+    var _cidReg = String(SESSION.clientUser || SESSION.email || '').trim();
+    if(_cidReg){
+      OneSignalDeferred.push(async function(OneSignal){
+        try { await OneSignal.login(_cidReg); } catch(e){}
+        try { await OneSignal.User.addTag('role', 'client'); } catch(e){}
+        try { if(OneSignal.Notifications && OneSignal.Notifications.requestPermission) await OneSignal.Notifications.requestPermission(); } catch(e){}
+      });
+    }
+  }
   // Demander la permission de notification (nécessaire pour l'alerte système
   // vibration + son + message quand une nouvelle course arrive)
-  if(['chauffeur','admin','dispatch'].includes(SESSION.role) && 'Notification' in window && Notification.permission === 'default') {
+  if(['chauffeur','admin','dispatch','client'].includes(SESSION.role) && 'Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(()=>{});
   }
   const name = SESSION.name || 'Admin';
@@ -5366,6 +5445,17 @@ function _signalerEchecPush(msg){
 // (qui affiche déjà l'espace dispatch/admin normalement au relancement).
 async function notifierStaff(title, message, url) {
   return sendPushNotification(title, message, null, null, { key:'role', value:'staff' });
+}
+
+// Notifie LE CLIENT d'une course (chauffeur assigné, en route, arrivé…).
+// Cible par external_id = identifiant du compte client (course.clientUser).
+async function notifierClient(course, title, message) {
+  try {
+    if(!course) return;
+    var cid = String(course.clientUser || '').trim();
+    if(!cid) return; // on ne connaît pas le compte client → rien à envoyer
+    return await sendPushNotification(title, message, null, [cid], null);
+  } catch(e){}
 }
 
 // Retrouve l'id chauffeur (Firebase) à partir de son nom affiché ("Prénom Nom")
@@ -7009,6 +7099,8 @@ async function _doAssignForce(id, drv, c) {
   );
   const drvInfo = getChauffeurByName(drv);
   if(drvInfo?.tel && c) await notifyDriverBySMS(drvInfo.tel, c, 'Assignée par dispatch', drvInfo._id);
+  // Prévenir le client que son chauffeur est assigné.
+  try { await notifierClient(c, '🚕 Chauffeur assigné', drv+' prendra en charge votre course'+(drvInfo && drvInfo.immat?' ('+drvInfo.immat+')':'')+'. Suivez-la en direct dans l\'app.'); } catch(e){}
   await loadAll();
   showToast(`Assigné à ${drv} ✓`);
 }
@@ -12565,6 +12657,9 @@ function renderMesCourses() {
       const prixClient = parseFloat(c.prix)||0;
       const prixCh = parseFloat(c.prixChauffeur)||0;
       const retro = Math.max(0, prixClient - prixCh);
+      // Bénéficiaire de la commission : la société qui a passé la commande.
+      // Pour un transfert de gérant, c'est SON donneur d'ordre, pas MOBILEA.
+      const _benefComm = (c.creePar==='gerant' && c.donneurOrdre && (c.donneurOrdre.nom||'').trim()) ? c.donneurOrdre.nom : 'MOBILEA';
       if(prixClient > 0) {
         paiementBordHtml = '<div style="background:#ecfdf5;border:2px solid #16a34a;border-radius:12px;padding:14px;margin-bottom:14px">'
           + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">💵</span><span style="font-family:Syne,sans-serif;font-size:13px;font-weight:800;color:#15803d">Paiement à bord</span></div>'
@@ -12573,9 +12668,9 @@ function renderMesCourses() {
           + '<span style="font-family:Syne,sans-serif;font-size:20px;font-weight:800;color:#15803d">'+prixClient.toFixed(2)+'€</span></div>'
           + (retro > 0
               ? '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px">'
-                + '<span style="font-size:12px;color:#92400e">dont à reverser à MOBILEA</span>'
+                + '<span style="font-size:12px;color:#92400e">dont à reverser à '+E(_benefComm)+'</span>'
                 + '<span style="font-size:14px;font-weight:700;color:#d97706">'+retro.toFixed(2)+'€</span></div>'
-                + '<div style="font-size:10px;color:#777;margin-top:6px;line-height:1.4">Annoncez bien '+prixClient.toFixed(0)+'€ au client. Votre part ('+prixCh.toFixed(0)+'€) est déjà déduite ; les '+retro.toFixed(0)+'€ de commission seront reportés sur votre facture.</div>'
+                + '<div style="font-size:10px;color:#777;margin-top:6px;line-height:1.4">Annoncez bien '+prixClient.toFixed(0)+'€ au client. Votre part ('+prixCh.toFixed(0)+'€) est déjà déduite ; les '+retro.toFixed(0)+'€ de commission reviennent à '+E(_benefComm)+'.</div>'
               : '')
           + '</div>';
       }
@@ -13402,6 +13497,7 @@ window.accepterOffreOuverte = async function(id) {
       window._lastDriverSig = undefined; // forcer le prochain poll à redessiner
       if(typeof renderMesCourses === 'function') renderMesCourses();
     } catch(e){}
+    try { await notifierClient(c, '🚕 Chauffeur assigné', SESSION.name+' prend en charge votre course. Suivez-la en direct dans l\'app.'); } catch(e){}
     showToast('✅ Transfert accepté ! Il est à vous.');
   } catch(e) {
     showToast('Erreur — réessayez', true);
@@ -13454,6 +13550,18 @@ window.driverNextStep = async function(id, nextStatut) {
   // le chauffeur peut se déclarer sur place librement, sans contrôle de distance.
 
   await driverUpd(id, nextStatut, null);
+
+  // Prévenir le CLIENT de l'avancement de SA course (si notifications activées).
+  try {
+    var _cCli = D.courses.find(x=>x._id===id) || {};
+    var _m = {
+      en_route:  ['🚗 Votre chauffeur arrive', (SESSION.name||'Votre chauffeur')+' est en route vers '+(_cCli.depart||_cCli.lieu||'la prise en charge')],
+      sur_place: ['📍 Votre chauffeur est arrivé', (SESSION.name||'Votre chauffeur')+' vous attend au point de prise en charge'],
+      onboard:   ['🧳 Bonne route', 'Votre course a démarré. Bon voyage !'],
+      terminee:  ['✅ Course terminée', 'Merci d\'avoir voyagé avec MOBILEA !']
+    }[nextStatut];
+    if(_m) notifierClient(_cCli, _m[0], _m[1]);
+  } catch(e){}
 
   // Activer automatiquement le GPS dès l'acceptation de la course
   if(nextStatut === 'acceptee' && !gpsActive) {
@@ -15139,6 +15247,8 @@ function renderClientPortal() {
     if(c.createdByClient && SESSION.name && c.createdByClient===SESSION.name) return true;
     return false;
   });
+  // Appliquer les pourboires déclarés (stockés localement) pour l'affichage « merci ».
+  try { var _tips=JSON.parse(localStorage.getItem('mobilea_tips')||'{}'); myCourses.forEach(function(c){ if(_tips[c._id]!=null && c.pourboireClient==null) c.pourboireClient=_tips[c._id]; }); } catch(e){}
   const active=myCourses.filter(c=>!['terminee','annulee','noshow','payee'].includes(c.statut));
   const done=myCourses.filter(c=>['terminee','payee'].includes(c.statut));
   const e1=document.getElementById('cp-total');const e2=document.getElementById('cp-active');const e3=document.getElementById('cp-done');
@@ -15254,6 +15364,7 @@ function renderClientPortal() {
           ${paymentFailed ? `<button onclick="retryStripePayment('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.4);border-radius:6px;color:#ef4444;font-size:12px;font-weight:600;cursor:pointer">${t('retry_payment')}</button>` : ''}
           ${paymentPending && !paymentFailed ? `<button onclick="retryStripePayment('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.4);border-radius:6px;color:#22c55e;font-size:12px;font-weight:600;cursor:pointer">${t('pay_now')}</button>` : ''}
           ${canCancel ? `<button onclick="openCancelCourseModal('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:6px;color:#ef4444;font-size:12px;font-weight:600;cursor:pointer">✕ Annuler la course</button>` : ''}
+          <button onclick="clPartagerCourse('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(37,99,235,0.1);border:1px solid rgba(37,99,235,0.35);border-radius:6px;color:#2563eb;font-size:12px;font-weight:600;cursor:pointer">📤 Partager</button>
         </div>`;
         const drvInfo = getDriverContactInfo(c);
         const driverCard = drvInfo ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.03);border-radius:var(--r-xs);border:1px solid ${color}33">
@@ -15315,12 +15426,93 @@ function renderClientPortal() {
     <td style="font-size:11px">${{berline:'🚗 Berline',van:'🚐 Van',sprinter:'🚌 Sprinter',bus:'🚍 Bus'}[c.vehicule]||'—'}</td>
     <td style="font-size:11px">${E(c.chauffeur||'—')}</td>
     <td>${sBdg(c.statut)}</td>
-    <td style="font-size:10px;color:var(--muted)"><div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">${['terminee','facturee','payee'].includes(c.statut)?`<button onclick="generateCourseReceipt('${c._id}')" style="padding:5px 9px;background:rgba(52,168,83,0.12);border:1px solid rgba(52,168,83,0.4);border-radius:6px;color:#34a853;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🧾 Reçu</button>`:''}<button onclick="reproduceCourse('${c._id}')" style="padding:5px 9px;background:rgba(200,169,110,0.12);border:1px solid rgba(200,169,110,0.4);border-radius:6px;color:#c8a96e;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🔄 Reproduire</button></div></td>
+    <td style="font-size:10px;color:var(--muted)"><div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">${['terminee','facturee','payee'].includes(c.statut)?`<button onclick="generateCourseReceipt('${c._id}')" style="padding:5px 9px;background:rgba(52,168,83,0.12);border:1px solid rgba(52,168,83,0.4);border-radius:6px;color:#34a853;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🧾 Reçu</button>`:''}${(['terminee','facturee','payee'].includes(c.statut) && c.chauffeur && !c.pourboireClient)?`<button onclick="clPourboire('${c._id}')" style="padding:5px 9px;background:rgba(234,179,8,0.14);border:1px solid rgba(234,179,8,0.45);border-radius:6px;color:#b8860b;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">💛 Pourboire</button>`:''}${c.pourboireClient?`<span style="padding:5px 9px;font-size:11px;color:#16a34a;white-space:nowrap">💛 ${c.pourboireClient}€ merci</span>`:''}<button onclick="reproduceCourse('${c._id}')" style="padding:5px 9px;background:rgba(200,169,110,0.12);border:1px solid rgba(200,169,110,0.4);border-radius:6px;color:#c8a96e;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🔄 Reproduire</button></div></td>
   </tr>`; } catch(err) { console.warn('Historique course non affichable:', c?._id, err); return `<tr><td style="font-size:11px">${c.datetime?fdt(c.datetime):'—'}</td><td style="font-size:12px" colspan="6">${E(c.depart||c.lieu||'Course')} → ${E(c.arrivee||c.duree||'')}</td></tr>`; } }).join(''):`<tr><td colspan="7" class="t-empty"><i class="fas fa-history"></i><p>${t('no_history')}</p></td></tr>`;}
 
   // Mettre à jour la carte de suivi chauffeur
   if(typeof refreshClientMap==='function') refreshClientMap();
+  try { clRenderFavoris(); } catch(e){}
 }
+
+// ── CLIENT : adresses favorites (Domicile / Travail / lieux fréquents) ─────
+// Stockées localement par client (localStorage) — aucun écran blanc même hors ligne.
+function clFavKey(){ return 'mobilea_fav_' + ((SESSION&&(SESSION.clientUser||SESSION.email))||'anon'); }
+function clGetFavoris(){ try { return JSON.parse(localStorage.getItem(clFavKey())||'[]'); } catch(e){ return []; } }
+function clSetFavoris(a){ try { localStorage.setItem(clFavKey(), JSON.stringify(a.slice(0,12))); } catch(e){} }
+window.clRenderFavoris = function(){
+  var box = document.getElementById('cb-fav'); if(!box) return;
+  var favs = clGetFavoris();
+  var chips = favs.map(function(f,i){
+    return '<span style="display:inline-flex;align-items:center;gap:6px;background:var(--card2);border:1px solid var(--border2);border-radius:20px;padding:7px 12px;color:var(--white);font-size:12px;font-weight:600"><button onclick="clUseFavori('+i+')" style="background:none;border:none;color:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:0">'+(f.icon||'⭐')+' '+E(f.label)+'</button><span onclick="clDelFavori('+i+')" style="color:var(--muted);cursor:pointer">✕</span></span>';
+  }).join('');
+  box.innerHTML = chips + '<button onclick="clSaveFavori()" style="display:inline-flex;align-items:center;gap:6px;background:transparent;border:1px dashed var(--border2);border-radius:20px;padding:7px 12px;color:var(--gold);font-size:12px;font-weight:700;cursor:pointer">⭐ Enregistrer</button>';
+};
+window.clUseFavori = function(i){
+  var f = clGetFavoris()[i]; if(!f) return;
+  var dep = document.getElementById('cb-dep'), arr = document.getElementById('cb-arr');
+  if(dep && !(dep.value||'').trim()){ dep.value = f.address; if(dep.dataset){ dep.dataset.lat=f.lat||''; dep.dataset.lng=f.lng||''; } }
+  else if(arr){ arr.value = f.address; if(arr.dataset){ arr.dataset.lat=f.lat||''; arr.dataset.lng=f.lng||''; } }
+  try { if(typeof cbEstimatePrix==='function') cbEstimatePrix(); } catch(e){}
+};
+window.clDelFavori = function(i){ var a=clGetFavoris(); a.splice(i,1); clSetFavoris(a); clRenderFavoris(); };
+window.clSaveFavori = function(){
+  var dep = document.getElementById('cb-dep'), arr = document.getElementById('cb-arr');
+  var addr = ((dep && (dep.value||'').trim()) || (arr && (arr.value||'').trim()) || '').trim();
+  if(!addr){ showToast('Saisissez d\'abord une adresse', true); return; }
+  var label = prompt('Nom du favori (ex. Domicile, Travail) :', '');
+  if(label===null) return;
+  label = (label || addr.split(',')[0]).trim().slice(0,30);
+  var icon = /dom|maison|home/i.test(label)?'🏠':(/trav|bureau|work|office/i.test(label)?'💼':'⭐');
+  var srcEl = (dep && (dep.value||'').trim()) ? dep : arr;
+  var a = clGetFavoris();
+  a.unshift({ label:label, address:addr, icon:icon, lat:(srcEl&&srcEl.dataset.lat)||'', lng:(srcEl&&srcEl.dataset.lng)||'' });
+  clSetFavoris(a); clRenderFavoris(); showToast('⭐ Adresse enregistrée');
+};
+
+// ── CLIENT : partager sa course (infos + position actuelle du chauffeur) ───
+window.clPartagerCourse = async function(id){
+  var c = (D.courses||[]).find(function(x){return x._id===id;}); if(!c){ showToast('Course introuvable', true); return; }
+  var dep=c.depart||c.lieu||'', arr=c.arrivee||'', dt=c.datetime?fdt(c.datetime):'';
+  var txt = 'Ma course MOBILEA'+(dt?' du '+dt:'')+'\n'+dep+' → '+arr;
+  if(c.chauffeur) txt += '\n🚕 Chauffeur : '+c.chauffeur;
+  var drv = (D.chauffeurs||[]).find(function(x){return (x.prenom+(x.nom?' '+x.nom:''))===c.chauffeur;});
+  if(drv && drv.gps && drv.gps.lat){ txt += '\n📍 Position du chauffeur : https://www.google.com/maps?q='+drv.gps.lat+','+drv.gps.lng; }
+  else if(c.pickupLat && c.pickupLng){ txt += '\n📍 Prise en charge : https://www.google.com/maps?q='+c.pickupLat+','+c.pickupLng; }
+  try { if(navigator.share){ await navigator.share({ title:'Ma course MOBILEA', text: txt }); return; } } catch(e){ return; }
+  try { await navigator.clipboard.writeText(txt); showToast('📋 Infos copiées — collez-les pour partager'); }
+  catch(e){ showToast('Partage indisponible sur cet appareil', true); }
+};
+
+// ── CLIENT : pourboire au chauffeur (déclaratif, transmis au dispatch) ─────
+function clTips(){ try { return JSON.parse(localStorage.getItem('mobilea_tips')||'{}'); } catch(e){ return {}; } }
+window.clPourboire = function(id){
+  var c = (D.courses||[]).find(function(x){return x._id===id;}); if(!c){ showToast('Course introuvable', true); return; }
+  var ov = document.createElement('div');
+  ov.id='tip-overlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:20px';
+  ov.innerHTML = '<div style="background:#14161b;border:1px solid var(--border2);border-radius:18px;max-width:380px;width:100%;padding:22px;color:var(--white)">'
+    + '<div style="font-family:Syne,sans-serif;font-size:18px;font-weight:800;margin-bottom:4px">💛 Pourboire</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:16px">Pour '+E(c.chauffeur||'votre chauffeur')+' — '+E(c.depart||c.lieu||'')+' → '+E(c.arrivee||'')+'</div>'
+    + '<div style="display:flex;gap:8px;margin-bottom:12px">'
+    +   [2,5,10].map(function(v){ return '<button onclick="clPourboireValider(\''+id+'\','+v+')" style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:14px;color:var(--white);font-size:16px;font-weight:800;cursor:pointer">'+v+'€</button>'; }).join('')
+    + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px"><input id="tip-custom" type="number" min="1" max="200" placeholder="Autre montant" style="flex:1;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:11px;color:var(--white);font-size:14px"><button onclick="clPourboireValider(\''+id+'\',parseInt(document.getElementById(\'tip-custom\').value)||0)" style="background:var(--gold);border:none;border-radius:10px;padding:11px 16px;color:#111;font-weight:800;cursor:pointer">OK</button></div>'
+    + '<button onclick="document.getElementById(\'tip-overlay\').remove()" style="width:100%;background:transparent;border:none;color:var(--muted);font-size:13px;padding:8px;cursor:pointer">Annuler</button>'
+    + '</div>';
+  document.body.appendChild(ov);
+};
+window.clPourboireValider = async function(id, montant){
+  montant = parseInt(montant)||0;
+  if(montant<=0 || montant>200){ showToast('Montant invalide', true); return; }
+  var c = (D.courses||[]).find(function(x){return x._id===id;}) || {};
+  var ov=document.getElementById('tip-overlay'); if(ov) ov.remove();
+  try { var t=clTips(); t[id]=montant; localStorage.setItem('mobilea_tips', JSON.stringify(t)); } catch(e){}
+  c.pourboireClient = montant;
+  try { await fbPush('messages', { type:'pourboire', courseId:id, ref:c.ref||'', client:SESSION.name, chauffeur:c.chauffeur||'', montant:montant, to:'staff', createdAt:new Date().toISOString(), lu:false }); } catch(e){}
+  try { await sendPushNotification('💛 Pourboire client', (SESSION.name||'Client')+' laisse '+montant+'€ pour '+(c.chauffeur||'le chauffeur')+(c.ref?' ('+c.ref+')':''), null, null, { key:'role', value:'staff' }); } catch(e){}
+  showToast('💛 Merci ! Votre pourboire de '+montant+'€ a été transmis.');
+  try { renderClientPortal(); } catch(e){}
+};
 
 // ── MODIFIER UNE RÉSERVATION CLIENT ──────────────────────────────────────
 window.openEditBooking = function(courseId) {
@@ -16177,7 +16369,7 @@ window.cbStep2 = function() {
   if(isParticulier) {
     if(paiementWrap) paiementWrap.style.display = 'block';
     if(pmCarte) pmCarte.style.display = '';
-    if(pmPaypal) pmPaypal.style.display = '';
+    if(pmPaypal) pmPaypal.style.display = 'none'; // PayPal désactivé (pas de Client ID) — pour réactiver : remettre '' + décommenter le SDK PayPal en tête de fichier
     if(pmOnboard) pmOnboard.style.display = '';
     if(pmCompte) pmCompte.style.display = 'none';
     if(submitLabel) submitLabel.textContent = 'Réserver et payer';
@@ -17226,6 +17418,7 @@ window.acceptOffer = async function(courseId) {
   await loadAll();
   // Redessiner tout de suite la vue chauffeur (sinon figé jusqu'au prochain poll).
   try { window._lastDriverSig = undefined; if(typeof renderMesCourses==='function') renderMesCourses(); } catch(e){}
+  try { await notifierClient(course, '🚕 Chauffeur assigné', SESSION.name+' prend en charge votre course. Suivez-la en direct dans l\'app.'); } catch(e){}
   showToast('✓ Course acceptée !');
 };
 
@@ -20999,7 +21192,7 @@ window.importExcel = async function(input) {
 
 <script>
 (function () {
-  const STRIPE_PUBLIC_KEY = "pk_live_REMPLACE_PAR_TA_CLE_PUBLIQUE";
+  const STRIPE_PUBLIC_KEY = "pk_live_UvX0sGXQy0cn7zzNPlgepv9G00CCIwB4as";
   const WORKER_URL = "https://mobilea-stripe.mus-akdogan.workers.dev/create-payment-intent";
 
   let stripe, cardElement, currentCourse = {};
