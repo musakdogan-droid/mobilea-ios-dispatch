@@ -519,6 +519,7 @@ tr:last-child td{border-bottom:none}
       <button class="ni on admin-only" data-p="dashboard" onclick="gp('dashboard',this)"><i style="width:16px;text-align:center" class="fas fa-chart-line"></i> Dashboard</button>
       <button class="ni" data-p="dispatch" onclick="gp('dispatch',this)"><i style="width:16px;text-align:center" class="fas fa-route"></i> Dispatch <span class="nb" id="nb-d">0</span></button>
       <button class="ni" data-p="planning" onclick="gp('planning',this)"><i style="width:16px;text-align:center" class="fas fa-calendar-alt"></i> Planning</button>
+      <button class="ni" data-p="transfertsgerants" onclick="gp('transfertsgerants',this)"><i style="width:16px;text-align:center" class="fas fa-user-tie"></i> Transferts gérants <span class="nb" id="nb-tg">0</span></button>
       <div class="nsec">Équipe</div>
       <button class="ni" data-p="chauffeurs" onclick="gp('chauffeurs',this)"><i style="width:16px;text-align:center" class="fas fa-id-card"></i> Chauffeurs <span class="nb g" id="nb-c">0</span></button>
       <button class="ni" data-p="vehicules" onclick="gp('vehicules',this)"><i style="width:16px;text-align:center" class="fas fa-car"></i> Véhicules</button>
@@ -1184,6 +1185,17 @@ tr:last-child td{border-bottom:none}
         </div>
       </div>
 
+      <!-- TRANSFERTS GÉRANTS (réseau — hors CA MOBILEA) -->
+      <div class="page" id="page-transfertsgerants">
+        <div class="sec">
+          <div class="sec-h"><div class="sec-t"><i class="fas fa-user-tie"></i> Transferts gérants (réseau)</div></div>
+          <div style="padding:14px 18px;font-size:12px;color:var(--muted2);border-bottom:1px solid var(--border)">
+            Transferts proposés par les gérants au réseau MOBILEA. Facturés entre le gérant (donneur d'ordre) et le chauffeur — <b>ils ne comptent pas dans le chiffre d'affaires de MOBILEA</b> et n'apparaissent pas dans le dispatch, le planning ni la facturation.
+          </div>
+          <div id="tg-list" style="padding:16px"></div>
+        </div>
+      </div>
+
       <!-- PARAMETRES -->
       <div class="page" id="page-parametres">
         <div class="sec" style="max-width:600px">
@@ -1214,6 +1226,14 @@ tr:last-child td{border-bottom:none}
               </div>
               <div style="font-size:11px;color:var(--muted2);margin-bottom:10px">Le dispatch est alerté quand un chauffeur entre dans une zone. Définissez la position, le rayon et le délai.</div>
               <div id="gz-list"></div>
+            </div>
+            <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700">🎟️ Codes promo</div>
+                <button class="btn btn-p btn-sm" onclick="openPromoForm()"><i class="fas fa-plus"></i> Ajouter</button>
+              </div>
+              <div style="font-size:11px;color:var(--muted2);margin-bottom:10px">Créez des codes de réduction (montant en € ou pourcentage). Le client les saisit à la réservation : la remise s'applique automatiquement sur l'estimation.</div>
+              <div id="promo-list"></div>
             </div>
             <div style="padding-top:18px;border-top:1px solid var(--border);margin-bottom:18px">
               <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700;margin-bottom:10px">🔔 Notifications</div>
@@ -2245,6 +2265,33 @@ tr:last-child td{border-bottom:none}
           style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-sm);padding:10px;color:var(--white);font-size:12px;outline:none;resize:vertical;line-height:1.6"></textarea>
         <div style="font-size:10px;color:var(--muted2);margin-top:4px">Indiquez le nom de la personne transportée et son numéro de téléphone (une ligne par passager).</div>
       </div>
+      <!-- #1 Réserver pour quelqu'un d'autre -->
+      <div class="fld" style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:var(--r-xs);padding:10px 12px">
+        <label style="display:flex;align-items:center;gap:8px;margin:0;cursor:pointer;font-size:12px">
+          <input type="checkbox" id="cb-other-toggle" onchange="cbToggleOther(this.checked)" style="width:16px;height:16px;flex-shrink:0"> 👤 Je réserve pour quelqu'un d'autre
+        </label>
+        <div id="cb-other-fields" style="display:none;margin-top:10px">
+          <div class="fg2" style="gap:10px">
+            <div class="fld" style="margin:0"><label>Nom du passager</label><input type="text" id="cb-other-nom" maxlength="80" placeholder="Nom complet" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-sm);padding:10px;color:var(--white);font-size:13px;outline:none"></div>
+            <div class="fld" style="margin:0"><label>Téléphone passager</label><input type="tel" id="cb-other-tel" maxlength="30" placeholder="06 12 34 56 78" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-sm);padding:10px;color:var(--white);font-size:13px;outline:none"></div>
+          </div>
+          <div style="font-size:10px;color:var(--muted2);margin-top:4px">Le chauffeur contactera cette personne, pas le titulaire du compte.</div>
+        </div>
+      </div>
+
+      <!-- #3 Arrêts intermédiaires -->
+      <div class="fld">
+        <label>🛑 Arrêts intermédiaires (optionnel)</label>
+        <div id="cb-etapes-list" style="display:flex;flex-direction:column;gap:6px"></div>
+        <button type="button" id="cb-etape-add" onclick="cbAddEtape()" style="margin-top:6px;background:var(--card2);border:1px dashed var(--border2);border-radius:8px;padding:9px;color:var(--white2);font-size:12px;cursor:pointer;width:100%">➕ Ajouter un arrêt</button>
+      </div>
+
+      <!-- #5 Code promo -->
+      <div class="fld"><label>🎟️ Code promo (optionnel)</label>
+        <input type="text" id="cb-promo" maxlength="40" placeholder="Entrez votre code" onchange="cbApplyPromo()" onblur="cbApplyPromo()" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-sm);padding:10px;color:var(--white);font-size:13px;outline:none;text-transform:uppercase">
+        <div id="cb-promo-res" style="font-size:11px;margin-top:4px;min-height:14px"></div>
+      </div>
+
       <div class="fld"><label>Notes</label>
         <textarea id="cb-notes" rows="2" maxlength="500" placeholder="Informations complémentaires..."
           style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-sm);padding:10px;color:var(--white);font-size:12px;outline:none;resize:none"></textarea>
@@ -4119,7 +4166,8 @@ async function loadAll() {
           chauffeurs: renderChauffeurs, clients: renderClients, tarifs: renderTarifs,
           facturation: renderFact, rapports: renderRapports, historique: renderHistorique,
           mescourses: renderMesCourses, revenus: renderRevenus, dirigeant: renderDirigeant,
-          messagerie: renderConvList, clientportal: renderClientPortal
+          messagerie: renderConvList, clientportal: renderClientPortal,
+          transfertsgerants: renderTransfertsGerants
         };
         const fn = map[pid];
         if(typeof fn === 'function') { try { fn(); } catch(e){} }
@@ -4362,7 +4410,23 @@ function renderAlertesZone() {
   });
 }
 
+// Transferts proposés par un gérant au réseau (creePar==='gerant') : ce sont
+// des courses de la société du gérant (facturées gérant ↔ chauffeur), PAS de
+// MOBILEA. Pour l'admin/dispatch, on les sort de D.courses (donc de tous les
+// calculs de CA, dashboard, facturation, rapports) et on les met de côté dans
+// D.coursesGerant, affichés sur une page dédiée « Transferts gérants ».
+function _splitGerantCourses(){
+  try {
+    if(!(window.SESSION && (SESSION.role==='admin' || SESSION.role==='dispatch'))){ D.coursesGerant = D.coursesGerant||[]; return; }
+    var all = D.courses || [];
+    D.coursesGerant = all.filter(function(c){ return c && c.creePar==='gerant'; });
+    D.courses = all.filter(function(c){ return !(c && c.creePar==='gerant'); });
+  } catch(e){ D.coursesGerant = D.coursesGerant||[]; }
+}
+
 function renderAll() {
+  // Séparer les transferts gérant AVANT tout rendu/calcul (CA non faussé).
+  _splitGerantCourses();
   // Priorité à l'écran actuellement affiché : on le rend d'abord pour que
   // l'utilisateur voie ses données immédiatement, puis on rend le reste juste
   // après (sans bloquer le premier affichage).
@@ -4372,10 +4436,12 @@ function renderAll() {
     renderRapports, renderHistorique, renderPlanning, renderComptes,
     renderConvList, renderDirigeant, renderReservations, renderRevenus,
     renderAgenda, renderComptesClients, renderClientPortal,
+    renderTransfertsGerants,
     updateBadges, buildDriverSelects];
   prioritaires.forEach(fn => { try { fn(); } catch(e) { console.error((fn.name||'')+' error:', e); if(window._diagShow) window._diagShow((fn.name||'?')+' PLANTÉ: '+(e&&(e.stack||e.message||e))); } });
   try { renderAlertesZone(); } catch(e){}
   try { if(typeof renderGeofenceZones==='function') renderGeofenceZones(); } catch(e){}
+  try { if(typeof renderPromos==='function') renderPromos(); } catch(e){}
   // Filet de sécurité : réparer les chauffeurUid manquants sur les courses
   // actives (évite les PERMISSION_DENIED côté chauffeur). Non bloquant.
   try { if(typeof reparerChauffeurUidAuto==='function') reparerChauffeurUidAuto(); } catch(e){}
@@ -5016,7 +5082,15 @@ function startApp() {
     btnH.className = 'ni dyn-nav'; btnH.dataset.p = 'clienthistorique';
     btnH.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-history"></i> Historique';
     btnH.onclick = () => gp('clienthistorique', btnH);
-    nav.prepend(btnH); nav.prepend(btnM); nav.prepend(btn);
+    const btnC = document.createElement('button');
+    btnC.className = 'ni dyn-nav'; btnC.dataset.p = 'clientcartes';
+    btnC.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-credit-card"></i> Mes cartes';
+    btnC.onclick = () => { try { openClientCards(); } catch(e){} };
+    const btnP = document.createElement('button');
+    btnP.className = 'ni dyn-nav'; btnP.dataset.p = 'clientprofil';
+    btnP.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-user-circle"></i> Mon profil';
+    btnP.onclick = () => { try { openClientProfil(); } catch(e){} };
+    nav.prepend(btnP); nav.prepend(btnC); nav.prepend(btnH); nav.prepend(btnM); nav.prepend(btn);
     document.getElementById('btn-new').style.display = 'none';
     const roleEl = document.getElementById('sb-role');
     if(roleEl){roleEl.textContent=SESSION.societe||'Client';roleEl.className='sb-role role-dispatch';}
@@ -12828,8 +12902,10 @@ function renderMesCourses() {
       + '<div style="background:#f8f9fa;border-radius:12px;padding:14px;margin-bottom:14px">'
       + '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px"><div style="width:10px;height:10px;border-radius:50%;background:#22c55e;flex-shrink:0;margin-top:4px"></div><div><div style="font-size:10px;color:#999;font-weight:600;text-transform:uppercase">Prise en charge</div><div style="font-size:14px;font-weight:700;color:#111;margin-top:2px">'+(c.depart||c.lieu||'—')+'</div></div></div>'
       + '<div style="width:2px;height:12px;background:#e0e3e8;margin-left:4px;margin-bottom:12px"></div>'
+      + ((c.etapes&&c.etapes.length)?(c.etapes.map(function(et){return '<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:12px"><div style="width:10px;height:10px;border-radius:50%;background:#f59e0b;flex-shrink:0;margin-top:4px"></div><div><div style="font-size:10px;color:#999;font-weight:600;text-transform:uppercase">Arrêt</div><div style="font-size:14px;font-weight:700;color:#111;margin-top:2px">'+E(et)+'</div></div></div><div style="width:2px;height:12px;background:#e0e3e8;margin-left:4px;margin-bottom:12px"></div>';}).join('')):'')
       + '<div style="display:flex;align-items:flex-start;gap:10px"><div style="width:10px;height:10px;border-radius:3px;background:#e05c5c;flex-shrink:0;margin-top:4px"></div><div><div style="font-size:10px;color:#999;font-weight:600;text-transform:uppercase">Destination</div><div style="font-size:14px;font-weight:700;color:#111;margin-top:2px">'+(c.arrivee||'—')+'</div></div></div>'
       + (trajetLabel(c)?'<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e8eaed;font-size:13px;color:#b8860b;font-weight:800">'+trajetLabel(c)+' (trajet)</div>':'')
+      + ((c.passagerAutre&&(c.passagerAutre.nom||c.passagerAutre.tel))?('<div style="margin-top:10px;padding-top:10px;border-top:1px dashed #e8eaed;font-size:13px;color:#111"><span style="color:#777">👤 Passager : </span><b>'+E(c.passagerAutre.nom||'')+'</b>'+(c.passagerAutre.tel?' · <a href="tel:'+E(c.passagerAutre.tel)+'" style="color:#2563eb;font-weight:700">'+E(c.passagerAutre.tel)+'</a>':'')+'</div>'):'')
       + '</div>'
       + paxBtn
       + callBtn
@@ -15426,7 +15502,7 @@ function renderClientPortal() {
     <td style="font-size:11px">${{berline:'🚗 Berline',van:'🚐 Van',sprinter:'🚌 Sprinter',bus:'🚍 Bus'}[c.vehicule]||'—'}</td>
     <td style="font-size:11px">${E(c.chauffeur||'—')}</td>
     <td>${sBdg(c.statut)}</td>
-    <td style="font-size:10px;color:var(--muted)"><div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">${['terminee','facturee','payee'].includes(c.statut)?`<button onclick="generateCourseReceipt('${c._id}')" style="padding:5px 9px;background:rgba(52,168,83,0.12);border:1px solid rgba(52,168,83,0.4);border-radius:6px;color:#34a853;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🧾 Reçu</button>`:''}${(['terminee','facturee','payee'].includes(c.statut) && c.chauffeur && !c.pourboireClient)?`<button onclick="clPourboire('${c._id}')" style="padding:5px 9px;background:rgba(234,179,8,0.14);border:1px solid rgba(234,179,8,0.45);border-radius:6px;color:#b8860b;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">💛 Pourboire</button>`:''}${c.pourboireClient?`<span style="padding:5px 9px;font-size:11px;color:#16a34a;white-space:nowrap">💛 ${c.pourboireClient}€ merci</span>`:''}<button onclick="reproduceCourse('${c._id}')" style="padding:5px 9px;background:rgba(200,169,110,0.12);border:1px solid rgba(200,169,110,0.4);border-radius:6px;color:#c8a96e;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🔄 Reproduire</button></div></td>
+    <td style="font-size:10px;color:var(--muted)"><div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">${['terminee','facturee','payee'].includes(c.statut)?`<button onclick="generateCourseReceipt('${c._id}')" style="padding:5px 9px;background:rgba(52,168,83,0.12);border:1px solid rgba(52,168,83,0.4);border-radius:6px;color:#34a853;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🧾 Reçu</button>`:''}${(['terminee','facturee','payee'].includes(c.statut) && c.chauffeur && !c.pourboireClient)?`<button onclick="clPourboire('${c._id}')" style="padding:5px 9px;background:rgba(234,179,8,0.14);border:1px solid rgba(234,179,8,0.45);border-radius:6px;color:#b8860b;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">💛 Pourboire</button>`:''}${c.pourboireClient?`<span style="padding:5px 9px;font-size:11px;color:#16a34a;white-space:nowrap">💛 ${c.pourboireClient}€ merci</span>`:''}${(['terminee','facturee','payee'].includes(c.statut) && c.chauffeur && !clHasRated(c._id))?`<button onclick="clNoterChauffeur('${c._id}')" style="padding:5px 9px;background:rgba(200,169,110,0.14);border:1px solid rgba(200,169,110,0.45);border-radius:6px;color:#c8a96e;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">⭐ Noter</button>`:''}${clHasRated(c._id)?`<span style="padding:5px 9px;font-size:11px;color:#c8a96e;white-space:nowrap">⭐ ${clRatingOf(c._id)}/5</span>`:''}<button onclick="reproduceCourse('${c._id}')" style="padding:5px 9px;background:rgba(200,169,110,0.12);border:1px solid rgba(200,169,110,0.4);border-radius:6px;color:#c8a96e;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🔄 Reproduire</button></div></td>
   </tr>`; } catch(err) { console.warn('Historique course non affichable:', c?._id, err); return `<tr><td style="font-size:11px">${c.datetime?fdt(c.datetime):'—'}</td><td style="font-size:12px" colspan="6">${E(c.depart||c.lieu||'Course')} → ${E(c.arrivee||c.duree||'')}</td></tr>`; } }).join(''):`<tr><td colspan="7" class="t-empty"><i class="fas fa-history"></i><p>${t('no_history')}</p></td></tr>`;}
 
   // Mettre à jour la carte de suivi chauffeur
@@ -15512,6 +15588,350 @@ window.clPourboireValider = async function(id, montant){
   try { await sendPushNotification('💛 Pourboire client', (SESSION.name||'Client')+' laisse '+montant+'€ pour '+(c.chauffeur||'le chauffeur')+(c.ref?' ('+c.ref+')':''), null, null, { key:'role', value:'staff' }); } catch(e){}
   showToast('💛 Merci ! Votre pourboire de '+montant+'€ a été transmis.');
   try { renderClientPortal(); } catch(e){}
+};
+
+// ── MES CARTES (clients particuliers) ────────────────────────────────────
+// Cartes enregistrées via Stripe. Le Worker vérifie le jeton Firebase du
+// client et gère le client Stripe (par email) : setup-intent / list / delete.
+window.MOBILEA_CARDS_WORKER = 'https://mobilea-cards.mus-akdogan.workers.dev';
+var _ccStripe = null, _ccCardEl = null;
+
+async function _ccApi(action, extra){
+  var idToken = null;
+  try { idToken = await getAuthToken(); } catch(e){}
+  if(!idToken) throw new Error('Session expirée, reconnectez-vous');
+  var r = await fetch(window.MOBILEA_CARDS_WORKER, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(Object.assign({ idToken:idToken, action:action }, extra||{}))
+  });
+  var d = {}; try { d = await r.json(); } catch(e){}
+  if(!r.ok) throw new Error(d.error || ('Erreur '+r.status));
+  return d;
+}
+
+function _ccBrandIcon(b){
+  b = (b||'').toLowerCase();
+  if(b==='visa') return '💳 Visa';
+  if(b==='mastercard') return '💳 Mastercard';
+  if(b==='amex') return '💳 Amex';
+  return '💳 Carte';
+}
+
+window.openClientCards = function(){
+  var old = document.getElementById('cc-overlay'); if(old) old.remove();
+  var ov = document.createElement('div');
+  ov.id = 'cc-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;justify-content:center;padding:0';
+  ov.innerHTML =
+      '<div style="background:var(--card);width:100%;max-width:520px;max-height:88vh;overflow:auto;border-radius:18px 18px 0 0;padding:20px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<h2 style="font-size:18px;font-weight:800;color:var(--white);margin:0">💳 Mes cartes</h2>'
+    +     '<button onclick="document.getElementById(\'cc-overlay\').remove()" style="background:var(--card2);border:1px solid var(--border2);border-radius:10px;width:34px;height:34px;color:var(--white);font-size:16px;cursor:pointer">✕</button>'
+    +   '</div>'
+    +   '<div id="cc-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px"><div style="color:var(--muted);font-size:14px;text-align:center;padding:16px">Chargement…</div></div>'
+    +   '<div id="cc-add-zone"></div>'
+    +   '<button id="cc-add-btn" onclick="ccShowAddForm()" style="width:100%;background:var(--gold);border:none;border-radius:12px;padding:14px;color:#111;font-size:15px;font-weight:800;cursor:pointer">➕ Ajouter une carte</button>'
+    +   '<p style="color:var(--muted);font-size:11px;text-align:center;margin-top:12px">🔒 Paiement sécurisé par Stripe. MOBILEA ne stocke jamais votre numéro de carte.</p>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.onclick = function(e){ if(e.target===ov) ov.remove(); };
+  ccLoadCards();
+};
+
+window.ccLoadCards = async function(){
+  var box = document.getElementById('cc-list'); if(!box) return;
+  try {
+    var d = await _ccApi('list');
+    var cards = d.cards || [];
+    if(!cards.length){ box.innerHTML = '<div style="color:var(--muted);font-size:14px;text-align:center;padding:16px">Aucune carte enregistrée</div>'; return; }
+    box.innerHTML = cards.map(function(c){
+      return '<div style="display:flex;justify-content:space-between;align-items:center;background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:14px">'
+        +   '<div><div style="color:var(--white);font-weight:700;font-size:14px">'+_ccBrandIcon(c.brand)+' •••• '+c.last4+'</div>'
+        +   '<div style="color:var(--muted);font-size:12px;margin-top:2px">Expire '+c.exp+'</div></div>'
+        +   '<button onclick="ccDelete(\''+c.id+'\')" style="background:transparent;border:1px solid var(--border2);border-radius:9px;padding:8px 12px;color:#e57373;font-size:13px;cursor:pointer">Supprimer</button>'
+        + '</div>';
+    }).join('');
+  } catch(e){
+    box.innerHTML = '<div style="color:#e57373;font-size:13px;text-align:center;padding:16px">'+(e.message||'Erreur de chargement')+'</div>';
+  }
+};
+
+window.ccShowAddForm = async function(){
+  var zone = document.getElementById('cc-add-zone');
+  var addBtn = document.getElementById('cc-add-btn');
+  if(!zone) return;
+  if(typeof Stripe === 'undefined' || !window.MOBILEA_STRIPE_PK){
+    showToast('Paiement indisponible (Stripe non chargé)', true); return;
+  }
+  if(addBtn) addBtn.style.display = 'none';
+  zone.innerHTML =
+      '<div style="background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:14px;margin-bottom:12px">'
+    +   '<div style="background:#fff;border-radius:8px;padding:12px;margin-bottom:10px"><div id="cc-card-element"></div></div>'
+    +   '<div id="cc-card-err" style="color:#e57373;font-size:12px;min-height:16px;margin-bottom:8px"></div>'
+    +   '<div style="display:flex;gap:8px">'
+    +     '<button onclick="ccCancelAdd()" style="flex:1;background:var(--card);border:1px solid var(--border2);border-radius:10px;padding:12px;color:var(--white);font-weight:700;cursor:pointer">Annuler</button>'
+    +     '<button id="cc-save-btn" onclick="ccSaveCard()" style="flex:2;background:var(--gold);border:none;border-radius:10px;padding:12px;color:#111;font-weight:800;cursor:pointer">Enregistrer la carte</button>'
+    +   '</div>'
+    + '</div>';
+  try {
+    if(!_ccStripe) _ccStripe = Stripe(window.MOBILEA_STRIPE_PK);
+    var elements = _ccStripe.elements();
+    _ccCardEl = elements.create('card', { style:{ base:{ fontSize:'15px', color:'#1a1a1a', fontFamily:'system-ui, sans-serif', '::placeholder':{ color:'#aaa' } }, invalid:{ color:'#e53935' } }, hidePostalCode:true });
+    _ccCardEl.mount('#cc-card-element');
+    _ccCardEl.on('change', function(e){ var el=document.getElementById('cc-card-err'); if(el) el.textContent = e.error ? e.error.message : ''; });
+  } catch(e){ showToast('Erreur Stripe : '+(e.message||e), true); ccCancelAdd(); }
+};
+
+window.ccCancelAdd = function(){
+  try { if(_ccCardEl){ _ccCardEl.unmount(); _ccCardEl=null; } } catch(e){}
+  var zone = document.getElementById('cc-add-zone'); if(zone) zone.innerHTML='';
+  var addBtn = document.getElementById('cc-add-btn'); if(addBtn) addBtn.style.display='';
+};
+
+window.ccSaveCard = async function(){
+  var btn = document.getElementById('cc-save-btn');
+  var errEl = document.getElementById('cc-card-err');
+  if(!_ccStripe || !_ccCardEl){ return; }
+  if(btn){ btn.disabled=true; btn.textContent='Enregistrement…'; }
+  try {
+    var si = await _ccApi('setup-intent');
+    var res = await _ccStripe.confirmCardSetup(si.clientSecret, { payment_method:{ card:_ccCardEl } });
+    if(res.error){ if(errEl) errEl.textContent = res.error.message; if(btn){ btn.disabled=false; btn.textContent='Enregistrer la carte'; } return; }
+    showToast('✅ Carte enregistrée');
+    ccCancelAdd();
+    ccLoadCards();
+  } catch(e){
+    if(errEl) errEl.textContent = e.message || 'Erreur';
+    if(btn){ btn.disabled=false; btn.textContent='Enregistrer la carte'; }
+  }
+};
+
+window.ccDelete = async function(pmId){
+  if(!confirm('Supprimer cette carte ?')) return;
+  try { await _ccApi('delete', { paymentMethodId: pmId }); showToast('Carte supprimée'); ccLoadCards(); }
+  catch(e){ showToast(e.message || 'Erreur', true); }
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+//  ENRICHISSEMENTS APP CLIENT PARTICULIER
+//  #1 réserver pour autrui · #2 trajets récurrents · #3 arrêts ·
+//  #4 note chauffeur · #5 code promo + parrainage · #6 profil modifiable
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── #1 Réserver pour quelqu'un d'autre ───────────────────────────────────
+window.cbToggleOther = function(show){
+  var z = document.getElementById('cb-other-fields'); if(z) z.style.display = show ? 'block' : 'none';
+};
+
+// ── #3 Arrêts intermédiaires ──────────────────────────────────────────────
+window._cbEtapes = window._cbEtapes || [];
+window.cbAddEtape = function(){
+  if(window._cbEtapes.length >= 3){ showToast('3 arrêts maximum', true); return; }
+  window._cbEtapes.push({ adresse:'' });
+  cbRenderEtapes();
+};
+window.cbRemoveEtape = function(i){ window._cbEtapes.splice(i,1); cbRenderEtapes(); };
+window.cbRenderEtapes = function(){
+  var box = document.getElementById('cb-etapes-list'); if(!box) return;
+  box.innerHTML = (window._cbEtapes||[]).map(function(e,i){
+    return '<div style="display:flex;gap:6px;align-items:center">'
+      + '<input type="text" id="cb-etape-'+i+'" value="'+(e.adresse||'').replace(/"/g,'&quot;')+'" maxlength="200" placeholder="Arrêt '+(i+1)+'" oninput="window._cbEtapes['+i+'].adresse=this.value" style="flex:1;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-sm);padding:9px;color:var(--white);font-size:13px;outline:none">'
+      + '<button type="button" onclick="cbRemoveEtape('+i+')" style="background:var(--card2);border:1px solid var(--border2);border-radius:8px;width:34px;height:34px;color:#e57373;cursor:pointer;flex-shrink:0">✕</button>'
+      + '</div>';
+  }).join('');
+  var addBtn = document.getElementById('cb-etape-add');
+  if(addBtn) addBtn.style.display = (window._cbEtapes||[]).length >= 3 ? 'none' : 'block';
+  // Autocomplete Google sur les nouveaux champs
+  (window._cbEtapes||[]).forEach(function(e,i){
+    try { var el=document.getElementById('cb-etape-'+i); if(el && !el.dataset.placesReady) attachPlaces('cb-etape-'+i); } catch(err){}
+  });
+};
+
+// ── #4 Note + avis du chauffeur ───────────────────────────────────────────
+function clRatingsStore(){ try { return JSON.parse(localStorage.getItem('mobilea_ratings')||'{}'); } catch(e){ return {}; } }
+window.clHasRated = function(id){ return clRatingsStore()[id] != null; };
+window.clRatingOf = function(id){ var r=clRatingsStore()[id]; return r ? (r.note||r) : ''; };
+window.clNoterChauffeur = function(id){
+  var c = (D.courses||[]).find(function(x){return x._id===id;}) || {};
+  var old=document.getElementById('cl-note-ov'); if(old) old.remove();
+  var ov=document.createElement('div');
+  ov.id='cl-note-ov';
+  ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px';
+  ov.innerHTML =
+      '<div style="background:var(--card);width:100%;max-width:420px;border-radius:16px;padding:22px;text-align:center">'
+    +   '<div style="font-family:Syne,sans-serif;font-size:18px;font-weight:800;color:var(--white);margin-bottom:4px">⭐ Noter votre chauffeur</div>'
+    +   '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">'+(c.chauffeur?E(c.chauffeur):'Course')+(c.ref?' · '+E(c.ref):'')+'</div>'
+    +   '<div id="cl-stars" style="display:flex;justify-content:center;gap:8px;margin-bottom:16px">'
+    +     [1,2,3,4,5].map(function(n){ return '<span data-n="'+n+'" onclick="clSetStars('+n+')" style="font-size:34px;cursor:pointer;filter:grayscale(1);opacity:.5">⭐</span>'; }).join('')
+    +   '</div>'
+    +   '<input type="hidden" id="cl-note-val" value="0">'
+    +   '<textarea id="cl-note-comment" rows="3" maxlength="300" placeholder="Un commentaire (optionnel)" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:11px;color:var(--white);font-size:13px;outline:none;resize:none;margin-bottom:14px;box-sizing:border-box"></textarea>'
+    +   '<div style="display:flex;gap:8px">'
+    +     '<button onclick="document.getElementById(\'cl-note-ov\').remove()" style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:10px;padding:12px;color:var(--white);font-weight:700;cursor:pointer">Annuler</button>'
+    +     '<button onclick="clNoterValider(\''+id+'\')" style="flex:2;background:var(--gold);border:none;border-radius:10px;padding:12px;color:#111;font-weight:800;cursor:pointer">Envoyer</button>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
+};
+window.clSetStars = function(n){
+  document.getElementById('cl-note-val').value = n;
+  var stars = document.querySelectorAll('#cl-stars span');
+  stars.forEach(function(s){ var v=parseInt(s.dataset.n); s.style.filter = v<=n?'none':'grayscale(1)'; s.style.opacity = v<=n?'1':'.5'; });
+};
+window.clNoterValider = async function(id){
+  var note = parseInt(document.getElementById('cl-note-val').value)||0;
+  if(note<1){ showToast('Sélectionnez une note', true); return; }
+  var comment = (document.getElementById('cl-note-comment').value||'').trim();
+  var c = (D.courses||[]).find(function(x){return x._id===id;}) || {};
+  var ov=document.getElementById('cl-note-ov'); if(ov) ov.remove();
+  try { var r=clRatingsStore(); r[id]={note:note,comment:comment,at:new Date().toISOString()}; localStorage.setItem('mobilea_ratings', JSON.stringify(r)); } catch(e){}
+  try { await fbPush('messages', { type:'note_chauffeur', courseId:id, ref:c.ref||'', client:SESSION.name, chauffeur:c.chauffeur||'', note:note, commentaire:comment, to:'staff', createdAt:new Date().toISOString(), lu:false }); } catch(e){}
+  try { await sendPushNotification('⭐ Avis client', (SESSION.name||'Client')+' note '+(c.chauffeur||'le chauffeur')+' : '+note+'/5'+(comment?' — '+comment:''), null, null, { key:'role', value:'staff' }); } catch(e){}
+  showToast('⭐ Merci pour votre note !');
+  try { renderClientPortal(); } catch(e){}
+};
+
+// ── #5 Code promo / parrainage ────────────────────────────────────────────
+window.clReferralCode = function(){
+  var seed = (SESSION.clientUser || SESSION.name || SESSION.email || 'MOBILEA')+'';
+  var h=0; for(var i=0;i<seed.length;i++){ h=((h<<5)-h+seed.charCodeAt(i))|0; }
+  return 'MOB-' + Math.abs(h).toString(36).toUpperCase().slice(0,6);
+};
+
+// ── #6 Profil + #2 Trajets récurrents (dans la même page) ─────────────────
+function clProfilStore(){ try { return JSON.parse(localStorage.getItem('mobilea_client_profil')||'{}'); } catch(e){ return {}; } }
+function clRecStore(){ try { return JSON.parse(localStorage.getItem('mobilea_recurrences')||'[]'); } catch(e){ return []; } }
+function clRecSave(a){ try { localStorage.setItem('mobilea_recurrences', JSON.stringify(a)); } catch(e){} }
+
+window.openClientProfil = function(){
+  var p = clProfilStore();
+  var old=document.getElementById('cp-profil-ov'); if(old) old.remove();
+  var ov=document.createElement('div');
+  ov.id='cp-profil-ov';
+  ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;justify-content:center;padding:0';
+  var jours=['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
+  ov.innerHTML =
+      '<div style="background:var(--card);width:100%;max-width:520px;max-height:90vh;overflow:auto;border-radius:18px 18px 0 0;padding:20px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+    +     '<h2 style="font-size:18px;font-weight:800;color:var(--white);margin:0">👤 Mon profil</h2>'
+    +     '<button onclick="document.getElementById(\'cp-profil-ov\').remove()" style="background:var(--card2);border:1px solid var(--border2);border-radius:10px;width:34px;height:34px;color:var(--white);font-size:16px;cursor:pointer">✕</button>'
+    +   '</div>'
+    +   '<div class="fld"><label>Nom</label><input type="text" id="cpf-nom" maxlength="80" value="'+((p.nom||SESSION.name||'')).replace(/"/g,'&quot;')+'" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:11px;color:var(--white);font-size:14px;outline:none;box-sizing:border-box"></div>'
+    +   '<div class="fld"><label>Téléphone</label><input type="tel" id="cpf-tel" maxlength="30" value="'+((p.tel||SESSION.tel||'')).replace(/"/g,'&quot;')+'" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:11px;color:var(--white);font-size:14px;outline:none;box-sizing:border-box"></div>'
+    +   '<div class="fld"><label>Email</label><input type="email" id="cpf-email" maxlength="120" value="'+((p.email||SESSION.email||'')).replace(/"/g,'&quot;')+'" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:11px;color:var(--white);font-size:14px;outline:none;box-sizing:border-box"></div>'
+    +   '<button onclick="clSaveProfil()" style="width:100%;background:var(--gold);border:none;border-radius:12px;padding:13px;color:#111;font-weight:800;cursor:pointer;margin-bottom:8px">Enregistrer</button>'
+    +   '<p style="color:var(--muted);font-size:11px;text-align:center;margin:0 0 18px">Vos modifications sont transmises à notre équipe pour mise à jour de votre compte.</p>'
+    // Parrainage
+    +   '<div style="background:linear-gradient(135deg,rgba(200,169,110,0.12),rgba(200,169,110,0.05));border:1px solid rgba(200,169,110,0.3);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center">'
+    +     '<div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">🎁 Votre code de parrainage</div>'
+    +     '<div style="font-size:26px;font-weight:800;font-family:Syne,sans-serif;color:var(--gold);letter-spacing:.08em;margin-bottom:10px">'+clReferralCode()+'</div>'
+    +     '<button onclick="clPartagerParrainage()" style="background:var(--gold);border:none;border-radius:10px;padding:10px 18px;color:#111;font-weight:800;cursor:pointer">📤 Partager</button>'
+    +   '</div>'
+    // Trajets récurrents
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+    +     '<h3 style="font-size:15px;font-weight:800;color:var(--white);margin:0">🔁 Trajets récurrents</h3>'
+    +     '<button onclick="clRecAdd()" style="background:var(--card2);border:1px solid var(--border2);border-radius:9px;padding:7px 12px;color:var(--gold);font-size:12px;font-weight:700;cursor:pointer">➕ Ajouter</button>'
+    +   '</div>'
+    +   '<div id="cpf-rec-list" style="display:flex;flex-direction:column;gap:8px"></div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
+  clRecRender();
+};
+
+window.clSaveProfil = async function(){
+  var nom=(document.getElementById('cpf-nom').value||'').trim();
+  var tel=(document.getElementById('cpf-tel').value||'').trim();
+  var email=(document.getElementById('cpf-email').value||'').trim();
+  try { localStorage.setItem('mobilea_client_profil', JSON.stringify({nom:nom,tel:tel,email:email})); } catch(e){}
+  try { await fbPush('messages', { type:'profil_update', client:SESSION.name, clientUser:SESSION.clientUser||'', nom:nom, tel:tel, email:email, to:'staff', createdAt:new Date().toISOString(), lu:false }); } catch(e){}
+  try { await sendPushNotification('👤 Mise à jour profil client', (SESSION.name||'Client')+' a modifié ses coordonnées (tel: '+tel+')', null, null, { key:'role', value:'staff' }); } catch(e){}
+  showToast('✓ Profil enregistré — transmis à l\'équipe');
+};
+
+window.clPartagerParrainage = async function(){
+  var code = clReferralCode();
+  var txt = 'Réservez vos trajets avec MOBILEA et utilisez mon code parrainage '+code+' 🚗';
+  try {
+    if(navigator.share){ await navigator.share({ title:'MOBILEA', text:txt }); return; }
+  } catch(e){}
+  try { await navigator.clipboard.writeText(txt); showToast('Code copié : '+code); }
+  catch(e){ showToast('Votre code : '+code); }
+};
+
+// Trajets récurrents (modèles stockés localement + rebooking 1 clic)
+window.clRecRender = function(){
+  var box=document.getElementById('cpf-rec-list'); if(!box) return;
+  var list=clRecStore();
+  if(!list.length){ box.innerHTML='<div style="color:var(--muted);font-size:13px;text-align:center;padding:10px">Aucun trajet récurrent. Ajoutez votre trajet habituel (ex. domicile → bureau).</div>'; return; }
+  var J=['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
+  box.innerHTML = list.map(function(r,i){
+    return '<div style="background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:12px">'
+      + '<div style="color:var(--white);font-weight:700;font-size:13px;margin-bottom:4px">'+E(r.dep||'')+' → '+E(r.arr||'')+'</div>'
+      + '<div style="color:var(--muted);font-size:12px;margin-bottom:10px">'+ (r.jour!=null?J[r.jour]:'') +' · '+(r.heure||'')+' · '+(r.veh||'berline')+'</div>'
+      + '<div style="display:flex;gap:6px">'
+      +   '<button onclick="clRecBook('+i+')" style="flex:2;background:var(--gold);border:none;border-radius:9px;padding:9px;color:#111;font-weight:800;font-size:12px;cursor:pointer">Réserver</button>'
+      +   '<button onclick="clRecDel('+i+')" style="flex:1;background:transparent;border:1px solid var(--border2);border-radius:9px;padding:9px;color:#e57373;font-size:12px;cursor:pointer">Supprimer</button>'
+      + '</div></div>';
+  }).join('');
+};
+window.clRecAdd = function(){
+  var old=document.getElementById('cl-rec-form-ov'); if(old) old.remove();
+  var ov=document.createElement('div');
+  ov.id='cl-rec-form-ov';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px';
+  var J=['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
+  ov.innerHTML =
+      '<div style="background:var(--card);width:100%;max-width:420px;border-radius:16px;padding:20px">'
+    +   '<div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800;color:var(--white);margin-bottom:14px">🔁 Nouveau trajet récurrent</div>'
+    +   '<div class="fld"><label>Départ</label><input type="text" id="clrec-dep" maxlength="200" placeholder="Ex. Domicile" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none;box-sizing:border-box"></div>'
+    +   '<div class="fld"><label>Arrivée</label><input type="text" id="clrec-arr" maxlength="200" placeholder="Ex. Bureau" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none;box-sizing:border-box"></div>'
+    +   '<div class="fg2" style="gap:10px">'
+    +     '<div class="fld" style="margin:0"><label>Jour</label><select id="clrec-jour" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none">'+J.map(function(j,n){return '<option value="'+n+'">'+j+'</option>';}).join('')+'</select></div>'
+    +     '<div class="fld" style="margin:0"><label>Heure</label><input type="time" id="clrec-heure" value="08:00" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none;box-sizing:border-box"></div>'
+    +   '</div>'
+    +   '<div class="fld"><label>Véhicule</label><select id="clrec-veh" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none"><option value="berline">Berline</option><option value="van">Van</option><option value="sprinter">Sprinter</option></select></div>'
+    +   '<div style="display:flex;gap:8px;margin-top:6px">'
+    +     '<button onclick="document.getElementById(\'cl-rec-form-ov\').remove()" style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:10px;padding:11px;color:var(--white);font-weight:700;cursor:pointer">Annuler</button>'
+    +     '<button onclick="clRecSaveNew()" style="flex:2;background:var(--gold);border:none;border-radius:10px;padding:11px;color:#111;font-weight:800;cursor:pointer">Enregistrer</button>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
+  setTimeout(function(){ try { ['clrec-dep','clrec-arr'].forEach(function(id){ var el=document.getElementById(id); if(el&&!el.dataset.placesReady) attachPlaces(id); }); } catch(e){} }, 200);
+};
+window.clRecSaveNew = function(){
+  var dep=(document.getElementById('clrec-dep').value||'').trim();
+  var arr=(document.getElementById('clrec-arr').value||'').trim();
+  if(!dep||!arr){ showToast('Départ et arrivée requis', true); return; }
+  var r={ dep:dep, arr:arr, jour:parseInt(document.getElementById('clrec-jour').value)||0, heure:document.getElementById('clrec-heure').value||'08:00', veh:document.getElementById('clrec-veh').value||'berline' };
+  var list=clRecStore(); list.push(r); clRecSave(list);
+  var ov=document.getElementById('cl-rec-form-ov'); if(ov) ov.remove();
+  clRecRender();
+  showToast('🔁 Trajet récurrent enregistré');
+};
+window.clRecDel = function(i){ var a=clRecStore(); a.splice(i,1); clRecSave(a); clRecRender(); };
+window.clRecBook = function(i){
+  var r=clRecStore()[i]; if(!r) return;
+  var ov=document.getElementById('cp-profil-ov'); if(ov) ov.remove();
+  openClientBooking();
+  setTimeout(function(){
+    var dep=document.getElementById('cb-dep'), arr=document.getElementById('cb-arr');
+    if(dep) dep.value=r.dep; if(arr) arr.value=r.arr;
+    // Prochaine occurrence du jour choisi à l'heure choisie
+    try {
+      var now=new Date(); var target=new Date(now);
+      var cur=(now.getDay()+6)%7; // 0=Lun
+      var add=((r.jour - cur)+7)%7; if(add===0) add=7;
+      target.setDate(now.getDate()+add);
+      var hm=(r.heure||'08:00').split(':'); target.setHours(parseInt(hm[0])||8, parseInt(hm[1])||0, 0, 0);
+      target.setMinutes(target.getMinutes()-target.getTimezoneOffset());
+      var dtEl=document.getElementById('cb-dt'); if(dtEl) dtEl.value=target.toISOString().slice(0,16);
+    } catch(e){}
+    try { if(r.veh) cbSelectVeh(r.veh); else cbEstimatePrix(); } catch(e){}
+    showToast('Trajet pré-rempli — vérifiez puis envoyez');
+  }, 450);
 };
 
 // ── MODIFIER UNE RÉSERVATION CLIENT ──────────────────────────────────────
@@ -16635,7 +17055,12 @@ window.reproduceCourse = function(courseId) {
 };
 
 window.openClientBooking = function() {  // Reset étape 1
-  ['cb-dep','cb-arr','cb-vol','cb-notes','cb-passagers-info'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  ['cb-dep','cb-arr','cb-vol','cb-notes','cb-passagers-info','cb-other-nom','cb-other-tel','cb-promo'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  // Reset nouveaux champs (réserver pour autrui + arrêts + promo)
+  var _ot=document.getElementById('cb-other-toggle'); if(_ot){_ot.checked=false;} cbToggleOther(false);
+  window._cbEtapes = []; try { cbRenderEtapes(); } catch(e){}
+  window._cbPromo = null; var _pr=document.getElementById('cb-promo-res'); if(_pr) _pr.innerHTML='';
+  try { loadPromos(); } catch(e){}
   document.getElementById('cb-pax').value = 1;
   document.getElementById('cb-bagages').value = 0;
   ['cb-opt-pmr','cb-opt-animal'].forEach(id=>{const el=document.getElementById(id);if(el)el.checked=false;});
@@ -16760,6 +17185,130 @@ window.deleteGeofenceZone = function(id) {
     renderGeofenceZones();
     showToast('Zone supprimée');
   });
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+//  CODES PROMO — gestion (dispatch/admin) + validation (client)
+//  Stockés dans Firebase settings/promos : { CODE: {type:'pct'|'eur', valeur, actif} }
+// ══════════════════════════════════════════════════════════════════════════
+window._promos = window._promos || {};
+function _promoCleanCode(s){ return (s||'').toUpperCase().replace(/[^A-Z0-9\-]/g,'').slice(0,40); }
+async function loadPromos(){
+  try {
+    const r = await fetch(`${FB_URL}/settings/promos.json${authParam(await getAuthToken())}`);
+    const d = await r.json();
+    window._promos = d || {};
+  } catch(e){}
+  return window._promos;
+}
+window.renderPromos = async function(){
+  const box = document.getElementById('promo-list'); if(!box) return;
+  await loadPromos();
+  const codes = Object.keys(window._promos||{});
+  if(!codes.length){ box.innerHTML = '<div style="padding:14px;color:var(--muted2);font-size:13px;text-align:center">Aucun code promo. Cliquez « Ajouter ».</div>'; return; }
+  box.innerHTML = codes.map(function(code){
+    const p = window._promos[code]||{};
+    const val = p.type==='pct' ? (p.valeur+' %') : (p.valeur+' €');
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;background:var(--card2);border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:8px">'
+      + '<div><div style="font-size:13px;font-weight:700">'+(p.actif===false?'⚪':'🟢')+' '+E(code)+'</div>'
+      + '<div style="font-size:11px;color:var(--muted2);margin-top:2px">Remise '+val+(p.actif===false?' · inactif':'')+'</div></div>'
+      + '<button onclick="deletePromo(\''+E(code)+'\')" style="padding:6px 10px;background:rgba(231,76,60,0.12);border:1px solid rgba(231,76,60,0.4);border-radius:6px;color:#e74c3c;font-size:11px;font-weight:600;cursor:pointer">Suppr</button>'
+      + '</div>';
+  }).join('');
+};
+window.openPromoForm = function(){
+  const old=document.getElementById('promo-form-ov'); if(old) old.remove();
+  const ov=document.createElement('div');
+  ov.id='promo-form-ov';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px';
+  ov.innerHTML =
+      '<div style="background:var(--card);width:100%;max-width:400px;border-radius:16px;padding:20px">'
+    +   '<div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800;color:var(--white);margin-bottom:14px">🎟️ Nouveau code promo</div>'
+    +   '<div class="fld"><label>Code</label><input type="text" id="promo-code" maxlength="40" placeholder="BIENVENUE10" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none;text-transform:uppercase;box-sizing:border-box"></div>'
+    +   '<div class="fg2" style="gap:10px">'
+    +     '<div class="fld" style="margin:0"><label>Type</label><select id="promo-type" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none"><option value="eur">Montant (€)</option><option value="pct">Pourcentage (%)</option></select></div>'
+    +     '<div class="fld" style="margin:0"><label>Valeur</label><input type="number" id="promo-val" min="1" max="1000" placeholder="10" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none;box-sizing:border-box"></div>'
+    +   '</div>'
+    +   '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--white2);margin:6px 0 14px;cursor:pointer"><input type="checkbox" id="promo-actif" checked style="width:16px;height:16px"> Actif</label>'
+    +   '<div style="display:flex;gap:8px">'
+    +     '<button onclick="document.getElementById(\'promo-form-ov\').remove()" style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:10px;padding:11px;color:var(--white);font-weight:700;cursor:pointer">Annuler</button>'
+    +     '<button onclick="savePromo()" style="flex:2;background:var(--gold);border:none;border-radius:10px;padding:11px;color:#111;font-weight:800;cursor:pointer">Enregistrer</button>'
+    +   '</div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
+};
+window.savePromo = async function(){
+  const code = _promoCleanCode(document.getElementById('promo-code').value);
+  const type = document.getElementById('promo-type').value;
+  const valeur = parseFloat(document.getElementById('promo-val').value)||0;
+  const actif = document.getElementById('promo-actif').checked;
+  if(!code){ showToast('Code requis (lettres/chiffres)', true); return; }
+  if(!(valeur>0)){ showToast('Valeur invalide', true); return; }
+  if(type==='pct' && valeur>100){ showToast('Un pourcentage ne peut dépasser 100', true); return; }
+  try {
+    await fetch(`${FB_URL}/settings/promos/${code}.json${authParam(await getAuthToken())}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ type:type, valeur:valeur, actif:actif, createdAt:new Date().toISOString() })
+    });
+    const ov=document.getElementById('promo-form-ov'); if(ov) ov.remove();
+    showToast('Code promo enregistré ✓');
+    renderPromos();
+  } catch(e){ showToast('Erreur enregistrement', true); }
+};
+window.deletePromo = function(code){
+  showConfirm('Supprimer le code '+code+' ?', '', async () => {
+    try { await fetch(`${FB_URL}/settings/promos/${_promoCleanCode(code)}.json${authParam(await getAuthToken())}`, { method:'DELETE' }); } catch(e){}
+    showToast('Code supprimé');
+    renderPromos();
+  });
+};
+
+// Validation côté client (au moment de la réservation)
+function cbPromoDiscount(gross){
+  if(!window._cbPromo || !(gross>0)) return 0;
+  const p = window._cbPromo;
+  let rem = p.type==='pct' ? gross*(p.valeur/100) : p.valeur;
+  if(rem>gross) rem=gross; if(rem<0) rem=0;
+  return rem;
+}
+window.cbApplyPromo = async function(){
+  const el=document.getElementById('cb-promo'); const res=document.getElementById('cb-promo-res');
+  const code=_promoCleanCode(el?el.value:'');
+  window._cbPromo=null;
+  if(!code){ if(res) res.innerHTML=''; return; }
+  if(!Object.keys(window._promos||{}).length) await loadPromos();
+  const p=window._promos[code];
+  if(!p || p.actif===false){ if(res) res.innerHTML='<span style="color:#e57373">Code invalide ou expiré</span>'; return; }
+  window._cbPromo={code:code,type:p.type,valeur:p.valeur};
+  const gross=(typeof cbCurrentPrix!=='undefined'?cbCurrentPrix:0)||0;
+  const rem=cbPromoDiscount(gross);
+  if(res) res.innerHTML = gross>0 ? '<span style="color:#2ecc8a">✓ Code appliqué : -'+rem.toFixed(0)+' € → '+Math.max(0,gross-rem).toFixed(0)+' €</span>' : '<span style="color:#2ecc8a">✓ Code valide — remise appliquée au total</span>';
+  const fin=document.getElementById('cb-final-prix'); if(fin && gross>0) fin.textContent=Math.max(0,gross-rem).toFixed(0)+' €';
+};
+
+// ── PAGE « Transferts gérants » (admin/dispatch) ──────────────────────────
+window.renderTransfertsGerants = function(){
+  var box=document.getElementById('tg-list'); if(!box) return;
+  var list = (D.coursesGerant||[]).slice().sort(function(a,b){ return new Date(b.datetime||0)-new Date(a.datetime||0); });
+  var nb=document.getElementById('nb-tg'); if(nb) nb.textContent=list.length;
+  if(!list.length){ box.innerHTML='<div style="text-align:center;color:var(--muted);font-size:13px;padding:24px">Aucun transfert gérant.</div>'; return; }
+  box.innerHTML = list.map(function(c){
+    var don = (c.donneurOrdre&&c.donneurOrdre.nom)?c.donneurOrdre.nom:(c.soc_nom||c.createdBy||'Gérant');
+    var ch = c.chauffeur ? ('👤 '+E(c.chauffeur)) : '<span style="color:var(--orange)">En attente d\'un chauffeur</span>';
+    var pay = (c.mode_paiement==='onboard'||c.payMode==='direct') ? '💵 À bord' : '🧾 En compte';
+    var prix = c.prix ? (parseFloat(c.prix).toFixed(0)+' €') : '';
+    return '<div style="background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:10px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+      +   '<div style="font-size:13px;font-weight:800;color:var(--gold)">'+E(don)+'</div>'
+      +   '<div style="font-size:12px;color:var(--muted)">'+(c.datetime?fdt(c.datetime):'')+'</div>'
+      + '</div>'
+      + '<div style="font-size:13px;color:var(--white);margin-bottom:6px">'+E(c.depart||c.lieu||'—')+' → '+E(c.arrivee||'—')+'</div>'
+      + '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--white2)">'
+      +   '<span>'+ch+'</span><span>'+pay+'</span>'+(prix?('<span>'+prix+'</span>'):'')+'<span style="color:var(--muted)">'+E(c.statut||'')+'</span>'
+      + '</div>'
+      + '</div>';
+  }).join('');
 };
 
 window.renderZonesList = async function() {
@@ -16980,9 +17529,20 @@ window.submitClientBooking=async function(){
   const clientNameForGrid = SESSION.societe || SESSION.name;
   let prixChauffeurCourse = await computeChauffeurPriceForBooking(clientNameForGrid, vehChoisi, dep, arr);
   if(!prixChauffeurCourse && prixCourse > 0) prixChauffeurCourse = Math.round(prixCourse * 0.7);
+  // Nouveaux champs : réserver pour autrui (#1), arrêts (#3), code promo (#5)
+  const _bookFor = (document.getElementById('cb-other-toggle')?.checked)
+    ? { nom: sanitize(document.getElementById('cb-other-nom')?.value||'',80), tel: sanitize(document.getElementById('cb-other-tel')?.value||'',30) }
+    : null;
+  const _etapes = (window._cbEtapes||[]).map(function(e){return (e.adresse||'').trim();}).filter(Boolean).slice(0,3);
+  const _promo = sanitize((document.getElementById('cb-promo')?.value||'').toUpperCase(),40);
+  // Remise code promo (validée côté client via window._cbPromo)
+  const _remisePromo = (typeof cbPromoDiscount==='function') ? Math.round(cbPromoDiscount(prixCourse||0)) : 0;
+  const _prixApresPromo = Math.max(0, (prixCourse||0) - _remisePromo);
+  // Si paiement en ligne, on encaisse le montant APRÈS remise.
+  if(_remisePromo>0 && prixStripeEl && prixStripeEl.value) prixStripeEl.value = _prixApresPromo;
   const pushResult = await fetch(`${FB_URL}/courses.json${authParam(await getAuthToken())}`, {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({type:'transfert',client:SESSION.societe||SESSION.name,datetime:dt,depart:dep,arrivee:arr,vehicule:vehChoisi,pax:parseInt(document.getElementById('cb-pax').value)||1,bagages:parseInt(document.getElementById('cb-bagages').value)||0,options,vol:sanitize(document.getElementById('cb-vol').value,20),notes:sanitize(document.getElementById('cb-notes').value,500),passagers,statut:'nouvelle',source:SESSION.isPartenaire?'partenaire':'client',prix:prixCourse||null,prixChauffeur:prixChauffeurCourse||null,mode_paiement:modePaiement,paiement_statut:paiementEnLigne?'en_attente':'',createdByClient:SESSION.name,clientUser:SESSION.clientUser,partenaireUid:SESSION.isPartenaire?SESSION.partenaireUid:null,createdAt:new Date().toISOString(),pickupLat:pickupCoords?.lat||null,pickupLng:pickupCoords?.lng||null,dropLat:dropCoords?.lat||null,dropLng:dropCoords?.lng||null})
+    body: JSON.stringify({type:'transfert',client:SESSION.societe||SESSION.name,datetime:dt,depart:dep,arrivee:arr,vehicule:vehChoisi,pax:parseInt(document.getElementById('cb-pax').value)||1,bagages:parseInt(document.getElementById('cb-bagages').value)||0,options,vol:sanitize(document.getElementById('cb-vol').value,20),notes:sanitize(document.getElementById('cb-notes').value,500),passagers,statut:'nouvelle',source:SESSION.isPartenaire?'partenaire':'client',prix:((_remisePromo>0?_prixApresPromo:prixCourse)||null),prixBrut:(_remisePromo>0?(prixCourse||null):null),remisePromo:(_remisePromo||null),prixChauffeur:prixChauffeurCourse||null,mode_paiement:modePaiement,paiement_statut:paiementEnLigne?'en_attente':'',createdByClient:SESSION.name,clientUser:SESSION.clientUser,partenaireUid:SESSION.isPartenaire?SESSION.partenaireUid:null,createdAt:new Date().toISOString(),pickupLat:pickupCoords?.lat||null,pickupLng:pickupCoords?.lng||null,dropLat:dropCoords?.lat||null,dropLng:dropCoords?.lng||null,passagerAutre:_bookFor,etapes:(_etapes.length?_etapes:null),codePromo:(_promo||null)})
   });
   const pushData = await pushResult.json();
   const newId = pushData.name;
@@ -19748,7 +20308,7 @@ function gp(name, btn) {
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   const pg=document.getElementById('page-'+name);if(pg)pg.classList.add('on');
   if(btn)btn.classList.add('on');
-  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
+  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',transfertsgerants:'Transferts gérants',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
   document.getElementById('page-title').textContent=titles[name]||name;
   closeMob();
   if(name==='cartechauffeurs') { setTimeout(initCarteChauffeurs, 300); }
@@ -21194,6 +21754,8 @@ window.importExcel = async function(input) {
 (function () {
   const STRIPE_PUBLIC_KEY = "pk_live_UvX0sGXQy0cn7zzNPlgepv9G00CCIwB4as";
   const WORKER_URL = "https://mobilea-stripe.mus-akdogan.workers.dev/create-payment-intent";
+  // Exposé pour la page « Mes cartes » (réutilise la même clé publiable).
+  try { window.MOBILEA_STRIPE_PK = STRIPE_PUBLIC_KEY; } catch(e){}
 
   let stripe, cardElement, currentCourse = {};
 
