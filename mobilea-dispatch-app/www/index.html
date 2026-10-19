@@ -851,6 +851,14 @@ tr:last-child td{border-bottom:none}
               <button class="btn btn-s btn-sm" onclick="refreshCarteChauffeurs()"><i class="fas fa-sync"></i> Actualiser</button>
             </div>
           </div>
+          <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--card2)">
+            <span style="font-size:12px;color:var(--muted);font-weight:600"><i class="fas fa-route" style="color:var(--gold)"></i> Historique de déplacement :</span>
+            <select id="cc-hist-driver" class="fsel" style="padding:6px 8px;min-width:150px"><option value="">Choisir un chauffeur…</option></select>
+            <input type="date" id="cc-hist-date" class="fsel" style="padding:6px 8px">
+            <button class="btn btn-p btn-sm" onclick="voirTraceChauffeur()"><i class="fas fa-play"></i> Voir le trajet</button>
+            <button class="btn btn-ghost btn-sm" onclick="effacerTraceChauffeur()"><i class="fas fa-eraser"></i> Effacer</button>
+            <span id="cc-hist-info" style="font-size:11px;color:var(--muted)"></span>
+          </div>
           <div id="cc-map-container" style="height:540px;border-radius:0 0 var(--r) var(--r);overflow:hidden;position:relative">
             <div id="cc-map" style="width:100%;height:100%"></div>
           </div>
@@ -1069,6 +1077,7 @@ tr:last-child td{border-bottom:none}
             <span style="color:var(--muted);font-size:11px">→</span>
             <input type="date" class="fsel" id="rap-d2" onchange="document.getElementById('rap-periode').value='perso';renderRapports()" style="padding:6px 8px">
             <span class="bdg bdg-muted" id="rap-periode-info">—</span>
+            <button class="btn btn-s btn-sm" onclick="exportRapportCSV()" style="margin-left:auto"><i class="fas fa-download"></i> Export CSV</button>
           </div>
         </div>
 
@@ -1152,6 +1161,20 @@ tr:last-child td{border-bottom:none}
           <div class="tw"><table><thead><tr>
             <th>Chauffeur</th><th>Courses</th><th>Terminées</th><th>No-show</th><th>Annulées</th><th>Ponctualité</th><th>CA généré</th><th>Marge</th>
           </tr></thead><tbody id="tb-stats-ch"></tbody></table></div>
+        </div>
+
+        <!-- À FACTURER / ENCAISSER -->
+        <div class="sec" style="margin-top:16px">
+          <div class="sec-h"><div class="sec-t"><i class="fas fa-file-invoice-dollar"></i> À facturer / encaisser</div></div>
+          <div style="padding:16px" id="rap-afacturer"></div>
+          <div style="padding:0 16px 14px;font-size:11px;color:var(--muted)">Courses terminées pas encore passées en « Facturée » ou « Payée » — c'est l'argent qu'il reste à encaisser sur la période.</div>
+        </div>
+
+        <!-- CA PAR MODE DE PAIEMENT · VÉHICULE · TOP TRAJETS -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:16px">
+          <div class="sec"><div class="sec-h"><div class="sec-t"><i class="fas fa-credit-card"></i> CA par mode de paiement</div></div><div style="padding:16px" id="rap-paiement"></div></div>
+          <div class="sec"><div class="sec-h"><div class="sec-t"><i class="fas fa-car-side"></i> Répartition par véhicule</div></div><div style="padding:16px" id="rap-veh"></div></div>
+          <div class="sec"><div class="sec-h"><div class="sec-t"><i class="fas fa-route"></i> Top trajets</div></div><div style="padding:16px" id="rap-axes"></div></div>
         </div>
       </div>
 
@@ -2442,6 +2465,23 @@ tr:last-child td{border-bottom:none}
         <input type="text" id="gz-client" placeholder="Ex: Value Retail, DreamCastle..." maxlength="80"
           style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-sm);padding:10px;color:var(--white);font-size:13px;outline:none">
       </div>
+      <div style="margin-top:14px;background:var(--card2);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--white2);margin-bottom:8px">🔔 Qui reçoit l'alerte ?</div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px;font-weight:normal">
+          <input type="checkbox" id="gz-notif-dispatch" checked style="width:16px;height:16px;cursor:pointer">
+          <span>Dispatch / Admin</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal">
+          <input type="checkbox" id="gz-notif-partenaire" style="width:16px;height:16px;cursor:pointer">
+          <span>Le client partenaire associé <span id="gz-notif-part-nom" style="color:var(--gold)"></span></span>
+        </label>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--white2)">⏱️ Prévenir le client</span>
+          <input type="number" id="gz-arrivee-min" min="0" max="120" placeholder="15" style="width:70px;background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:7px;color:var(--white);font-size:13px;outline:none">
+          <span style="font-size:12px;color:var(--white2)">min avant son arrivée</span>
+        </div>
+        <div style="font-size:10px;color:var(--muted2);margin-top:6px">Ex. Value Retail : mettez 15 → le client est prévenu automatiquement ~15 min avant que le chauffeur arrive, uniquement pour les transferts qui vont chez lui. Laissez vide pour ne pas utiliser cette alerte. Le partenaire doit être connecté et avoir autorisé les notifications.</div>
+      </div>
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:14px;font-weight:normal">
         <input type="checkbox" id="gz-actif" checked style="width:16px;height:16px;cursor:pointer">
         <span>Zone active</span>
@@ -3126,6 +3166,27 @@ async function fbGetMesCourses(nomChauffeur) {
 // Le partenaire n'a le droit de lire /courses QUE via cette query filtrée
 // (orderByChild('client').equalTo(sa_societe)). On NE retombe donc PAS sur
 // un fbGet('courses') global en cas d'erreur : ce serait un 401 garanti.
+// CLIENT PARTICULIER : les règles Firebase ne l'autorisent à lire QUE ses
+// propres courses, via une requête filtrée sur createdByUid = son UID.
+// (Un fbGet('courses') global lui serait refusé.)
+async function fbGetCoursesClient(uid) {
+  if(!uid) return [];
+  try {
+    const token = await getAuthToken();
+    const p = new URLSearchParams();
+    if(token) p.set('auth', token);
+    p.set('orderBy', JSON.stringify('createdByUid'));
+    p.set('equalTo', JSON.stringify(uid));
+    const r = await fetch(`${FB_URL}/courses.json?${p.toString()}`);
+    if(!r.ok) throw new Error('filtre client refuse: ' + r.status);
+    const d = await r.json();
+    return d ? Object.entries(d).map(([k,v]) => ({_id:k, ...v})) : [];
+  } catch(e) {
+    console.log('[client] lecture courses échouée:', e);
+    return null; // null = échec (≠ liste vide) → on garde l'affichage précédent
+  }
+}
+
 async function fbGetCoursesPartenaire(societe) {
   if(!societe) return [];
   try {
@@ -3280,6 +3341,7 @@ function startPointagesListener() {
   if(_pointagesListenerRef) return;
   if(!window.fbDB) { if((window._ptBootTries=(window._ptBootTries||0)+1) < 20) setTimeout(startPointagesListener, 500); return; }
   if(!SESSION) return;
+  if(SESSION.role === 'client') return; // les clients n'utilisent pas les pointages (lecture réservée)
   try {
     _pointagesListenerRef = window.fbDB.ref('pointages');
     _pointagesListenerCb = _pointagesListenerRef.on('value', (snap) => {
@@ -3483,6 +3545,9 @@ async function handleCoursesSnapshot(courses) {
       (D.courses||[]).forEach(c => { if(c && c._id) parId.set(c._id, c); });
       (courses||[]).forEach(c => { if(c && c._id) parId.set(c._id, c); });
       D.courses = Array.from(parId.values()).sort((a,b)=> new Date(b.datetime||0) - new Date(a.datetime||0));
+      // Les transferts gérant arrivés par l'écoute ne doivent pas réapparaître
+      // dans le Dispatch / Planning ni dans le CA.
+      try { _splitGerantCourses(); } catch(e){}
       try { await checkExpiredOffers(courses); } catch(e){}
       try { await checkAutoDispatchFallback(courses); } catch(e){}
       // Rafraichir la vue reellement affichee (agenda OU tableau).
@@ -3933,7 +3998,9 @@ function stampOrg(data) {
 // véhicules) soit toujours disponible hors-ligne.
 function sauverCacheOffline() {
   const base = {
-    courses: D.courses||[], chauffeurs: D.chauffeurs||[], clients: D.clients||[],
+    // On garde aussi les transferts gérant (mis de côté pour le CA) afin que la
+    // page « Transferts gérants » fonctionne hors ligne.
+    courses: (D.courses||[]).concat((D.coursesGerant||[]).filter(g => !(D.courses||[]).some(c => c._id === g._id))), chauffeurs: D.chauffeurs||[], clients: D.clients||[],
     vehicules: D.vehicules||[], tarifs: D.tarifs||[],
     factures_chauffeurs: D.factures_chauffeurs||[],
     dispatch_accounts: D.dispatch_accounts||[], client_accounts: D.client_accounts||[],
@@ -4075,7 +4142,10 @@ async function loadAll() {
       if(SESSION.isPartenaire && SESSION.societe) {
         courses = await fbGetCoursesPartenaire(SESSION.societe);
       } else {
-        courses = await fbGet('courses');
+        // Particulier : requête filtrée sur SES courses (seule lecture autorisée).
+        const _cuid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.uid;
+        courses = await fbGetCoursesClient(_cuid);
+        if(courses === null) courses = D.courses || []; // échec réseau : on garde l'existant
       }
       const messages = await fbGet('messages');
       D.courses = (courses||[]).sort((a,b) => new Date(b.datetime||0) - new Date(a.datetime||0));
@@ -4091,6 +4161,7 @@ async function loadAll() {
         // (corporate) soit le nom (particulier). Sans ça, un particulier ne voyait
         // aucune de ses courses.
         D.courses = D.courses.filter(c => {
+          if(c.createdByUid && SESSION.uid && c.createdByUid===SESSION.uid) return true;
           if(c.clientUser && SESSION.clientUser && c.clientUser===SESSION.clientUser) return true;
           const cn=(c.client||'').trim().toUpperCase();
           const sn=(SESSION.societe||'').trim().toUpperCase();
@@ -4111,6 +4182,7 @@ async function loadAll() {
         fbGet('tarifs'), fbGet('vehicules'), fbGet('messages'), fbGet('logs')
       ]);
       D.courses = courses.sort((a,b) => new Date(b.datetime||0) - new Date(a.datetime||0));
+      window._coursesFresh = true; // liste complète : la page Transferts gérants est recalculée
       D.chauffeurs = chauffeurs; D.clients = clients;
       D.tarifs = tarifs; D.vehicules = vehicules; D.messages = messages;
       D.logs = (logs||[]).sort((a,b) => new Date(b.at||0) - new Date(a.at||0));
@@ -4129,6 +4201,7 @@ async function loadAll() {
       // on conserve ce qu'on avait deja (cache ou chargement precedent).
       const garde = (neuf, ancien) => (Array.isArray(neuf) && neuf.length>0) ? neuf : (ancien||[]);
       D.courses = garde(courses, D.courses).sort((a,b) => new Date(b.datetime||0) - new Date(a.datetime||0));
+      if(Array.isArray(courses) && courses.length) window._coursesFresh = true; // liste complète reçue
       D.chauffeurs = garde(chauffeurs, D.chauffeurs);
       D.clients = garde(clients, D.clients);
       D.tarifs = garde(tarifs, D.tarifs);
@@ -4415,12 +4488,27 @@ function renderAlertesZone() {
 // MOBILEA. Pour l'admin/dispatch, on les sort de D.courses (donc de tous les
 // calculs de CA, dashboard, facturation, rapports) et on les met de côté dans
 // D.coursesGerant, affichés sur une page dédiée « Transferts gérants ».
+// IDEMPOTENTE : on peut l'appeler autant de fois qu'on veut. Après un
+// chargement COMPLET (window._coursesFresh), la liste gérant est remplacée ;
+// sinon (écoute temps réel, carte, navigation…) on FUSIONNE, pour ne jamais
+// vider la page « Transferts gérants » quand D.courses est déjà filtré.
 function _splitGerantCourses(){
   try {
     if(!(window.SESSION && (SESSION.role==='admin' || SESSION.role==='dispatch'))){ D.coursesGerant = D.coursesGerant||[]; return; }
     var all = D.courses || [];
-    D.coursesGerant = all.filter(function(c){ return c && c.creePar==='gerant'; });
-    D.courses = all.filter(function(c){ return !(c && c.creePar==='gerant'); });
+    var ger = all.filter(function(c){ return c && c.creePar==='gerant'; });
+    if(window._coursesFresh){
+      D.coursesGerant = ger;
+      window._coursesFresh = false;
+    } else if(ger.length){
+      var parId = {};
+      (D.coursesGerant||[]).forEach(function(c){ if(c && c._id) parId[c._id] = c; });
+      ger.forEach(function(c){ if(c && c._id) parId[c._id] = c; });
+      D.coursesGerant = Object.keys(parId).map(function(k){ return parId[k]; });
+    } else {
+      D.coursesGerant = D.coursesGerant || [];
+    }
+    if(ger.length) D.courses = all.filter(function(c){ return !(c && c.creePar==='gerant'); });
   } catch(e){ D.coursesGerant = D.coursesGerant||[]; }
 }
 
@@ -4878,6 +4966,9 @@ async function checkGeofenceZone(lat, lng) {
         dist: Math.round(dist*10)/10,
         etaMin: etaMin,
         delaiMin: z.delaiMin || null,
+        zoneClient: z.client || null,
+        notifDispatch: z.notifierDispatch !== false,
+        notifPartenaire: z.notifierPartenaire === true,
         at: new Date().toISOString()
       };
     } else if(!dedans && dejaDedans) {
@@ -4903,7 +4994,14 @@ async function checkGeofenceZone(lat, lng) {
           if(!window._zonePushSent[_zkey] || (_now - window._zonePushSent[_zkey]) > 300000) {
             window._zonePushSent[_zkey] = _now;
             var _zn = nouvelleAlerte.zoneNom ? ' (' + nouvelleAlerte.zoneNom + ')' : '';
-            notifierStaff('🚗 Chauffeur en approche', nouvelleAlerte.nom + ' entre dans la zone' + _zn + ' — arrive dans ~' + nouvelleAlerte.etaMin + ' min');
+            var _titre = '🚗 Chauffeur en approche';
+            var _msg = nouvelleAlerte.nom + ' entre dans la zone' + _zn + ' — arrive dans ~' + nouvelleAlerte.etaMin + ' min';
+            // Dispatch / Admin
+            if(nouvelleAlerte.notifDispatch !== false) notifierStaff(_titre, _msg);
+            // Client partenaire associé (ex. Value Retail), si coché
+            if(nouvelleAlerte.notifPartenaire && nouvelleAlerte.zoneClient){
+              try { sendPushNotification(_titre, _msg, null, null, { key:'societe', value:(nouvelleAlerte.zoneClient||'').trim().toLowerCase().slice(0,40) }); } catch(e){}
+            }
           }
         } catch(e){}
       }
@@ -4985,6 +5083,14 @@ function hideEmptyNavSections() {
 }
 
 function startApp() {
+  // Identifiant de compte client : il n'était jamais renseigné, donc les
+  // courses n'étaient pas reliées au compte et les notifications au client
+  // (« chauffeur en route », « arrivé »…) ne partaient jamais. On prend son
+  // email, qui est aussi l'identifiant utilisé pour l'abonnement OneSignal.
+  if(SESSION && SESSION.role === 'client' && !SESSION.clientUser && SESSION.email) {
+    SESSION.clientUser = String(SESSION.email).trim();
+    try { localStorage.setItem(ADMIN_KEY, JSON.stringify(SESSION)); } catch(e){}
+  }
   document.getElementById('login').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   // Identifier cet appareil auprès du service de notifications (OneSignal), pour
@@ -5045,6 +5151,9 @@ function startApp() {
       OneSignalDeferred.push(async function(OneSignal){
         try { await OneSignal.login(_cidReg); } catch(e){}
         try { await OneSignal.User.addTag('role', 'client'); } catch(e){}
+        // Étiquette société : permet de cibler un partenaire précis (ex. Value
+        // Retail) pour les alertes de zone, sans toucher aux autres.
+        try { var _s=(SESSION.societe||'').trim().toLowerCase().slice(0,40); if(_s) await OneSignal.User.addTag('societe', _s); } catch(e){}
         try { if(OneSignal.Notifications && OneSignal.Notifications.requestPermission) await OneSignal.Notifications.requestPermission(); } catch(e){}
       });
     }
@@ -5446,10 +5555,22 @@ const ONESIGNAL_PROXY = 'https://mobilea-push.mus-akdogan.workers.dev';
 // N'accepte que les appels d'un admin authentifié (vérif du jeton Firebase côté worker).
 const CHAUFFEUR_AUTH_URL = 'https://mobilea-chauffeur-auth.mus-akdogan.workers.dev';
 
-async function sendPushNotification(title, message, url, targetChauffeurIds, targetTag) {
+async function sendPushNotification(title, message, url, targetChauffeurIds, targetTag, opts) {
   // On neutralise l'ancienne URL web qui traine dans de nombreux appels :
   // sur l'app native elle ouvrirait Safari au lieu de l'application.
   if(url && /musakdogan-droid\.github\.io/.test(url)) url = null;
+  // SÉCURITÉ : jamais d'envoi « à tous ». Quand l'identifiant du chauffeur
+  // n'était pas trouvé (cible vide), la notification — avec nom du client et
+  // adresses — partait à TOUS les abonnés, clients compris. On s'abstient.
+  const _ids = (targetChauffeurIds && targetChauffeurIds.length) ? targetChauffeurIds.filter(Boolean) : null;
+  if(!(_ids && _ids.length) && !targetTag) {
+    console.warn('[MOBILEA] Push non envoyé : aucune cible (', title, ')');
+    window._lastPushResult = { ok:false, status:0, body:'aucune cible — envoi annulé', at: Date.now() };
+    return window._lastPushResult;
+  }
+  // Jeton de la personne connectée : le Worker vérifie qui envoie.
+  let _idToken = null;
+  try { _idToken = (window.fbAuth && window.fbAuth.currentUser) ? await window.fbAuth.currentUser.getIdToken() : null; } catch(e){}
   // IMPORTANT : on LIT désormais la réponse du Worker et on la mémorise dans
   // window._lastPushResult. Avant, toute erreur (Worker HS, clé OneSignal
   // expirée, 0 abonné…) était avalée en silence → impossible de diagnostiquer.
@@ -5459,8 +5580,10 @@ async function sendPushNotification(title, message, url, targetChauffeurIds, tar
     // Pas d'URL web par defaut : sur l'app native, une URL ouvrirait Safari
     // au lieu de l'app. Sans URL, le tap ouvre directement l'application.
     url: url || null,
-    targetChauffeurIds: (targetChauffeurIds && targetChauffeurIds.length) ? targetChauffeurIds : null,
-    targetTag: targetTag || null
+    targetChauffeurIds: (_ids && _ids.length) ? _ids : null,
+    targetTag: targetTag || null,
+    idToken: _idToken,
+    courseId: (opts && opts.courseId) || null
   };
   try {
     const resp = await fetch(ONESIGNAL_PROXY, {
@@ -6094,6 +6217,7 @@ function renderDispatch() {
             <option value="annulee">✗ Annulée</option><option value="noshow">👻 No-show</option>
           </select>
           <button class="btn btn-ghost btn-xs" onclick="openAssign('${c._id}')"><i class="fas fa-user-check"></i></button>
+          ${c.client?`<button class="btn btn-xs" onclick="notifierClientArrivee('${c._id}')" style="background:#0ea5e9;border:none;color:#fff;border-radius:var(--r-xs);padding:3px 7px;cursor:pointer;font-size:10px;font-weight:700" title="Prévenir le client de l'arrivée"><i class="fas fa-bell"></i></button>`:''}
           <button class="btn btn-d btn-xs" onclick="delCourse('${c._id}')"><i class="fas fa-trash"></i></button>
         </div>
       </td>
@@ -10702,6 +10826,7 @@ function margeCourse(c) {
 }
 
 function renderRapports() {
+  if(SESSION && SESSION.role === 'client') return; // page réservée au staff (calcul inutile côté client)
   // ── Filtrage par periode ────────────────────────────────────────────────
   const { d1, d2, libelle } = bornesRapport();
   // Inclure l'archive : un rapport sur une période passée doit compter les
@@ -11151,7 +11276,95 @@ function renderRapports() {
       </tr>`;
     }).join('') : '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--muted)">Aucune donnée chauffeur</td></tr>';
   }
+  try { renderRapportsPlus(courses, encaissees); } catch(e){}
 }
+
+// ── RAPPORTS — sections enrichies (mode de paiement, véhicule, trajets, à facturer) ──
+window.renderRapportsPlus = function(courses, encaissees){
+  window._rapLastCourses = courses || [];
+  encaissees = encaissees || [];
+  var euro = function(n){ return (Math.round(n)||0).toLocaleString('fr-FR')+'€'; };
+
+  // 1) CA par mode de paiement
+  var modes = {};
+  encaissees.forEach(function(c){
+    var m = c.mode_paiement || '';
+    var lbl = (m==='onboard' || m==='direct' || c.payMode==='direct') ? '💵 À bord'
+            : (m==='carte' || c.paiement_statut==='paye' || c.paiement_statut==='en_ligne') ? '💳 Carte en ligne'
+            : (m==='facture' || m==='compte' || c.payMode==='simplycab') ? '🧾 Facture / Compte'
+            : '❔ Non précisé';
+    if(!modes[lbl]) modes[lbl] = { n:0, ca:0 };
+    modes[lbl].n++; modes[lbl].ca += prixFacture(c);
+  });
+  var boxP = document.getElementById('rap-paiement');
+  if(boxP){
+    var entrP = Object.entries(modes).sort(function(a,b){ return b[1].ca - a[1].ca; });
+    boxP.innerHTML = entrP.length ? entrP.map(function(e){
+      return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px;font-size:13px"><span>'+e[0]+' <span style="color:var(--muted)">('+e[1].n+')</span></span><span class="text-gold fw7">'+euro(e[1].ca)+'</span></div>';
+    }).join('') : '<div style="color:var(--muted);font-size:12px">Aucune donnée</div>';
+  }
+
+  // 2) Répartition par véhicule
+  var veh = {};
+  encaissees.forEach(function(c){ var v = (c.vehicule||'—'); if(!veh[v]) veh[v]={n:0,ca:0}; veh[v].n++; veh[v].ca += prixFacture(c); });
+  var boxV = document.getElementById('rap-veh');
+  if(boxV){
+    var ev = Object.entries(veh).sort(function(a,b){ return b[1].ca - a[1].ca; });
+    var maxV = ev.length ? ev[0][1].ca : 0;
+    var ico = { berline:'🚗', van:'🚐', sprinter:'🚌', bus:'🚌', limousine:'🚙', pmr:'♿' };
+    boxV.innerHTML = ev.length ? ev.map(function(e){
+      return '<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>'+(ico[e[0]]||'🚘')+' '+e[0]+' <span style="color:var(--muted)">('+e[1].n+')</span></span><span class="text-gold fw7">'+euro(e[1].ca)+'</span></div><div class="prog"><div class="prog-fill" style="width:'+(maxV?((e[1].ca/maxV)*100).toFixed(0):0)+'%;background:linear-gradient(90deg,var(--gold),var(--orange))"></div></div></div>';
+    }).join('') : '<div style="color:var(--muted);font-size:12px">Aucune donnée</div>';
+  }
+
+  // 3) Top trajets
+  var axes = {};
+  encaissees.forEach(function(c){
+    var dep = (typeof raccourcirLieu==='function' ? raccourcirLieu(c.depart||c.lieu||'') : (c.depart||c.lieu||'')) || '—';
+    var arr = c.arrivee || '—';
+    var k = dep + ' → ' + arr;
+    if(!axes[k]) axes[k]={n:0,ca:0}; axes[k].n++; axes[k].ca += prixFacture(c);
+  });
+  var boxA = document.getElementById('rap-axes');
+  if(boxA){
+    var ea = Object.entries(axes).sort(function(a,b){ return b[1].n - a[1].n; }).slice(0,8);
+    boxA.innerHTML = ea.length ? ('<table style="width:100%;font-size:12px"><tbody>'+ea.map(function(e){
+      return '<tr><td style="padding:4px 0">'+E(e[0])+'</td><td style="text-align:right;color:var(--muted);white-space:nowrap">'+e[1].n+' c.</td><td class="text-gold fw7" style="text-align:right;padding-left:10px;white-space:nowrap">'+euro(e[1].ca)+'</td></tr>';
+    }).join('')+'</tbody></table>') : '<div style="color:var(--muted);font-size:12px">Aucune donnée</div>';
+  }
+
+  // 4) À facturer / encaisser (terminées non facturées/payées)
+  var aFacturer = (courses||[]).filter(function(c){ return c.statut === 'terminee'; });
+  var totAF = aFacturer.reduce(function(s,c){ return s + prixFacture(c); }, 0);
+  var boxF = document.getElementById('rap-afacturer');
+  if(boxF){
+    boxF.innerHTML = aFacturer.length
+      ? '<span style="font-size:24px;font-weight:800;color:var(--orange);font-family:Syne,sans-serif">'+euro(totAF)+'</span> <span style="color:var(--muted);font-size:12px">· '+aFacturer.length+' course'+(aFacturer.length>1?'s':'')+' terminée'+(aFacturer.length>1?'s':'') +' à facturer</span>'
+      : '<span style="color:var(--green);font-size:13px">✓ Rien en attente de facturation sur la période</span>';
+  }
+};
+
+// Export CSV des courses de la période affichée (ouvre dans Excel).
+window.exportRapportCSV = function(){
+  var list = window._rapLastCourses || [];
+  if(!list.length){ showToast('Aucune course à exporter', true); return; }
+  var cols = ['Date','Client','Départ','Arrivée','Véhicule','Pax','Chauffeur','Statut','Prix TTC','Prix chauffeur'];
+  var esc = function(v){ v = (v==null?'':String(v)); return '"'+v.replace(/"/g,'""')+'"'; };
+  var rows = [cols.join(';')];
+  list.slice().sort(function(a,b){ return (a.datetime||'').localeCompare(b.datetime||''); }).forEach(function(c){
+    rows.push([ c.datetime||'', c.client||'', (c.depart||c.lieu||''), (c.arrivee||''), c.vehicule||'', c.pax||1, c.chauffeur||'', c.statut||'', (c.prix!=null?c.prix:''), (c.prixChauffeur!=null?c.prixChauffeur:'') ].map(esc).join(';'));
+  });
+  var csv = '﻿' + rows.join('\r\n'); // BOM : accents corrects dans Excel
+  try {
+    var blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'rapport-mobilea-' + new Date().toISOString().slice(0,10) + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    showToast('📥 Export CSV téléchargé ('+list.length+' courses)');
+  } catch(e){ showToast('Export impossible', true); }
+};
 
 // ── PLANNING ──
 function renderPlanning() {
@@ -13051,8 +13264,18 @@ window.generateDriverInvoice = async function() {
   const me = D.chauffeurs.find(c=>(c.prenom+(c.nom?' '+c.nom:''))===SESSION.name);
   if(!me){ showToast('Chauffeur introuvable', true); return; }
 
-  // Courses du chauffeur pour ce mois, terminées
-  const courses = D.courses.filter(c=>{
+  // Courses du chauffeur pour ce mois, terminées — en incluant l'ARCHIVE :
+  // les courses closes de plus de 30 jours y sont déplacées, et sans elle la
+  // facture d'un mois faite après le 1er du mois suivant oubliait le début
+  // du mois (chauffeur sous-payé).
+  let _archive = window._archiveCache;
+  if(!Array.isArray(_archive)) {
+    try { _archive = await fbGet('courses_archive'); } catch(e) { _archive = null; }
+    if(Array.isArray(_archive)) window._archiveCache = _archive;
+  }
+  const _vus = new Set((D.courses||[]).map(c => c._id));
+  const _source = (D.courses||[]).concat((Array.isArray(_archive) ? _archive : []).filter(c => !_vus.has(c._id)));
+  const courses = _source.filter(c=>{
     if(!courseEstAuChauffeur(c)) return false;
     if(!c.datetime) return false;
     if(!['terminee','depose','payee'].includes(c.statut)) return false;
@@ -14196,7 +14419,7 @@ function startMsgRefresh() {
     if(SESSION.role === 'client') {
       const unreadClient = allMsgs.filter(m=>
         !m.read && m.from !== SESSION.uid &&
-        (m.conv==='admin_support' || m.conv.startsWith('dsp_') || m.conv.startsWith('drv_'))
+        (m.conv==='admin_support' || (m.conv||'').startsWith('dsp_') || (m.conv||'').startsWith('drv_'))
       ).length;
       const badge = document.getElementById('cp-msg-badge');
       if(badge) {
@@ -14223,10 +14446,15 @@ function startMsgRefresh() {
         } catch(e) { /* silencieux : on garde l'affichage courant */ }
         return;
       }
-      const [courses, chauffeurs] = await Promise.all([fbGet('courses'), fbGet('chauffeurs')]);
-      D.courses = courses.sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
-      D.chauffeurs = chauffeurs;
-      renderClientPortal();
+      // PARTICULIER : même principe, lecture filtrée sur SES courses
+      // (createdByUid = son UID) — la lecture globale lui est refusée.
+      try {
+        const _cuid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.uid;
+        const [courses, chauffeurs] = await Promise.all([fbGetCoursesClient(_cuid), fbGet('chauffeurs')]);
+        if(Array.isArray(courses)) D.courses = courses.sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
+        if(Array.isArray(chauffeurs) && chauffeurs.length) D.chauffeurs = chauffeurs;
+        renderClientPortal();
+      } catch(e) { /* silencieux : on garde l'affichage courant */ }
     }, 15000);
   }
 
@@ -15264,13 +15492,23 @@ window.confirmClientCancel = async function(courseId) {
   await addLog(`Course annulée par le client "${c.client||''}" — motif : ${reason}${feeInfo.fee>0?` — frais : ${feeInfo.fee}€ (${feeInfo.reason})`:' — sans frais'}`);
   // Prévenir le chauffeur si un chauffeur était déjà assigné
   if(c.chauffeur) {
-    const drvInfo = getChauffeurByName ? getChauffeurByName(c.chauffeur) : null;
-    const drvId = getChauffeurIdByName(c.chauffeur);
-    await sendPushNotification(
+    let drvInfo = getChauffeurByName ? getChauffeurByName(c.chauffeur) : null;
+    let drvId = getChauffeurIdByName(c.chauffeur);
+    // Côté client la liste des chauffeurs peut être vide au démarrage : on la
+    // relit pour retrouver le bon chauffeur (par nom ou par UID).
+    if(!drvId) {
+      try {
+        const _chs = await fbGet('chauffeurs') || [];
+        const _n = _normNom(c.chauffeur);
+        const _f = _chs.find(x => _normNom((x.prenom||'')+' '+(x.nom||'')) === _n || (c.chauffeurUid && x.uid === c.chauffeurUid));
+        if(_f) { drvId = _f._id; drvInfo = drvInfo || _f; }
+      } catch(e){}
+    }
+    if(drvId) await sendPushNotification(
       '❌ Course annulée par le client',
       `${c.client||''} | ${c.datetime?.slice(11,16)||''} | ${c.depart||c.lieu||''} → ${c.arrivee||c.duree||''}`,
       'https://musakdogan-droid.github.io/Simplycab-',
-      drvId ? [drvId] : null
+      [drvId], null, { courseId: c._id }
     );
     if(drvInfo?.tel) await sendTwilioSMS(drvInfo.tel, `❌ MOBILEA — La course de ${c.client||''} prévue à ${c.datetime?.slice(11,16)||''} a été annulée par le client. Vous n'avez plus besoin de vous y rendre.`, true);
   }
@@ -15308,6 +15546,7 @@ function renderClientPortal() {
     // les mêmes réservations, pas seulement celles créées par ce compte.
     if(SESSION.isPartenaire) return (c.client||'').trim().toUpperCase() === (societe||'').trim().toUpperCase();
     // Correspondance par identifiant de compte client (le plus fiable)
+    if(c.createdByUid && SESSION.uid && c.createdByUid===SESSION.uid) return true;
     if(c.clientUser && SESSION.clientUser && c.clientUser===SESSION.clientUser) return true;
     const cn=(c.client||'').trim().toUpperCase();
     const sn=(societe||'').trim().toUpperCase();
@@ -15584,7 +15823,7 @@ window.clPourboireValider = async function(id, montant){
   var ov=document.getElementById('tip-overlay'); if(ov) ov.remove();
   try { var t=clTips(); t[id]=montant; localStorage.setItem('mobilea_tips', JSON.stringify(t)); } catch(e){}
   c.pourboireClient = montant;
-  try { await fbPush('messages', { type:'pourboire', courseId:id, ref:c.ref||'', client:SESSION.name, chauffeur:c.chauffeur||'', montant:montant, to:'staff', createdAt:new Date().toISOString(), lu:false }); } catch(e){}
+  try { await fbPush('messages', _msgClientVersSupport({ type:'pourboire', courseId:id, ref:c.ref||'', client:SESSION.name, chauffeur:c.chauffeur||'', montant:montant, to:'staff', createdAt:new Date().toISOString(), lu:false }, '💛 Pourboire de '+montant+' € pour '+(c.chauffeur||'le chauffeur')+(c.ref?' ('+c.ref+')':''))); } catch(e){}
   try { await sendPushNotification('💛 Pourboire client', (SESSION.name||'Client')+' laisse '+montant+'€ pour '+(c.chauffeur||'le chauffeur')+(c.ref?' ('+c.ref+')':''), null, null, { key:'role', value:'staff' }); } catch(e){}
   showToast('💛 Merci ! Votre pourboire de '+montant+'€ a été transmis.');
   try { renderClientPortal(); } catch(e){}
@@ -15718,6 +15957,18 @@ window.ccDelete = async function(pmId){
 //  #4 note chauffeur · #5 code promo + parrainage · #6 profil modifiable
 // ══════════════════════════════════════════════════════════════════════════
 
+// Message « système » du client vers le support (pourboire, note, profil) :
+// rangé dans SON fil de conversation pour que le dispatch le retrouve dans la
+// Messagerie (et pas seulement via la notification push).
+function _msgClientVersSupport(obj, texte){
+  var key = String(SESSION.uid || SESSION.name || 'inconnu').replace(/[^a-zA-Z0-9_-]/g,'_');
+  return Object.assign({}, obj, {
+    conv: 'client_' + key, text: texte, from: SESSION.uid || SESSION.name,
+    fromName: SESSION.name || SESSION.societe || 'Client', fromRole: SESSION.role,
+    clientName: SESSION.societe || SESSION.name, at: new Date().toISOString(), read: false
+  });
+}
+
 // ── #1 Réserver pour quelqu'un d'autre ───────────────────────────────────
 window.cbToggleOther = function(show){
   var z = document.getElementById('cb-other-fields'); if(z) z.style.display = show ? 'block' : 'none';
@@ -15786,7 +16037,7 @@ window.clNoterValider = async function(id){
   var c = (D.courses||[]).find(function(x){return x._id===id;}) || {};
   var ov=document.getElementById('cl-note-ov'); if(ov) ov.remove();
   try { var r=clRatingsStore(); r[id]={note:note,comment:comment,at:new Date().toISOString()}; localStorage.setItem('mobilea_ratings', JSON.stringify(r)); } catch(e){}
-  try { await fbPush('messages', { type:'note_chauffeur', courseId:id, ref:c.ref||'', client:SESSION.name, chauffeur:c.chauffeur||'', note:note, commentaire:comment, to:'staff', createdAt:new Date().toISOString(), lu:false }); } catch(e){}
+  try { await fbPush('messages', _msgClientVersSupport({ type:'note_chauffeur', courseId:id, ref:c.ref||'', client:SESSION.name, chauffeur:c.chauffeur||'', note:note, commentaire:comment, to:'staff', createdAt:new Date().toISOString(), lu:false }, '⭐ Note '+note+'/5 pour '+(c.chauffeur||'le chauffeur')+(comment?' — « '+comment+' »':''))); } catch(e){}
   try { await sendPushNotification('⭐ Avis client', (SESSION.name||'Client')+' note '+(c.chauffeur||'le chauffeur')+' : '+note+'/5'+(comment?' — '+comment:''), null, null, { key:'role', value:'staff' }); } catch(e){}
   showToast('⭐ Merci pour votre note !');
   try { renderClientPortal(); } catch(e){}
@@ -15845,7 +16096,7 @@ window.clSaveProfil = async function(){
   var tel=(document.getElementById('cpf-tel').value||'').trim();
   var email=(document.getElementById('cpf-email').value||'').trim();
   try { localStorage.setItem('mobilea_client_profil', JSON.stringify({nom:nom,tel:tel,email:email})); } catch(e){}
-  try { await fbPush('messages', { type:'profil_update', client:SESSION.name, clientUser:SESSION.clientUser||'', nom:nom, tel:tel, email:email, to:'staff', createdAt:new Date().toISOString(), lu:false }); } catch(e){}
+  try { await fbPush('messages', _msgClientVersSupport({ type:'profil_update', client:SESSION.name, clientUser:SESSION.clientUser||'', nom:nom, tel:tel, email:email, to:'staff', createdAt:new Date().toISOString(), lu:false }, '👤 Mise à jour du profil — nom : '+nom+' · tél : '+tel+' · email : '+email)); } catch(e){}
   try { await sendPushNotification('👤 Mise à jour profil client', (SESSION.name||'Client')+' a modifié ses coordonnées (tel: '+tel+')', null, null, { key:'role', value:'staff' }); } catch(e){}
   showToast('✓ Profil enregistré — transmis à l\'équipe');
 };
@@ -17137,6 +17388,7 @@ window.renderGeofenceZones = function() {
     <div style="min-width:0">
       <div style="font-size:13px;font-weight:700">${z.actif===false?'⚪':'🟢'} ${E(z.nom||'Zone')}${z.client?` · <span style="color:var(--gold)">${E(z.client)}</span>`:''}</div>
       <div style="font-size:11px;color:var(--muted2);margin-top:2px">📍 ${(z.lat||0).toFixed(5)}, ${(z.lng||0).toFixed(5)} · rayon ${z.rayonKm||7} km${z.delaiMin?` · délai ${z.delaiMin} min`:''}</div>
+      ${(()=>{const d=[];if(z.notifierDispatch!==false)d.push('Dispatch');if(z.notifierPartenaire&&z.client)d.push(E(z.client));const arr=(z.notifierPartenaire&&z.alerteArriveeMin)?`<div style="font-size:10px;color:var(--gold);margin-top:2px">⏱️ ${E(z.client||'client')} prévenu ~${z.alerteArriveeMin} min avant l'arrivée</div>`:'';return (d.length?`<div style="font-size:10px;color:var(--gold);margin-top:3px">🔔 Alerte : ${d.join(' + ')}</div>`:`<div style="font-size:10px;color:var(--muted2);margin-top:3px">🔕 Aucun destinataire</div>`)+arr;})()}
     </div>
     <div style="display:flex;gap:6px;flex-shrink:0">
       <button onclick="openGeofenceZone('${z._id}')" style="padding:6px 10px;background:rgba(200,169,110,0.12);border:1px solid rgba(200,169,110,0.4);border-radius:6px;color:#c8a96e;font-size:11px;font-weight:600;cursor:pointer">Modifier</button>
@@ -17155,6 +17407,10 @@ window.openGeofenceZone = function(id) {
   document.getElementById('gz-delai').value = z ? (z.delaiMin||'') : '';
   document.getElementById('gz-client').value = z ? (z.client||'') : '';
   document.getElementById('gz-actif').checked = z ? (z.actif !== false) : true;
+  var _nd=document.getElementById('gz-notif-dispatch'); if(_nd) _nd.checked = z ? (z.notifierDispatch !== false) : true;
+  var _np=document.getElementById('gz-notif-partenaire'); if(_np) _np.checked = z ? (z.notifierPartenaire === true) : false;
+  var _npn=document.getElementById('gz-notif-part-nom'); if(_npn) _npn.textContent = z && z.client ? ('('+z.client+')') : '';
+  var _am=document.getElementById('gz-arrivee-min'); if(_am) _am.value = z && z.alerteArriveeMin ? z.alerteArriveeMin : '';
   document.getElementById('gz-modal-title').textContent = id ? 'Modifier la zone' : 'Nouvelle zone';
   openMo('geofence-zone');
 };
@@ -17168,9 +17424,13 @@ window.saveGeofenceZone = async function() {
   const delaiMin = parseInt(document.getElementById('gz-delai').value) || null;
   const client = document.getElementById('gz-client').value.trim();
   const actif = document.getElementById('gz-actif').checked;
+  const notifierDispatch = document.getElementById('gz-notif-dispatch') ? document.getElementById('gz-notif-dispatch').checked : true;
+  const notifierPartenaire = document.getElementById('gz-notif-partenaire') ? document.getElementById('gz-notif-partenaire').checked : false;
+  const alerteArriveeMin = parseInt(document.getElementById('gz-arrivee-min') ? document.getElementById('gz-arrivee-min').value : '') || null;
   if(!nom) { showToast('Nom de zone requis', true); return; }
   if(isNaN(lat) || isNaN(lng)) { showToast('Coordonnées (lat, lng) requises', true); return; }
-  const data = { nom, lat, lng, rayonKm, delaiMin, client: client||null, actif, updatedAt: new Date().toISOString() };
+  if(notifierPartenaire && !client) { showToast('Renseignez le « Client associé » pour l\'alerter', true); return; }
+  const data = { nom, lat, lng, rayonKm, delaiMin, client: client||null, actif, notifierDispatch, notifierPartenaire, alerteArriveeMin, updatedAt: new Date().toISOString() };
   if(id) { await fbUpdate('geofence_zones', id, data); showToast('Zone mise à jour ✓'); }
   else { await fbPush('geofence_zones', data); showToast('Zone ajoutée ✓'); }
   closeMo('geofence-zone');
@@ -17185,6 +17445,22 @@ window.deleteGeofenceZone = function(id) {
     renderGeofenceZones();
     showToast('Zone supprimée');
   });
+};
+
+// ENVOI MANUEL par l'admin/dispatch : prévenir le client d'une course de
+// l'arrivée imminente du chauffeur (ex. Value Retail). Déclenché à la main
+// depuis le dispatch, en un clic sur la cloche.
+window.notifierClientArrivee = async function(courseId){
+  if(!SESSION || (SESSION.role!=='admin' && SESSION.role!=='dispatch')){ showToast('Réservé à l\'admin / dispatch', true); return; }
+  const c = (D.courses||[]).find(x => x._id === courseId); if(!c){ showToast('Course introuvable', true); return; }
+  const soc = (c.client||'').trim();
+  if(!soc){ showToast('Aucun client sur cette course', true); return; }
+  const titre = '🚗 Arrivée imminente';
+  const msg = (c.chauffeur||'Votre chauffeur') + ' arrive bientôt' + (c.arrivee ? (' à ' + c.arrivee) : '') + (c.datetime ? ' — ' + fdt(c.datetime) : '');
+  try {
+    await sendPushNotification(titre, msg, null, null, { key:'societe', value: soc.toLowerCase().slice(0,40) });
+    showToast('🔔 ' + soc + ' prévenu de l\'arrivée');
+  } catch(e){ showToast('Échec de l\'envoi', true); }
 };
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -17542,10 +17818,18 @@ window.submitClientBooking=async function(){
   if(_remisePromo>0 && prixStripeEl && prixStripeEl.value) prixStripeEl.value = _prixApresPromo;
   const pushResult = await fetch(`${FB_URL}/courses.json${authParam(await getAuthToken())}`, {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({type:'transfert',client:SESSION.societe||SESSION.name,datetime:dt,depart:dep,arrivee:arr,vehicule:vehChoisi,pax:parseInt(document.getElementById('cb-pax').value)||1,bagages:parseInt(document.getElementById('cb-bagages').value)||0,options,vol:sanitize(document.getElementById('cb-vol').value,20),notes:sanitize(document.getElementById('cb-notes').value,500),passagers,statut:'nouvelle',source:SESSION.isPartenaire?'partenaire':'client',prix:((_remisePromo>0?_prixApresPromo:prixCourse)||null),prixBrut:(_remisePromo>0?(prixCourse||null):null),remisePromo:(_remisePromo||null),prixChauffeur:prixChauffeurCourse||null,mode_paiement:modePaiement,paiement_statut:paiementEnLigne?'en_attente':'',createdByClient:SESSION.name,clientUser:SESSION.clientUser,partenaireUid:SESSION.isPartenaire?SESSION.partenaireUid:null,createdAt:new Date().toISOString(),pickupLat:pickupCoords?.lat||null,pickupLng:pickupCoords?.lng||null,dropLat:dropCoords?.lat||null,dropLng:dropCoords?.lng||null,passagerAutre:_bookFor,etapes:(_etapes.length?_etapes:null),codePromo:(_promo||null)})
+    body: JSON.stringify({type:'transfert',client:SESSION.societe||SESSION.name,datetime:dt,depart:dep,arrivee:arr,vehicule:vehChoisi,pax:parseInt(document.getElementById('cb-pax').value)||1,bagages:parseInt(document.getElementById('cb-bagages').value)||0,options,vol:sanitize(document.getElementById('cb-vol').value,20),notes:sanitize(document.getElementById('cb-notes').value,500),passagers,statut:'nouvelle',source:SESSION.isPartenaire?'partenaire':'client',prix:((_remisePromo>0?_prixApresPromo:prixCourse)||null),prixBrut:(_remisePromo>0?(prixCourse||null):null),remisePromo:(_remisePromo||null),prixChauffeur:prixChauffeurCourse||null,mode_paiement:modePaiement,paiement_statut:paiementEnLigne?'en_attente':'',createdByClient:SESSION.name,clientUser:(SESSION.clientUser||SESSION.email||null),createdByUid:((window.fbAuth&&window.fbAuth.currentUser&&window.fbAuth.currentUser.uid)||SESSION.uid||null),partenaireUid:SESSION.isPartenaire?SESSION.partenaireUid:null,createdAt:new Date().toISOString(),pickupLat:pickupCoords?.lat||null,pickupLng:pickupCoords?.lng||null,dropLat:dropCoords?.lat||null,dropLng:dropCoords?.lng||null,passagerAutre:_bookFor,etapes:(_etapes.length?_etapes:null),codePromo:(_promo||null)})
   });
-  const pushData = await pushResult.json();
-  const newId = pushData.name;
+  let pushData = {};
+  try { pushData = await pushResult.json(); } catch(e){}
+  const newId = pushData && pushData.name;
+  // Échec d'enregistrement (refus Firebase, réseau…) : NE PAS annoncer
+  // « Demande reçue » ni prévenir le dispatch d'une course qui n'existe pas.
+  if(!pushResult.ok || !newId) {
+    showToast('❌ La réservation n\'a pas pu être enregistrée. Vérifiez votre connexion puis réessayez, ou contactez MOBILEA.', true);
+    try { openMo('client-booking'); } catch(e){} // le formulaire garde ce qui a été saisi
+    return;
+  }
   await loadAll();
 
   // RÈGLE DES 20 MINUTES : le dispatch automatique au chauffeur le plus proche
@@ -17559,7 +17843,14 @@ window.submitClientBooking=async function(){
   // Fonction qui envoie la course au(x) chauffeur(s) — appelée soit tout de
   // suite (paiement à bord / facture), soit APRÈS le paiement en ligne réussi.
   const lancerDispatch = async () => {
-    if(autoDispatch && newId) {
+    if(autoDispatch && newId && SESSION.role === 'client') {
+      // Un compte client n'a pas le droit (et ne doit pas avoir le droit) de
+      // proposer lui-même la course aux chauffeurs : c'est le dispatch / le
+      // secours automatique (chauffeur le plus proche sous 1 min) qui s'en
+      // charge. On prévient le staff et on informe le client honnêtement.
+      notifierStaff('🆕 Nouvelle réservation (urgente)', `${E(SESSION.societe||SESSION.name)} — ${dep} → ${arr} — ${fdt(dt)}`, 'https://mobilea-6tg.pages.dev/#dispatch');
+      showToast('✓ Demande urgente reçue — nous recherchons le chauffeur le plus proche, vous serez prévenu dès qu\'il accepte');
+    } else if(autoDispatch && newId) {
       showToast('🔍 Recherche du chauffeur le plus proche...');
       notifierStaff('🆕 Nouvelle réservation (urgente)', `${E(SESSION.societe||SESSION.name)} — ${dep} → ${arr} — ${fdt(dt)}`, 'https://mobilea-6tg.pages.dev/#dispatch');
       const started = await startOfferCycle(newId, pickupCoords?.lat||null, pickupCoords?.lng||null);
@@ -18079,7 +18370,7 @@ function showOfferModal(course) {
   const showPrice = SESSION.voirPrix !== false;
   const prixChauffeur = course.prixChauffeur != null ? course.prixChauffeur : null;
   const priceHtml = (showPrice && prixChauffeur != null && prixChauffeur > 0)
-    ? `<div style="background:rgba(184,134,11,0.15);border:1px solid #b8860b;border-radius:10px;padding:10px;margin-bottom:14px"><div style="font-size:12px;color:#d4a933">Votre rémunération</div><div style="font-size:24px;font-weight:800;color:#b8860b">${fmt(prixChauffeur)}</div></div>`
+    ? `<div style="background:rgba(184,134,11,0.15);border:1px solid #b8860b;border-radius:10px;padding:10px;margin-bottom:14px"><div style="font-size:12px;color:#d4a933">Votre rémunération</div><div style="font-size:24px;font-weight:800;color:#b8860b">${new Intl.NumberFormat('fr-FR',{style:'currency',currency:'EUR',minimumFractionDigits:0}).format(prixChauffeur)}</div></div>`
     : '';
   // Infos passagers / bagages
   const paxInfo = `${course.pax||1} pax${course.bagages?' • '+course.bagages+' bagage(s)':''}`;
@@ -18194,9 +18485,12 @@ let ccInterval = null;
 function initCarteChauffeurs() {
   if(ccMap) { setTimeout(()=>ccMap.invalidateSize(), 200); refreshCarteChauffeurs(); return; }
   if(!window.L) {
+    if(window._leafletLoading) return; // chargement déjà en cours
+    window._leafletLoading = true;
     const script = document.createElement('script');
     script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.onload = () => createCC();
+    script.onload = () => { window._leafletLoading = false; createCC(); };
+    script.onerror = () => { window._leafletLoading = false; };
     document.head.appendChild(script);
   } else {
     createCC();
@@ -18204,6 +18498,9 @@ function initCarteChauffeurs() {
 }
 
 function createCC() {
+  if(ccMap || !window.L) return;
+  const _el = document.getElementById('cc-map');
+  if(!_el || _el._leaflet_id) return;
   ccMap = window.L.map('cc-map', {zoomControl:true, attributionControl:false}).setView([48.9606, 2.5889], 10);
   window.L.tileLayer('https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=McFYT7ift0ED35g7Kc0B', {
     maxZoom: 20, tileSize: 512, zoomOffset: -1, crossOrigin: true
@@ -18244,6 +18541,7 @@ window.refreshCarteChauffeurs = async function() {
     });
   }
   D.courses = courses.sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
+  try { _splitGerantCourses(); } catch(e){} // ne pas réinjecter les transferts gérant dans le CA
   // On affiche tous les chauffeurs qui ont une position connue, mais on
   // distingue "en ligne" (position récente < 10 min) de "hors ligne" (position
   // périmée). Le SEUIL_PERIME_MIN décide de la bascule.
@@ -18337,6 +18635,57 @@ window.refreshCarteChauffeurs = async function() {
     if(bounds.length===1) ccMap.setView(bounds[0], 13);
     else ccMap.fitBounds(bounds, {padding:[50,50], maxZoom:14});
   }
+  try { populateCcHistDrivers(); } catch(e){}
+};
+
+// ── HISTORIQUE DE DÉPLACEMENT (relecture du trajet d'un chauffeur) ──────────
+window._ccTrace = null;
+window.populateCcHistDrivers = function(){
+  const sel = document.getElementById('cc-hist-driver');
+  if(!sel) return;
+  if(sel.options.length > 1) return; // déjà rempli
+  const list = (D.chauffeurs||[]).slice().sort(function(a,b){ return (a.prenom||'').localeCompare(b.prenom||''); });
+  if(!list.length) return;
+  sel.innerHTML = '<option value="">Choisir un chauffeur…</option>' + list.map(function(c){
+    return '<option value="'+c._id+'">'+E((c.prenom||'')+(c.nom?' '+c.nom:''))+'</option>';
+  }).join('');
+  const dt = document.getElementById('cc-hist-date');
+  if(dt && !dt.value) dt.value = new Date().toISOString().slice(0,10);
+};
+window.effacerTraceChauffeur = function(){
+  try { if(window._ccTrace && ccMap){ window._ccTrace.forEach(function(l){ ccMap.removeLayer(l); }); } } catch(e){}
+  window._ccTrace = null;
+  const info = document.getElementById('cc-hist-info'); if(info) info.textContent = '';
+};
+window.voirTraceChauffeur = async function(){
+  const sel = document.getElementById('cc-hist-driver');
+  const dt = document.getElementById('cc-hist-date');
+  const info = document.getElementById('cc-hist-info');
+  const id = sel ? sel.value : '';
+  const date = dt ? dt.value : '';
+  if(!id){ showToast('Choisissez un chauffeur', true); return; }
+  if(!date){ showToast('Choisissez une date', true); return; }
+  if(!ccMap || !window.L){ showToast('Carte pas encore prête', true); return; }
+  if(info) info.textContent = 'Chargement…';
+  const jour = date.replace(/-/g,'');
+  const pts = [];
+  try {
+    const r = await fetch(`${FB_URL}/gps_trails/${id}/${jour}.json${authParam(await getAuthToken())}`);
+    const data = await r.json();
+    if(data){ Object.keys(data).sort().forEach(function(k){ const p=data[k]; if(p&&p.lat&&p.lng) pts.push([p.lat,p.lng]); }); }
+  } catch(e){}
+  effacerTraceChauffeur();
+  if(!pts.length){ if(info) info.textContent = 'Aucun déplacement enregistré ce jour-là.'; showToast('Aucune trace pour cette date', true); return; }
+  const layers = [];
+  const line = window.L.polyline(pts, { color:'#c8a96e', weight:4, opacity:0.85 }).addTo(ccMap);
+  layers.push(line);
+  const nom = (sel.options[sel.selectedIndex]||{}).text || '';
+  layers.push(window.L.circleMarker(pts[0], { radius:7, color:'#fff', weight:2, fillColor:'#2ecc8a', fillOpacity:1 }).addTo(ccMap).bindPopup('Départ · '+E(nom)));
+  layers.push(window.L.circleMarker(pts[pts.length-1], { radius:7, color:'#fff', weight:2, fillColor:'#e74c3c', fillOpacity:1 }).addTo(ccMap).bindPopup('Dernier point · '+E(nom)));
+  window._ccTrace = layers;
+  ccMap._userMoved = true; // ne pas recentrer sur les positions live
+  try { ccMap.fitBounds(line.getBounds(), { padding:[40,40] }); } catch(e){}
+  if(info) info.textContent = pts.length + ' points · ' + date;
 };
 
 // ── CARTE SUIVI CHAUFFEUR (espace client) ──
@@ -18397,10 +18746,17 @@ function renderClientTrackingMap(tracked) {
   // Init map si besoin
   if(!cpMap) {
     if(!window.L) {
-      const script = document.createElement('script');
-      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-      script.onload = () => { createCpMap(); setTimeout(()=>refreshClientMap(), 300); };
-      document.head.appendChild(script);
+      // Un seul chargement de la bibliothèque, même si l'écran se rafraîchit
+      // plusieurs fois avant qu'elle soit prête (sinon la carte était créée
+      // deux fois → « Map container is already initialized »).
+      if(!window._leafletLoading) {
+        window._leafletLoading = true;
+        const script = document.createElement('script');
+        script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+        script.onload = () => { window._leafletLoading = false; createCpMap(); setTimeout(()=>refreshClientMap(), 300); };
+        script.onerror = () => { window._leafletLoading = false; };
+        document.head.appendChild(script);
+      }
       return;
     }
     createCpMap();
@@ -18452,6 +18808,9 @@ function _renderCpMarkers(tracked) {
 }
 
 function createCpMap() {
+  if(cpMap || !window.L) return;
+  const _el = document.getElementById('cp-map');
+  if(!_el || _el._leaflet_id) return;
   cpMap = window.L.map('cp-map', {zoomControl:true, attributionControl:false}).setView([48.9606, 2.5889], 11);
   window.L.tileLayer('https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=McFYT7ift0ED35g7Kc0B', {maxZoom:20, tileSize:512, zoomOffset:-1, crossOrigin:true}).addTo(cpMap);
   setTimeout(()=>cpMap.invalidateSize(), 200);
@@ -19051,6 +19410,78 @@ async function sendGPS(pos) {
   });
   // Vérifier la géofence 7 km (alerte dispatch quand le chauffeur entre en zone).
   try { await checkGeofenceZone(pos.coords.latitude, pos.coords.longitude); } catch(e){}
+  // Alerte « arrivée imminente » au client partenaire (ex. Value Retail) X min avant.
+  try { await checkArriveeClient(pos.coords.latitude, pos.coords.longitude); } catch(e){}
+  // Historique de déplacement : enregistre un point (throttlé) pour rejouer le trajet.
+  try { await enregistrerTrace(ch._id, pos.coords.latitude, pos.coords.longitude); } catch(e){}
+}
+
+// Enregistre la trace GPS du chauffeur, de façon ÉCONOME : au maximum un point
+// toutes les 90 s et seulement s'il a bougé de plus de ~120 m (sinon on ne
+// remplit pas la base quand il est à l'arrêt). Rangé par jour pour pouvoir
+// rejouer un trajet : gps_trails/<chauffeurId>/<AAAAMMJJ>/<HHMMSS>.
+window._lastTrace = window._lastTrace || {};
+async function enregistrerTrace(driverId, lat, lng){
+  if(!driverId || !lat || !lng) return;
+  const now = Date.now();
+  const last = window._lastTrace[driverId];
+  if(last){
+    if((now - last.at) < 90000) return;
+    if(distanceKm(last.lat, last.lng, lat, lng) < 0.12) return;
+  }
+  window._lastTrace[driverId] = { lat:lat, lng:lng, at:now };
+  const d = new Date();
+  const p2 = n => String(n).padStart(2,'0');
+  const jour = '' + d.getFullYear() + p2(d.getMonth()+1) + p2(d.getDate());
+  const heure = p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
+  try {
+    await fetch(`${FB_URL}/gps_trails/${driverId}/${jour}/${heure}.json${authParam(await getAuthToken())}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ lat: Math.round(lat*1e5)/1e5, lng: Math.round(lng*1e5)/1e5, at: d.toISOString() })
+    });
+  } catch(e){}
+}
+
+// Alerte automatique au CLIENT PARTENAIRE quand le chauffeur approche de la
+// destination pour un transfert QUI LUI EST DESTINÉ (ex. Value Retail : notif
+// ~15 min avant l'arrivée à La Vallée Village). Basé sur le temps estimé réel
+// (distance restante ÷ vitesse moyenne), pas sur un simple rayon.
+async function checkArriveeClient(lat, lng) {
+  if(!lat || !lng || !SESSION || SESSION.role !== 'chauffeur') return;
+  const zones = (D.geofence_zones||[]).filter(z => z.actif !== false && z.lat && z.lng && z.client && z.notifierPartenaire && (parseInt(z.alerteArriveeMin)||0) > 0);
+  if(!zones.length) return;
+  const moiNom = SESSION.name;
+  const monUid = SESSION.uid || (window.fbAuth && window.fbAuth.currentUser ? window.fbAuth.currentUser.uid : null);
+  const actives = (D.courses||[]).filter(c => (c.chauffeur===moiNom || (monUid && c.chauffeurUid===monUid)) && ['attribuee','acceptee','en_route','sur_place','onboard'].includes(c.statut));
+  if(!actives.length) return;
+  window._arriveeSent = window._arriveeSent || {};
+  for(const z of zones) {
+    const soc = (z.client||'').trim().toLowerCase();
+    // Le transfert doit être DESTINÉ à ce client : soit par le nom du client,
+    // soit parce que sa destination est à moins de 3 km de la zone.
+    const course = actives.find(c => {
+      const cc = (c.client||'').trim().toLowerCase();
+      if(cc && soc && (cc===soc || cc.includes(soc) || soc.includes(cc))) return true;
+      if(c.dropLat && c.dropLng && distanceKm(c.dropLat, c.dropLng, z.lat, z.lng) <= 3) return true;
+      return false;
+    });
+    if(!course) continue;
+    const dist = distanceKm(lat, lng, z.lat, z.lng);
+    const etaMin = (dist / 40) * 60; // vitesse moyenne ~40 km/h
+    const seuil = parseInt(z.alerteArriveeMin) || 15;
+    if(etaMin <= seuil) {
+      const key = 'arr_' + (course._id || z._id);
+      const now = Date.now();
+      // Une seule fois par course (fenêtre de 30 min anti-répétition).
+      if(!window._arriveeSent[key] || (now - window._arriveeSent[key]) > 1800000) {
+        window._arriveeSent[key] = now;
+        const titre = '🚗 Arrivée imminente';
+        const msg = (course.chauffeur||'Le chauffeur') + ' arrive à ' + (z.nom||'destination') + ' dans ~' + Math.max(1, Math.round(etaMin)) + ' min';
+        try { sendPushNotification(titre, msg, null, null, { key:'societe', value: soc.slice(0,40) }); } catch(e){}
+        if(z.notifierDispatch !== false) { try { notifierStaff(titre, msg + ' (' + (course.client||'') + ')'); } catch(e){} }
+      }
+    }
+  }
 }
 
 // ── SUIVI GPS CENTRALISÉ (watchPosition) ────────────────────────────────────
@@ -20304,6 +20735,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── NAV ──
 function gp(name, btn) {
+  try { _splitGerantCourses(); } catch(e){} // filet de sécurité avant tout affichage
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   const pg=document.getElementById('page-'+name);if(pg)pg.classList.add('on');
@@ -21756,6 +22188,11 @@ window.importExcel = async function(input) {
   const WORKER_URL = "https://mobilea-stripe.mus-akdogan.workers.dev/create-payment-intent";
   // Exposé pour la page « Mes cartes » (réutilise la même clé publiable).
   try { window.MOBILEA_STRIPE_PK = STRIPE_PUBLIC_KEY; } catch(e){}
+  // Jeton de la personne connectée : le Worker vérifie que la course lui
+  // appartient et que le montant correspond au prix de la course.
+  async function _stripeIdToken(){
+    try { return (window.fbAuth && window.fbAuth.currentUser) ? await window.fbAuth.currentUser.getIdToken() : null; } catch(e){ return null; }
+  }
 
   let stripe, cardElement, currentCourse = {};
 
@@ -21811,7 +22248,7 @@ window.importExcel = async function(input) {
         try {
           const res = await fetch(WORKER_URL, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ amount: currentCourse.amount, courseId: currentCourse.courseId, clientName: currentCourse.clientName }),
+            body: JSON.stringify({ idToken: await _stripeIdToken(), amount: currentCourse.amount, courseId: currentCourse.courseId, clientName: currentCourse.clientName }),
           });
           const data = await res.json();
           if(!res.ok) { ev.complete('fail'); throw new Error(data.error); }
@@ -21964,7 +22401,7 @@ window.importExcel = async function(input) {
     try {
       const res = await fetch(WORKER_URL, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount: currentCourse.amount, courseId: currentCourse.courseId, clientName: currentCourse.clientName }),
+        body: JSON.stringify({ idToken: await _stripeIdToken(), amount: currentCourse.amount, courseId: currentCourse.courseId, clientName: currentCourse.clientName }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Erreur Worker");
