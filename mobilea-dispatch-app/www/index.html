@@ -494,6 +494,7 @@ tr:last-child td{border-bottom:none}
             <div class="fld"><label>Mot de passe *</label><input type="password" id="cl-reg-pass" placeholder="Min. 6 caractères" maxlength="128"></div>
             <div class="fld"><label>Confirmer *</label><input type="password" id="cl-reg-pass2" placeholder="••••••••" maxlength="128" onkeydown="if(event.key==='Enter')doClientSignup()"></div>
             <button class="btn-login" onclick="doClientSignup()">Créer mon compte →</button>
+            <p style="font-size:11px;color:var(--muted);text-align:center;margin:10px 0 0;line-height:1.4">En créant un compte, vous acceptez notre <a href="#" onclick="mobileaOuvrirConfidentialite();return false;" style="color:var(--gold)">politique de confidentialité</a>.</p>
             <div id="cl-signup-ok" style="display:none;margin-top:12px;padding:12px;background:#f0fdf4;border:1px solid #86efac;border-radius:var(--r-sm);font-size:13px;color:#166534;text-align:center">
               ✅ Compte créé ! Connexion en cours...
             </div>
@@ -540,6 +541,7 @@ tr:last-child td{border-bottom:none}
       <button class="ni admin-only" data-p="comptes-clients" onclick="gp('comptes-clients',this)"><i style="width:16px;text-align:center" class="fas fa-building"></i> Comptes Clients</button>
       <button class="ni admin-only" data-p="comptes" onclick="gp('comptes',this)"><i style="width:16px;text-align:center" class="fas fa-users-cog"></i> Comptes Dispatch</button>
       <button class="ni" data-p="historique" onclick="gp('historique',this)"><i style="width:16px;text-align:center" class="fas fa-history"></i> Historique</button>
+      <button class="ni admin-only" data-p="aiphone" onclick="gp('aiphone',this)"><i style="width:16px;text-align:center" class="fas fa-phone-volume"></i> IA Téléphonique</button>
       <button class="ni admin-only" data-p="parametres" onclick="gp('parametres',this)"><i style="width:16px;text-align:center" class="fas fa-cog"></i> Paramètres</button>
     </nav>
     <div class="sb-bot">
@@ -617,6 +619,15 @@ tr:last-child td{border-bottom:none}
 
       <!-- DISPATCH -->
       <div class="page" id="page-dispatch">
+
+        <!-- DEMANDES IA EN ATTENTE DE VALIDATION -->
+        <div id="aip-pending-wrap" style="display:none;margin-bottom:14px;padding:14px;background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(245,158,11,.06));border:1px solid rgba(245,158,11,.4);border-radius:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="font-weight:800;color:var(--orange,#f59e0b);font-size:14px"><i class="fas fa-robot"></i> Demandes IA téléphonique à valider <span id="aip-pending-count" style="background:var(--orange,#f59e0b);color:#111;border-radius:999px;padding:1px 8px;font-size:11px;margin-left:6px">0</span></div>
+            <button class="btn btn-ghost btn-sm" onclick="aipPendingLoad()" title="Rafraîchir"><i class="fas fa-sync"></i></button>
+          </div>
+          <div id="aip-pending-list" style="display:flex;flex-direction:column;gap:8px"></div>
+        </div>
 
         <!-- VUE PLANNING STYLE GOOGLE AGENDA (défaut pour dispatch) -->
         <div id="dv-planning-agenda">
@@ -4470,17 +4481,29 @@ function renderAlertesZone() {
   if(_oldBar) _oldBar.remove();
   if(!enZone.length) return;
 
-  // Notification push (une fois par chauffeur/entrée) via OneSignal si présent.
+  // Alerte affichée UNE SEULE FOIS par entrée en zone, et seulement si elle est
+  // RÉCENTE. Avant : la fiche chauffeur gardait « dansZoneAlerte » d'une vieille
+  // entrée (chauffeur déconnecté depuis des semaines) et la mémoire « déjà vu »
+  // était perdue à chaque ouverture de l'app → l'alerte revenait à chaque fois.
+  const MAX_AGE_MS = 30 * 60 * 1000; // une alerte de plus de 30 min est périmée
+  let vus = {};
+  try { vus = JSON.parse(localStorage.getItem('mobilea_zone_vus') || '{}') || {}; } catch(e){ vus = {}; }
+  const now = Date.now();
+  // Purge des marqueurs de plus de 2 jours
+  Object.keys(vus).forEach(k => { if(!(now - vus[k] < 2*86400000)) delete vus[k]; });
+  let change = false;
   enZone.forEach(c => {
-    const key = 'zonepush_' + c._id + '_' + (c.zoneAlerte.at||'');
-    if(!window[key]) {
-      window[key] = true;
-      const nom = (c.prenom||'')+(c.nom?' '+c.nom:'');
-      try {
-        afficherNotifZone('MOBILEA — Chauffeur en approche', nom + ' entre dans la zone — arrive dans ~' + c.zoneAlerte.etaMin + ' min');
-      } catch(e){}
-    }
+    const at = c.zoneAlerte.at ? new Date(c.zoneAlerte.at).getTime() : NaN;
+    if(isNaN(at) || (now - at) > MAX_AGE_MS) return;        // alerte périmée → ignorée
+    const key = c._id + '_' + c.zoneAlerte.at;
+    if(vus[key] || window['zonepush_' + key]) return;        // déjà affichée
+    vus[key] = now; window['zonepush_' + key] = true; change = true;
+    const nom = (c.prenom||'')+(c.nom?' '+c.nom:'');
+    try {
+      afficherNotifZone('MOBILEA — Chauffeur en approche', nom + ' entre dans la zone — arrive dans ~' + c.zoneAlerte.etaMin + ' min');
+    } catch(e){}
   });
+  if(change) { try { localStorage.setItem('mobilea_zone_vus', JSON.stringify(vus)); } catch(e){} }
 }
 
 // Transferts proposés par un gérant au réseau (creePar==='gerant') : ce sont
@@ -5158,6 +5181,22 @@ function startApp() {
       });
     }
   }
+  // APP NATIVE CLIENT : le Web SDK OneSignal ne marche pas en natif. Le pont
+  // natif (native-bridge.js de l'app client) abonne l'appareil via le plugin
+  // OneSignal natif : external_id = identifiant client, tags role/societe.
+  if(SESSION.role === 'client') {
+    window.SESSION = SESSION;
+    var _clTries = 0;
+    var _clLink = setInterval(function(){
+      _clTries++;
+      window.SESSION = SESSION;
+      if(typeof window.mobileaLinkPush === 'function') {
+        try { window.mobileaLinkPush(); } catch(e){}
+        clearInterval(_clLink);
+      }
+      if(_clTries > 20) clearInterval(_clLink);
+    }, 500);
+  }
   // Demander la permission de notification (nécessaire pour l'alerte système
   // vibration + son + message quand une nouvelle course arrive)
   if(['chauffeur','admin','dispatch','client'].includes(SESSION.role) && 'Notification' in window && Notification.permission === 'default') {
@@ -5455,7 +5494,7 @@ function fdt(dt) {
 function vI(v) { return {berline:'🚗 Berline',van:'🚐 Van',sprinter:'🚌 Sprinter',bus:'🚍 Bus',pmr:'♿ Van PMR',limousine:'🥂 Limousine',classes:'🖤 Classe S'}[v]||'🚗 Berline'; }
 function sBdg(s) {
   const m = {
-    nouvelle:['bdg-purple','🆕 Nouvelle'],en_attente:['bdg-orange','⏳ En attente'],
+    nouvelle:['bdg-purple','🆕 Nouvelle'],en_attente:['bdg-orange','⏳ En attente'],a_confirmer:['bdg-orange','⏳ Demande IA à valider'],
     offre_en_cours:['bdg-gold','🚨 Proposée à un chauffeur'],
     offre_ouverte:['bdg-gold','🙋 À prendre (1er arrivé)'],
     offre_prioritaire:['bdg-gold','⭐ Proposée aux prioritaires'],
@@ -11424,7 +11463,7 @@ const STATUT_FLOW = {
 };
 
 const STATUT_LABELS = {
-  nouvelle:'Nouvelle', en_attente:'En attente', attribuee:'Assignée',
+  nouvelle:'Nouvelle', en_attente:'En attente', a_confirmer:'Demande IA à valider', attribuee:'Assignée',
   acceptee:'Acceptée ✅', en_route:'En route 🚗', sur_place:'Sur place 📍',
   onboard:'Client à bord 👤', depose:'Déposé 🏁', terminee:'Terminée ✔',
   annulee:'Annulée', noshow:'No-show', facturee:'Facturée', payee:'Payée'
@@ -13657,6 +13696,73 @@ window.confirmerPointage = async function(id, type) {
 // à l'avance. Contrairement à ouvrirCourseATous, ça ne s'ouvre PAS à tous après
 // un délai — c'est le dispatch qui décide ensuite d'ouvrir à tous s'il le veut.
 // Peut se faire des jours avant la course.
+// ── NOTIFICATIONS DES OFFRES ───────────────────────────────────────────
+// Résumé court d'un transfert pour une notification :
+// « mar. 21 oct. à 14:30 · CDG T2 → Disneyland · Berline · 3 pax »
+function _resumeTransfertNotif(c, avecClient) {
+  var d = '';
+  try { if(c.datetime) d = new Date(c.datetime).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}).replace(/,?\s+(\d{1,2}:\d{2})$/,' à $1'); } catch(e){}
+  var parts = [];
+  if(d) parts.push(d);
+  parts.push(((c.depart||c.lieu||'?')+' → '+(c.arrivee||'?')).slice(0,120));
+  if(avecClient && c.client) parts.push(String(c.client).slice(0,40));
+  if(c.vehicule) parts.push(String(c.vehicule).slice(0,20));
+  if(c.pax) parts.push(c.pax+' pax');
+  if(c.vol) parts.push('vol '+String(c.vol).slice(0,12));
+  return parts.join(' · ');
+}
+
+// Prévenir les chauffeurs qu'un ou plusieurs transferts sont proposés.
+//   mode 'prio' → uniquement les chauffeurs ⭐ prioritaires
+//   mode 'tous' → tous les chauffeurs (tag role=chauffeur)
+async function notifierOffreChauffeurs(courses, mode) {
+  courses = (courses||[]).filter(Boolean);
+  if(!courses.length) return;
+  var prio = (mode === 'prio');
+  var titre, msg;
+  if(courses.length === 1) {
+    titre = prio ? '⭐ Transfert proposé en priorité' : '🙋 Transfert à prendre';
+    msg = _resumeTransfertNotif(courses[0], false) + ' — le premier qui accepte le garde';
+  } else {
+    var dts = courses.map(function(c){ return c.datetime||''; }).filter(Boolean).sort();
+    var f = function(x){ try { return new Date(x).toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'short'}); } catch(e){ return ''; } };
+    var periode = dts.length ? (f(dts[0]) === f(dts[dts.length-1]) ? ' le '+f(dts[0]) : ' du '+f(dts[0])+' au '+f(dts[dts.length-1])) : '';
+    titre = prio ? ('⭐ '+courses.length+' transferts proposés en priorité') : ('🙋 '+courses.length+' transferts à prendre');
+    msg = courses.length+' transferts'+periode+' — ouvrez l\'app pour les accepter (premier arrivé, premier servi)';
+  }
+  var opts = courses.length === 1 ? { courseId: courses[0]._id } : undefined;
+  try {
+    if(prio) {
+      var ids = (D.chauffeurs||[]).filter(function(ch){ return ch.prioritaire === true && !ch.archived && !ch.blocked; })
+        .map(function(ch){ return ch._id; }).filter(Boolean);
+      // Le service de notifications accepte 50 destinataires par envoi.
+      for(var i=0; i<ids.length; i+=50) {
+        await sendPushNotification(titre, msg, null, ids.slice(i, i+50), null, opts);
+      }
+    } else {
+      await sendPushNotification(titre, msg, null, null, { key:'role', value:'chauffeur' }, opts);
+    }
+  } catch(e) { console.warn('notifierOffreChauffeurs:', e); }
+}
+
+// Un chauffeur vient d'accepter un transfert proposé → prévenir le dispatch.
+// Transfert créé par un GÉRANT : c'est privé → on prévient le gérant, pas le dispatch.
+async function notifierAcceptationTransfert(c, nomChauffeur) {
+  if(!c) return;
+  var titre = '✅ ' + (nomChauffeur||'Un chauffeur') + ' accepte le transfert';
+  var msg = _resumeTransfertNotif(c, true);
+  try {
+    if(c.creePar === 'gerant' && c.createdByUid) {
+      var liste = D.chauffeurs || [];
+      var g = liste.find(function(ch){ return ch.uid === c.createdByUid; });
+      if(!g) { try { liste = await fbGet('chauffeurs') || []; g = liste.find(function(ch){ return ch.uid === c.createdByUid; }); } catch(e){} }
+      if(g && g._id) await sendPushNotification(titre, msg, null, [g._id], null, { courseId: c._id });
+      return;
+    }
+    await sendPushNotification(titre, msg, null, null, { key:'role', value:'staff' }, { courseId: c._id });
+  } catch(e) { console.warn('notifierAcceptationTransfert:', e); }
+}
+
 window.proposerAuxPrioritaires = async function(id) {
   if(!SESSION || !['admin','dispatch'].includes(SESSION.role)) {
     showToast('Réservé à l\'admin/dispatch', true); return;
@@ -13673,7 +13779,8 @@ window.proposerAuxPrioritaires = async function(id) {
   try {
     await fbUpdate('courses', id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
     await addLog(`⭐ Transfert proposé aux prioritaires (à l'avance) : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')} (par ${SESSION.name})`);
-    showToast('⭐ Proposé aux chauffeurs prioritaires');
+    await notifierOffreChauffeurs([c], 'prio');
+    showToast('⭐ Proposé aux chauffeurs prioritaires (notifiés)');
     const ov = document.getElementById('course-edit-ov'); if(ov) ov.remove();
   } catch(e) { showToast('Erreur', true); }
 };
@@ -13704,13 +13811,15 @@ window.proposerJourAuxPrioritaires = async function(dateStr) {
   const jourLbl = new Date(jour+'T12:00:00').toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
   if(!confirm(`Proposer ${eligibles.length} transfert(s) du ${jourLbl} aux ${prioritaires.length} chauffeur(s) prioritaire(s) ?\n\nLe premier qui accepte chaque course la garde. Elles ne s'ouvriront PAS automatiquement aux autres.`)) return;
   let ok = 0;
+  const _proposees = [];
   for(const c of eligibles) {
     try {
       await fbUpdate('courses', c._id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
-      ok++;
+      ok++; _proposees.push(c);
     } catch(e) {}
   }
   await addLog(`⭐ ${ok} transfert(s) du ${jourLbl} proposé(s) aux prioritaires (envoi groupé par ${SESSION.name})`);
+  await notifierOffreChauffeurs(_proposees, 'prio');
   showToast(`⭐ ${ok} transfert(s) proposé(s) aux prioritaires`);
 };
 
@@ -13732,7 +13841,8 @@ window.ouvrirCourseATous = async function(id) {
     try {
       await fbUpdate('courses', id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:expire, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
       await addLog(`⭐ Transfert proposé aux prioritaires : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')} (par ${SESSION.name})`);
-      showToast('⭐ Proposé aux chauffeurs prioritaires');
+      await notifierOffreChauffeurs([c], 'prio');
+      showToast('⭐ Proposé aux chauffeurs prioritaires (notifiés)');
       const ov = document.getElementById('course-edit-ov'); if(ov) ov.remove();
     } catch(e) { showToast('Erreur', true); }
   } else {
@@ -13741,7 +13851,8 @@ window.ouvrirCourseATous = async function(id) {
     try {
       await fbUpdate('courses', id, { statut:'offre_ouverte', chauffeur:'', offerChauffeurId:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
       await addLog(`🙋 Transfert ouvert à tous : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')} (par ${SESSION.name})`);
-      showToast('🙋 Transfert proposé à tous les chauffeurs');
+      await notifierOffreChauffeurs([c], 'tous');
+      showToast('🙋 Transfert proposé à tous les chauffeurs (notifiés)');
       const ov = document.getElementById('course-edit-ov'); if(ov) ov.remove();
     } catch(e) { showToast('Erreur', true); }
   }
@@ -13756,7 +13867,9 @@ async function verifierOffresPrioritairesExpirees() {
   for(const c of expirees) {
     try {
       await fbUpdate('courses', c._id, { statut:'offre_ouverte', prioritaireExpire:null });
+      c.statut = 'offre_ouverte'; c.prioritaireExpire = null; // évite un 2e envoi au prochain passage
       await addLog(`🙋 Transfert ouvert à tous (délai prioritaire écoulé) : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')}`);
+      await notifierOffreChauffeurs([c], 'tous');
     } catch(e) {}
   }
 }
@@ -13784,6 +13897,8 @@ window.accepterOffreOuverte = async function(id) {
       accepteeLe: new Date().toISOString()
     });
     await addLog(`🙋 ${SESSION.name} a accepté le transfert ouvert : ${c.client||''} — ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')}`);
+    // Prévenir le dispatch (ou le gérant pour un transfert gérant)
+    try { await notifierAcceptationTransfert(Object.assign({}, c, fresh, { _id:id }), SESSION.name); } catch(e){}
     // ── RAFRAÎCHISSEMENT IMMÉDIAT ──────────────────────────────────────────
     // Sans ça, sur iOS l'écran restait figé (il fallait fermer/rouvrir l'app) :
     // le listener/poll pouvait tarder. On met à jour la copie locale et on
@@ -15298,8 +15413,11 @@ window.doClientSignup = async function() {
       throw e;
     }
 
-    // Sauvegarder le profil dans Firebase
-    await fbPush('client_accounts', {
+    // Sauvegarder le profil dans Firebase. fbPush ne lève pas d'erreur en cas
+    // de refus serveur : on vérifie qu'un identifiant a bien été créé, sinon
+    // le client se retrouverait bloqué à sa prochaine connexion
+    // (« Aucun compte client associé »).
+    const _newProfileId = await fbPush('client_accounts', {
       prenom, nom, tel, email,
       societe: prenom+' '+nom,
       type: 'particulier',
@@ -15307,6 +15425,11 @@ window.doClientSignup = async function() {
       uid: cred.user.uid,
       createdAt: new Date().toISOString()
     });
+    if(!_newProfileId) {
+      try { await cred.user.delete(); } catch(e) { try { await window.fbAuth.signOut(); } catch(e2){} }
+      err.textContent = 'Inscription impossible pour le moment (serveur). Réessayez plus tard ou contactez MOBILEA.';
+      return;
+    }
 
     // Connecter directement sans vérification email
     SESSION = {
@@ -15316,7 +15439,8 @@ window.doClientSignup = async function() {
       email: email,
       societe: prenom + ' ' + nom,
       type: 'particulier',
-      source: 'auto_inscription'
+      source: 'auto_inscription',
+      profileId: _newProfileId
     };
     localStorage.setItem(ADMIN_KEY, JSON.stringify(SESSION));
 
@@ -16085,6 +16209,11 @@ window.openClientProfil = function(){
     +     '<button onclick="clRecAdd()" style="background:var(--card2);border:1px solid var(--border2);border-radius:9px;padding:7px 12px;color:var(--gold);font-size:12px;font-weight:700;cursor:pointer">➕ Ajouter</button>'
     +   '</div>'
     +   '<div id="cpf-rec-list" style="display:flex;flex-direction:column;gap:8px"></div>'
+    // Suppression du compte (obligatoire App Store — règle 5.1.1(v))
+    +   '<div style="margin-top:26px;padding-top:16px;border-top:1px solid var(--border2)">'
+    +     '<button onclick="mobileaOuvrirConfidentialite()" style="width:100%;background:transparent;border:none;padding:6px;margin-bottom:8px;color:var(--muted);font-size:12px;text-decoration:underline;cursor:pointer">Politique de confidentialité</button>'
+    +     '<button onclick="clOuvrirSuppressionCompte()" style="width:100%;background:transparent;border:1px solid rgba(229,115,115,.5);border-radius:12px;padding:12px;color:#e57373;font-weight:700;font-size:13px;cursor:pointer">🗑️ Supprimer mon compte</button>'
+    +   '</div>'
     + '</div>';
   document.body.appendChild(ov);
   ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
@@ -16099,6 +16228,114 @@ window.clSaveProfil = async function(){
   try { await fbPush('messages', _msgClientVersSupport({ type:'profil_update', client:SESSION.name, clientUser:SESSION.clientUser||'', nom:nom, tel:tel, email:email, to:'staff', createdAt:new Date().toISOString(), lu:false }, '👤 Mise à jour du profil — nom : '+nom+' · tél : '+tel+' · email : '+email)); } catch(e){}
   try { await sendPushNotification('👤 Mise à jour profil client', (SESSION.name||'Client')+' a modifié ses coordonnées (tel: '+tel+')', null, null, { key:'role', value:'staff' }); } catch(e){}
   showToast('✓ Profil enregistré — transmis à l\'équipe');
+};
+
+// Politique de confidentialité (lien exigé par l'App Store, règle 5.1.1(i)).
+window.MOBILEA_PRIVACY_URL = window.MOBILEA_PRIVACY_URL || 'https://musakdogan-droid.github.io/mobilea-privacy/';
+window.mobileaOuvrirConfidentialite = function(){
+  var u = window.MOBILEA_PRIVACY_URL;
+  try {
+    var B = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
+    if(B && B.open){ B.open({ url:u }); return; }
+  } catch(e){}
+  window.open(u, '_blank');
+};
+
+// ── Suppression du compte client (exigence App Store 5.1.1(v)) ──────────
+// Particulier : suppression immédiate (profil + cartes enregistrées + compte
+// de connexion). Les courses/factures passées sont conservées pour les
+// obligations comptables légales. Partenaire (compte créé par MOBILEA) :
+// demande transmise à l'équipe.
+window.clOuvrirSuppressionCompte = function(){
+  var old=document.getElementById('cl-del-ov'); if(old) old.remove();
+  var estPart = !!(SESSION && SESSION.isPartenaire);
+  var ov=document.createElement('div');
+  ov.id='cl-del-ov';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML =
+      '<div style="background:var(--card);width:100%;max-width:440px;border-radius:16px;padding:20px;border:1px solid rgba(229,115,115,.4)">'
+    +   '<h2 style="font-size:17px;font-weight:800;color:#e57373;margin:0 0 10px">🗑️ Supprimer mon compte</h2>'
+    + (estPart
+      ? '<p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 16px">Votre compte entreprise est géré par MOBILEA. Votre demande de suppression sera transmise à notre équipe, qui la traitera et vous confirmera par email.</p>'
+        + '<button id="cl-del-go" onclick="clConfirmerSuppressionCompte()" style="width:100%;background:#e57373;border:none;border-radius:12px;padding:13px;color:#111;font-weight:800;cursor:pointer;margin-bottom:8px">Envoyer la demande de suppression</button>'
+      : '<p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 12px">Cette action est <b style="color:var(--white)">définitive</b> : votre profil, vos cartes enregistrées et votre accès seront supprimés. Les factures de vos courses passées sont conservées uniquement pour nos obligations comptables légales.</p>'
+        + '<div class="fld"><label>Confirmez avec votre mot de passe</label><input type="password" id="cl-del-pass" autocomplete="current-password" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:11px;color:var(--white);font-size:14px;outline:none;box-sizing:border-box"></div>'
+        + '<div id="cl-del-err" style="color:#e57373;font-size:12px;min-height:16px;margin:6px 0 10px"></div>'
+        + '<button id="cl-del-go" onclick="clConfirmerSuppressionCompte()" style="width:100%;background:#e57373;border:none;border-radius:12px;padding:13px;color:#111;font-weight:800;cursor:pointer;margin-bottom:8px">Supprimer définitivement</button>')
+    +   '<button onclick="document.getElementById(\'cl-del-ov\').remove()" style="width:100%;background:transparent;border:1px solid var(--border2);border-radius:12px;padding:12px;color:var(--white);cursor:pointer">Annuler</button>'
+    + '</div>';
+  document.body.appendChild(ov);
+  ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
+};
+
+window.clConfirmerSuppressionCompte = async function(){
+  var btn=document.getElementById('cl-del-go');
+  var errEl=document.getElementById('cl-del-err');
+  var setErr=function(t){ if(errEl) errEl.textContent=t; else showToast(t); };
+  if(!SESSION || SESSION.role!=='client') return;
+  // Partenaire : simple demande à l'équipe
+  if(SESSION.isPartenaire){
+    if(btn){ btn.disabled=true; btn.textContent='Envoi…'; }
+    try { await fbPush('messages', _msgClientVersSupport({ type:'suppression_compte', client:SESSION.name, clientUser:SESSION.clientUser||'', email:SESSION.email||'', to:'staff', createdAt:new Date().toISOString(), lu:false }, '🗑️ Demande de suppression du compte entreprise ('+(SESSION.societe||SESSION.name||'')+' — '+(SESSION.email||'')+')')); } catch(e){}
+    try { await sendPushNotification('🗑️ Demande de suppression de compte', (SESSION.societe||SESSION.name||'Partenaire')+' demande la suppression de son compte', null, null, { key:'role', value:'staff' }); } catch(e){}
+    var o=document.getElementById('cl-del-ov'); if(o) o.remove();
+    showToast('✓ Demande envoyée — notre équipe vous confirmera la suppression par email');
+    return;
+  }
+  var pass=(document.getElementById('cl-del-pass')||{}).value||'';
+  if(!pass){ setErr('Saisissez votre mot de passe'); return; }
+  var user = window.fbAuth && window.fbAuth.currentUser;
+  if(!user){ setErr('Session expirée : reconnectez-vous puis réessayez.'); return; }
+  var uid = user.uid;
+  // Bloquer s'il reste une course en cours / à venir (sinon le chauffeur
+  // viendrait chercher un client sans compte).
+  var actifs=['nouvelle','en_attente','attribuee','acceptee','en_route','sur_place','onboard','offre_en_cours'];
+  var enCours=(D.courses||[]).filter(function(c){ return (c.createdByUid===uid || (SESSION.clientUser && c.clientUser===SESSION.clientUser)) && actifs.indexOf(c.statut)>=0; });
+  if(enCours.length){ setErr('Vous avez '+enCours.length+' course(s) en cours ou à venir. Annulez-les (ou attendez la fin) avant de supprimer votre compte.'); return; }
+  if(btn){ btn.disabled=true; btn.textContent='Suppression…'; }
+  try {
+    // 1) Ré-authentification (Firebase l'exige pour supprimer un compte)
+    var cred = firebase.auth.EmailAuthProvider.credential(user.email || SESSION.email, pass);
+    await user.reauthenticateWithCredential(cred);
+  } catch(e){
+    if(btn){ btn.disabled=false; btn.textContent='Supprimer définitivement'; }
+    setErr((e && (e.code==='auth/wrong-password'||e.code==='auth/invalid-credential')) ? 'Mot de passe incorrect' : ('Vérification impossible : '+((e&&e.message)||e)));
+    return;
+  }
+  // 2) Cartes enregistrées chez Stripe (au mieux)
+  try {
+    var lst = await _ccApi('list');
+    for(var i=0;i<((lst&&lst.cards)||[]).length;i++){ try { await _ccApi('delete', { paymentMethodId: lst.cards[i].id }); } catch(e){} }
+  } catch(e){}
+  // 3) Profil client (toutes les fiches liées à cet UID)
+  try {
+    var comptes = await fbGet('client_accounts') || [];
+    var mines = comptes.filter(function(a){ return a && a.uid===uid && a.type==='particulier'; });
+    if(SESSION.profileId && !mines.some(function(a){return a._id===SESSION.profileId;})) mines.push({ _id: SESSION.profileId });
+    for(var j=0;j<mines.length;j++){ await fbDelete('client_accounts', mines[j]._id); }
+  } catch(e){}
+  // 4) Prévenir l'équipe (traçabilité)
+  try { await fbPush('messages', _msgClientVersSupport({ type:'suppression_compte', client:SESSION.name, clientUser:SESSION.clientUser||'', email:SESSION.email||'', to:'staff', createdAt:new Date().toISOString(), lu:false }, '🗑️ Le client '+(SESSION.name||'')+' ('+(SESSION.email||'')+') a supprimé son compte.')); } catch(e){}
+  // 5) Données locales + désabonnement des notifications
+  try { ['mobilea_client_profil','mobilea_recurrences', clFavKey()].forEach(function(k){ localStorage.removeItem(k); }); } catch(e){}
+  try { if(typeof window.mobileaUnlinkPush==='function') window.mobileaUnlinkPush(); } catch(e){}
+  try { if(window.OneSignalDeferred) OneSignalDeferred.push(async function(OS){ try { await OS.logout(); } catch(e){} }); } catch(e){}
+  // 6) Compte de connexion Firebase (en dernier)
+  try { await user.delete(); }
+  catch(e){
+    if(btn){ btn.disabled=false; btn.textContent='Supprimer définitivement'; }
+    setErr('Suppression du compte de connexion impossible : '+((e&&e.message)||e)+' — contactez MOBILEA.');
+    return;
+  }
+  try { localStorage.removeItem(ADMIN_KEY); } catch(e){}
+  try { stopCoursesListener(); } catch(e){}
+  try { stopMessagesListener(); } catch(e){}
+  SESSION = { role:null, name:null, uid:null };
+  window.SESSION = SESSION;
+  ['cl-del-ov','cp-profil-ov'].forEach(function(id){ var x=document.getElementById(id); if(x) x.remove(); });
+  document.getElementById('app').style.display='none';
+  document.getElementById('login').style.display='flex';
+  showToast('✓ Votre compte a été supprimé');
 };
 
 window.clPartagerParrainage = async function(){
@@ -18259,6 +18496,7 @@ window.acceptOffer = async function(courseId) {
     updatedAt: new Date().toISOString()
   });
   await addLog(`${SESSION.name} a accepté la course urgente "${course.client||courseId}"`);
+  try { await notifierAcceptationTransfert(course, SESSION.name); } catch(e){}
   await attachVehicleToCourse(courseId, SESSION.name);
   // Envoyer le chauffeur + véhicule à LogiPax après acceptation
   try {
@@ -20740,7 +20978,7 @@ function gp(name, btn) {
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   const pg=document.getElementById('page-'+name);if(pg)pg.classList.add('on');
   if(btn)btn.classList.add('on');
-  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',transfertsgerants:'Transferts gérants',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
+  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',transfertsgerants:'Transferts gérants',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres',aiphone:'IA Téléphonique','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
   document.getElementById('page-title').textContent=titles[name]||name;
   closeMob();
   if(name==='cartechauffeurs') { setTimeout(initCarteChauffeurs, 300); }
@@ -20750,6 +20988,7 @@ function gp(name, btn) {
   if(name==='gerant-nouveau') { setTimeout(()=>{ try{ renderGerantNouveau(); }catch(e){} }, 150); }
   if(name==='gerant-chauffeurs') { setTimeout(()=>{ try{ renderGerantChauffeurs(); }catch(e){} }, 200); }
   if(name==='gerant-vehicules') { setTimeout(()=>{ try{ renderGerantVehicules(); }catch(e){} }, 200); }
+  if(name==='aiphone') { setTimeout(()=>{ try{ mobileaAiPhoneOpen(); }catch(e){} }, 150); }
   if(name==='parametres') { setTimeout(()=>{ try{ renderApiKeys(); }catch(e){} try{ renderClientColors(); }catch(e){} try{ loadDriverTimeout(); }catch(e){} try{ majEtatNotif(); }catch(e){} }, 200); }
   if(name==='pointage') { setTimeout(()=>{ try{ renderPointage(); }catch(e){} }, 200); }
   if(name==='dispatch') { setTimeout(()=>{
@@ -21307,18 +21546,16 @@ async function proposerSelectionAuxPrioritaires() {
   const noms = prioritaires.map(ch=>(ch.prenom||'')+(ch.nom?' '+ch.nom:'')).join(', ');
   if(!confirm(`Proposer ${eligibles.length} transfert(s) à ${prioritaires.length} chauffeur(s) prioritaire(s) ?\n\n${noms}\n\nLe premier qui accepte chaque course la garde. Elles ne s'ouvriront PAS automatiquement aux autres — vous gardez la main.${ignorees>0?`\n\n(${ignorees} course(s) ignorée(s) : déjà attribuées ou déjà proposées)`:''}`)) return;
   let ok = 0;
+  const _proposees = [];
   for(const c of eligibles) {
     try {
       await fbUpdate('courses', c._id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
-      ok++;
+      ok++; _proposees.push(c);
     } catch(e) {}
   }
   await addLog(`⭐ ${ok} transfert(s) proposé(s) aux prioritaires (sélection groupée par ${SESSION.name})`);
-  // Notifier les prioritaires (push + SMS léger)
-  try {
-    const prioIds = prioritaires.map(ch=>ch._id).filter(Boolean);
-    await sendPushNotification(`⭐ ${ok} transfert(s) à prendre`, `${ok} transfert(s) vous sont proposés en priorité`, 'https://musakdogan-droid.github.io/Simplycab-', prioIds.length?prioIds:null);
-  } catch(e) {}
+  // Notifier les prioritaires (détail du transfert si un seul)
+  await notifierOffreChauffeurs(_proposees, 'prio');
   clearSelection();
   await loadAll();
   showToast(`⭐ ${ok} transfert(s) proposé(s) aux prioritaires ✓`);
@@ -22601,6 +22838,351 @@ function attachPlaces(id) {
 
 <!-- Pont natif (Capacitor) : ne s'active que dans l'app native, ignoré en web -->
 <script src="native-bridge.js"></script>
+
+
+      <!-- IA TÉLÉPHONIQUE -->
+      <div class="page" id="page-aiphone">
+        <div class="sec" style="max-width:1180px">
+          <div class="sec-h"><div class="sec-t"><i class="fas fa-phone-volume"></i> IA Téléphonique</div></div>
+          <div style="padding:20px">
+            <div style="background:var(--card2,#141618);border:1px solid var(--border);border-radius:var(--r);padding:16px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:18px;justify-content:space-between;align-items:flex-start">
+              <div style="min-width:220px">
+                <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:var(--gold)">🤖 Assistant IA Deloitte MOBILEA</div>
+                <div style="font-size:12px;color:var(--muted);margin-top:4px">Appels, SMS et WhatsApp — Deloitte University uniquement. Regroupement auto, validation dispatch avant SMS.</div>
+              </div>
+              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                <button id="aip-toggle" onclick="mobileaAiPhoneToggle()" style="border:0;border-radius:999px;padding:10px 18px;font-weight:800;font-size:13px;cursor:pointer;background:#2ecc8a;color:#111">IA ACTIVE</button>
+                <div id="aip-status" style="display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(148,163,184,.15);color:var(--muted)"><span style="width:8px;height:8px;border-radius:50%;background:var(--muted)"></span><span id="aip-status-text">Non configuré</span></div>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+              <div style="padding:14px;border-radius:12px;background:var(--card2,#141618);border:1px solid var(--border)"><div style="font-size:22px;font-weight:800" id="aip-k-calls">0</div><div style="font-size:11px;color:var(--muted)">Appels (90 j)</div></div>
+              <div style="padding:14px;border-radius:12px;background:var(--card2,#141618);border:1px solid var(--border)"><div style="font-size:22px;font-weight:800" id="aip-k-reser">0</div><div style="font-size:11px;color:var(--muted)">Demandes créées</div></div>
+              <div style="padding:14px;border-radius:12px;background:var(--card2,#141618);border:1px solid var(--border)"><div style="font-size:22px;font-weight:800" id="aip-k-hand">0</div><div style="font-size:11px;color:var(--muted)">Transferts humain</div></div>
+              <div style="padding:14px;border-radius:12px;background:var(--card2,#141618);border:1px solid var(--border)"><div style="font-size:22px;font-weight:800;color:var(--orange,#f59e0b)" id="aip-k-pend">0</div><div style="font-size:11px;color:var(--muted)">À valider maintenant</div></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1.15fr .85fr;gap:16px">
+              <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:18px">
+                <h3 style="margin:0 0 12px;font-size:15px;font-weight:800">Configuration</h3>
+                <div class="fg2">
+                  <div class="fld"><label>URL du Worker IA</label><input id="aip-worker" placeholder="https://mobilea-ai-phone.mus-akdogan.workers.dev"></div>
+                  <div class="fld"><label>Clé tableau de bord (DASHBOARD_SECRET)</label><input id="aip-key" type="password" autocomplete="off" placeholder="Secret admin configuré dans le Worker"></div>
+                </div>
+                <div class="fg2">
+                  <div class="fld"><label>Numéro Twilio (affichage)</label><input id="aip-number" placeholder="+33 1 …"></div>
+                  <div class="fld"><label>Numéro de transfert humain</label><input id="aip-handoff" placeholder="+33 …"></div>
+                </div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+                  <button class="btn btn-p btn-sm" onclick="mobileaAiPhoneSave()"><i class="fas fa-save"></i> Enregistrer</button>
+                  <button class="btn btn-sm" onclick="mobileaAiPhoneTest()"><i class="fas fa-plug"></i> Tester la connexion</button>
+                  <button class="btn btn-ghost btn-sm" onclick="mobileaAiPhoneTestFare()"><i class="fas fa-calculator"></i> Tester le tarif</button>
+                  <button class="btn btn-ghost btn-sm" onclick="mobileaAiPhoneLoad()"><i class="fas fa-sync"></i> Rafraîchir</button>
+                </div>
+                <div id="aip-msg" style="margin-top:10px;font-size:12px;color:var(--muted);min-height:16px"></div>
+              </div>
+              <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:18px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                  <h3 style="margin:0;font-size:15px;font-weight:800">💬 Messagerie Deloitte (SMS + WhatsApp)</h3>
+                  <span style="font-size:11px;color:var(--muted)" id="aip-msg-count">—</span>
+                </div>
+                <div id="aip-msg-log" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:8px;margin-bottom:10px"><div style="color:var(--muted);font-size:12px">Chargement…</div></div>
+                <div style="display:flex;gap:6px"><input id="aip-msg-to" placeholder="Numéro destinataire" style="flex:1;background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--white);font-size:12px"><select id="aip-msg-ch" style="background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--white);font-size:12px"><option value="sms">SMS</option><option value="whatsapp">WhatsApp</option></select></div>
+                <textarea id="aip-msg-txt" placeholder="Votre réponse…" style="width:100%;box-sizing:border-box;background:var(--dark);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--white);font-size:12px;margin-top:6px;min-height:60px"></textarea>
+                <button class="btn btn-p btn-sm" style="margin-top:6px" onclick="mobileaAiSendMsg()"><i class="fas fa-paper-plane"></i> Envoyer</button>
+                <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                  <h3 style="margin:0;font-size:15px;font-weight:800">Derniers appels</h3>
+                  <span style="font-size:11px;color:var(--muted)">90 j · auto 30 s</span>
+                </div>
+                <div id="aip-log" style="max-height:260px;overflow:auto"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+<script>
+/* ─── Pile dispatch : propositions de changement émises par l'IA téléphonique ─── */
+(function(){
+  function cfg(){ try { return JSON.parse(localStorage.getItem('mobilea_aip_cfg_v1')||'{}'); } catch(e){ return {}; } }
+  function H(){ return { 'x-mobilea-key': cfg().key||'' }; }
+  function esc(x){ return String(x==null?'':x).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function fdt(iso){ if(!iso) return ''; try { return new Date(iso).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}); } catch(e){ return iso; } }
+
+  async function fbPatch(path, data){
+    var token = (typeof getAuthToken==='function') ? await getAuthToken() : '';
+    var u = FB_URL + '/' + path + '.json' + (token?('?auth='+token):'');
+    var r = await fetch(u, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
+    if(!r.ok) throw new Error('fbPatch '+r.status);
+    try { fbInvalidate(path.split('/')[0]); } catch(e){}
+    return await r.json().catch(function(){return{};});
+  }
+
+  async function sendSmsViaWorker(to, message){
+    var c = cfg(); if(!c.worker || !to) return { ok:false, error:'Worker non configuré ou numéro manquant' };
+    try {
+      var r = await fetch(c.worker + '/api/send-sms', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, H()), body: JSON.stringify({ to:to, message:message }) });
+      return await r.json().catch(function(){return{ok:false,error:'reponse invalide'}});
+    } catch(e){ return { ok:false, error:String(e&&e.message||e) }; }
+  }
+
+  window.aipPendingLoad = async function(){
+    try {
+      var list = await fbGet('pending_changes') || [];
+      var pending = (Array.isArray(list)?list:[]).filter(function(x){ return x && x.statut==='a_valider'; });
+      var wrap = document.getElementById('aip-pending-wrap'); if(!wrap) return;
+      wrap.style.display = pending.length ? 'block' : 'none';
+      var cnt = document.getElementById('aip-pending-count'); if(cnt) cnt.textContent = pending.length;
+      var box = document.getElementById('aip-pending-list'); if(!box) return;
+      if(!pending.length){ box.innerHTML=''; return; }
+      box.innerHTML = pending.map(function(pc){
+        var labels = { reschedule:'🕐 Changement d\'horaire', add_to_shared:'🚗 Rejoindre un transfert partagé', cancel:'🗑️ Annulation' };
+        var who = (pc.requestedByName||pc.requestedByPhone||'Appelant') + (pc.requestedBySociete?' · '+pc.requestedBySociete:'');
+        var dets = '';
+        if(pc.type==='reschedule') dets = 'Course '+esc((pc.courseId||'').slice(0,6))+' → <b>'+esc(fdt(pc.newDatetime))+'</b>';
+        else if(pc.type==='add_to_shared') dets = 'Ajouter au transfert <b>'+esc((pc.targetCourseId||'').slice(0,6))+'</b> ('+(pc.passengers||1)+' passager'+((pc.passengers||1)>1?'s':'')+')';
+        else if(pc.type==='cancel') dets = 'Annuler la course '+esc((pc.courseId||'').slice(0,6));
+        return '<div style="padding:12px;background:var(--card,#111);border:1px solid var(--border);border-radius:10px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+          + '<div style="flex:1;min-width:220px">'
+          +   '<div style="font-weight:700;font-size:13px">'+esc(labels[pc.type]||pc.type)+'</div>'
+          +   '<div style="font-size:12px;color:var(--muted);margin:2px 0">'+esc(who)+' · '+esc(fdt(pc.createdAt))+'</div>'
+          +   '<div style="font-size:12px">'+dets+'</div>'
+          +   (pc.reason?'<div style="font-size:11px;color:var(--muted);margin-top:4px;font-style:italic">« '+esc(pc.reason)+' »</div>':'')
+          + '</div>'
+          + '<div style="display:flex;gap:6px;align-items:flex-start">'
+          +   '<button class="btn btn-p btn-sm" onclick="aipPendingValidate(\''+pc._id+'\')"><i class="fas fa-check"></i> Valider</button>'
+          +   '<button class="btn btn-ghost btn-sm" onclick="aipPendingReject(\''+pc._id+'\')"><i class="fas fa-times"></i> Refuser</button>'
+          + '</div>'
+          + '</div>';
+      }).join('');
+    } catch(e){ /* silencieux */ }
+  };
+
+  window.aipPendingValidate = async function(id){
+    var all = await fbGet('pending_changes') || {};
+    var pc = (Array.isArray(all)?all:[]).find(function(x){return x && x._id===id;});
+    if(!pc){ showToast && showToast('Demande introuvable', true); return; }
+    try {
+      // 1) Appliquer la modification SUR la course concernée
+      if(pc.type==='reschedule' && pc.courseId && pc.newDatetime){
+        await fbUpdate('courses', pc.courseId, { datetime: pc.newDatetime, statutModifLe: new Date().toISOString(), modifParIa: true });
+      }
+      else if(pc.type==='add_to_shared' && pc.targetCourseId){
+        var cs = await fbGet('courses') || [];
+        var target = (Array.isArray(cs)?cs:[]).find(function(x){return x && x._id===pc.targetCourseId;});
+        if(target){
+          var newPax = (parseInt(target.pax,10)||1) + (parseInt(pc.passengers,10)||1);
+          var cap = { berline:3, business:3, van:7 }[target.vehicule||'berline'] || 3;
+          if(newPax > cap){ showToast && showToast('Capacité du véhicule dépassée ('+newPax+'/'+cap+')', true); return; }
+          var passager = { prenom:(pc.requestedByName||'').split(' ')[0]||'', nom:(pc.requestedByName||'').split(' ').slice(1).join(' '), tel:pc.requestedByPhone||'', ajouteParIa:true };
+          var passagers = Array.isArray(target.passagers)?target.passagers.slice():[];
+          passagers.push(passager);
+          await fbUpdate('courses', pc.targetCourseId, { pax: newPax, passagers: passagers, partageModifLe: new Date().toISOString(), modifParIa: true });
+        }
+      }
+      else if(pc.type==='cancel' && pc.courseId){
+        await fbUpdate('courses', pc.courseId, { statut:'annulee', annuleeLe:new Date().toISOString(), modifParIa:true });
+      }
+      // 2) Marquer la proposition validée
+      await fbPatch('pending_changes/'+id, { statut:'validee', valideeLe:new Date().toISOString(), valideePar:(SESSION&&SESSION.name)||'dispatch' });
+      // 3) Envoyer le SMS de confirmation
+      var sms = '';
+      if(pc.type==='reschedule') sms = 'MOBILEA : votre course est confirmée pour ' + (pc.newDatetime? new Date(pc.newDatetime).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'(horaire mis à jour)') + '. Un chauffeur vient vous chercher.';
+      else if(pc.type==='add_to_shared') sms = 'MOBILEA : vous êtes bien ajouté(e) à notre transfert partagé. Un chauffeur vient vous chercher à l\'heure convenue. Détails à suivre.';
+      else if(pc.type==='cancel') sms = 'MOBILEA : votre course est annulée comme demandé. À très vite.';
+      if(sms && pc.requestedByPhone){
+        var r = await sendSmsViaWorker(pc.requestedByPhone, sms);
+        if(!r.ok){ showToast && showToast('Modif validée mais SMS KO : '+(r.error||'erreur'), true); }
+        else { showToast && showToast('✓ Validée et SMS envoyé', false); }
+      } else { showToast && showToast('✓ Validée (pas de SMS envoyé — numéro ou texte manquant)', false); }
+      aipPendingLoad();
+      if(typeof renderAll==='function') renderAll();
+    } catch(e){ showToast && showToast('Erreur : '+(e&&e.message||e), true); }
+  };
+
+  window.aipPendingReject = async function(id){
+    if(!confirm('Refuser cette demande ? Un SMS d\'excuses sera envoyé au client.')) return;
+    var all = await fbGet('pending_changes') || {};
+    var pc = (Array.isArray(all)?all:[]).find(function(x){return x && x._id===id;});
+    if(!pc) return;
+    try {
+      await fbPatch('pending_changes/'+id, { statut:'refusee', refuseeLe:new Date().toISOString(), refuseePar:(SESSION&&SESSION.name)||'dispatch' });
+      if(pc.requestedByPhone){
+        var sms = 'MOBILEA : nous ne pouvons pas accepter cette modification. Un conseiller vous rappelle rapidement.';
+        await sendSmsViaWorker(pc.requestedByPhone, sms);
+      }
+      aipPendingLoad();
+      showToast && showToast('Demande refusée + SMS envoyé');
+    } catch(e){ showToast && showToast('Erreur : '+(e&&e.message||e), true); }
+  };
+
+  // Rafraîchir toutes les 20 s quand on est sur la page Dispatch
+  setInterval(function(){
+    try {
+      var p = document.getElementById('page-dispatch');
+      if(p && p.classList.contains('on') && SESSION && (SESSION.role==='admin' || SESSION.role==='dispatch')) {
+        aipPendingLoad();
+      }
+    } catch(e){}
+  }, 20000);
+  // Et à l'arrivée sur la page via gp()
+  var _oldGp = window.gp;
+  if(typeof _oldGp === 'function') {
+    window.gp = function(name, btn){
+      try { _oldGp(name, btn); } catch(e){}
+      if(name==='dispatch') setTimeout(function(){ try { aipPendingLoad(); } catch(e){} }, 500);
+    };
+  }
+})();
+</script>
+<script>
+(function(){
+  var KEY='mobilea_aip_cfg_v1';
+  function cfg(){ try { return JSON.parse(localStorage.getItem(KEY)||'{}'); } catch(e){ return {}; } }
+  function v(id){ var e=document.getElementById('aip-'+id); return e?String(e.value||'').trim():''; }
+  function H(){ return { 'x-mobilea-key': cfg().key||'' }; }
+  function esc(x){ return String(x==null?'':x).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function setMsg(t,ok){ var m=document.getElementById('aip-msg'); if(m){ m.textContent=t||''; m.style.color = ok===true?'var(--green,#2ecc8a)':(ok===false?'var(--red,#e74c3c)':'var(--muted)'); } }
+  function setStatus(label, color){
+    var el=document.getElementById('aip-status'); var tx=document.getElementById('aip-status-text');
+    if(!el||!tx) return;
+    tx.textContent = label;
+    el.style.background = 'rgba('+color+',.15)';
+    el.style.color = 'rgb('+color+')';
+    var dot = el.querySelector('span'); if(dot) dot.style.background = 'rgb('+color+')';
+  }
+  window.mobileaAiPhoneOpen = function(){
+    var c=cfg();
+    ['worker','key','number','handoff'].forEach(function(k){ var e=document.getElementById('aip-'+k); if(e&&c[k]!=null) e.value=c[k]; });
+    mobileaAiPhoneLoad();
+  };
+  window.mobileaAiPhoneSave = function(){
+    var c = { worker:(v('worker')||'').replace(/\/$/,''), key:v('key'), number:v('number'), handoff:v('handoff') };
+    localStorage.setItem(KEY, JSON.stringify(c));
+    setMsg('Configuration enregistrée sur cet appareil. Les secrets restent dans le Worker.', true);
+    mobileaAiPhoneLoad();
+  };
+  window.mobileaAiPhoneTest = async function(){
+    var c=cfg(); if(!c.worker){ setMsg("Renseignez d'abord l'URL du Worker.", false); return; }
+    setMsg('Test en cours…');
+    try {
+      var r = await fetch(c.worker+'/api/config', { headers: H() });
+      var d = await r.json().catch(function(){return{}});
+      if(r.status===403){ setMsg('Accès refusé : vérifiez la clé tableau de bord.', false); setStatus('Clé invalide','231,76,60'); return; }
+      if(!r.ok){ setMsg('Worker injoignable ('+r.status+').', false); setStatus('Injoignable','148,163,184'); return; }
+      var missing=[];
+      if(!d.configured) missing.push('OPENAI_API_KEY');
+      if(!d.firebase)   missing.push('compte Firebase ia_robot');
+      if(!d.twilioSig)  missing.push('TWILIO_AUTH_TOKEN (prod)');
+      if(missing.length){ setMsg('Worker OK mais manque : '+missing.join(', ')+'.', false); setStatus('Configuration incomplète','245,158,11'); return; }
+      setMsg('Connexion OK ✓ · modèle '+(d.model||'?')+' · tarif '+(d.fare?'oui':'non')+' · push '+(d.push?'oui':'non'), true);
+      setStatus('Opérationnel','46,204,138');
+    } catch(e){ setMsg("Impossible de joindre le Worker : "+(e&&e.message||e), false); setStatus('Hors ligne','148,163,184'); }
+  };
+  window.mobileaAiPhoneTestFare = async function(){
+    var c=cfg(); if(!c.worker){ setMsg("Renseignez d'abord l'URL du Worker.", false); return; }
+    setMsg('Test tarif CDG T2 → Disneyland en van…');
+    try {
+      var r = await fetch(c.worker+'/api/test-fare', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, H()), body: JSON.stringify({ pickup:'CDG Terminal 2E, Roissy', dropoff:'Disneyland Paris', vehicle:'van' }) });
+      var d = await r.json().catch(function(){return{}});
+      if(!r.ok){ setMsg('Erreur tarif : '+r.status+' '+(d.error||''), false); return; }
+      setMsg('Tarif indicatif van : '+(d.price_eur?d.price_eur+' €':'(forfait minimum)')+' · '+(d.distance_km?d.distance_km+' km':'')+' '+(d.duration_min?'· '+d.duration_min+' min':''), true);
+    } catch(e){ setMsg("Erreur réseau tarif : "+(e&&e.message||e), false); }
+  };
+  window.mobileaAiPhoneLoad = async function(){
+    var c=cfg(); if(!c.worker){ setStatus('Non configuré','148,163,184'); return; }
+    var logs=[];
+    try {
+      var r = await fetch(c.worker+'/api/calls', { headers: H() });
+      if(r.ok){ var d = await r.json(); logs = d.calls || []; }
+    } catch(e){}
+    var el;
+    el=document.getElementById('aip-k-calls'); if(el) el.textContent = logs.length;
+    el=document.getElementById('aip-k-reser'); if(el) el.textContent = logs.filter(function(x){ return x.intent==='reservation'; }).length;
+    el=document.getElementById('aip-k-hand');  if(el) el.textContent = logs.filter(function(x){ return x.intent==='handoff'; }).length;
+    try {
+      var pending = (window.D && window.D.courses || []).filter(function(co){ return co && co.source==='ia-telephonique' && co.statut==='a_confirmer'; }).length;
+      el=document.getElementById('aip-k-pend'); if(el) el.textContent = pending;
+    } catch(e) { el=document.getElementById('aip-k-pend'); if(el) el.textContent = '—'; }
+    var box = document.getElementById('aip-log'); if(!box) return;
+    if(!logs.length){ box.innerHTML = '<div style="color:var(--muted);font-size:12px">Aucun appel enregistré.</div>'; return; }
+    box.innerHTML = logs.slice(0,30).map(function(x){
+      var color = x.intent==='reservation' ? 'var(--green,#2ecc8a)' : x.intent==='handoff' ? 'var(--orange,#f59e0b)' : 'var(--muted)';
+      var tag = x.intent==='reservation' ? '📝 demande créée' : x.intent==='handoff' ? '👤 transfert humain' : '💬 information';
+      return '<div style="padding:11px 0;border-bottom:1px solid var(--border);font-size:12px">'
+        + '<div style="display:flex;justify-content:space-between;gap:10px"><strong>'+esc(x.phone||'(numéro inconnu)')+'</strong><span style="color:'+color+'">'+tag+'</span></div>'
+        + '<div style="color:var(--muted);margin-top:2px">'+esc(String(x.time||'').replace('T',' ').slice(0,16))+(x.booking?' · demande '+esc(x.booking):'')+'</div>'
+        + (x.summary?'<div style="color:var(--muted);margin-top:4px;line-height:1.4">'+esc(x.summary)+'</div>':'')
+        + '</div>';
+    }).join('');
+  };
+  window.mobileaAiPhoneToggle = async function(){
+    var c=cfg(); if(!c.worker){ setMsg("URL du Worker manquante.", false); return; }
+    try {
+      var cur = await fetch(c.worker+'/api/state', { headers: H() });
+      var cd = await cur.json().catch(function(){return{};});
+      var active = !(cd && cd.state && cd.state.ia_active===false); // default true
+      var r = await fetch(c.worker+'/api/state', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, H()), body: JSON.stringify({ ia_active: !active }) });
+      if(!r.ok){ setMsg('Échec bascule : '+r.status, false); return; }
+      var nd = await r.json(); mobileaAiPhoneRenderToggle(nd && nd.state && nd.state.ia_active !== false);
+      setMsg('IA ' + (nd.state.ia_active===false?'désactivée (OFF)':'activée (ON)'), true);
+    } catch(e){ setMsg('Erreur : '+e.message, false); }
+  };
+  window.mobileaAiPhoneRenderToggle = function(active){
+    var b=document.getElementById('aip-toggle'); if(!b) return;
+    if(active){ b.textContent='IA ACTIVE'; b.style.background='#2ecc8a'; b.style.color='#111'; }
+    else{       b.textContent='IA DÉSACTIVÉE'; b.style.background='#e74c3c'; b.style.color='#fff'; }
+  };
+  window.mobileaAiSendMsg = async function(){
+    var c=cfg(); if(!c.worker){ setMsg("URL du Worker manquante.", false); return; }
+    var to=document.getElementById('aip-msg-to').value.trim();
+    var ch=document.getElementById('aip-msg-ch').value;
+    var txt=document.getElementById('aip-msg-txt').value.trim();
+    if(!to||!txt){ setMsg("Numéro et texte requis.", false); return; }
+    setMsg('Envoi en cours…');
+    try {
+      var r = await fetch(c.worker+'/api/send-sms', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, H()), body: JSON.stringify({ to:to, message:txt, whatsapp: ch==='whatsapp' }) });
+      var d = await r.json().catch(function(){return{};});
+      if(!r.ok || !d.ok){ setMsg('Erreur Twilio : '+(d.error||r.status), false); return; }
+      setMsg('Message envoyé ('+ch+') ✓', true);
+      document.getElementById('aip-msg-txt').value='';
+      mobileaAiLoadMessages();
+    } catch(e){ setMsg('Erreur : '+e.message, false); }
+  };
+  window.mobileaAiLoadMessages = async function(){
+    var c=cfg(); if(!c.worker) return;
+    try {
+      var r = await fetch(c.worker+'/api/messages', { headers: H() });
+      if(!r.ok) return;
+      var d = await r.json(); var msgs = d.messages || [];
+      var box = document.getElementById('aip-msg-log'); if(!box) return;
+      var el=document.getElementById('aip-msg-count'); if(el) el.textContent = msgs.length + ' messages';
+      if(!msgs.length){ box.innerHTML='<div style="color:var(--muted);font-size:12px">Aucun message.</div>'; return; }
+      box.innerHTML = msgs.slice(0,40).map(function(m){
+        var inOut = m.direction==='in' ? '◀' : '▶';
+        var color = m.direction==='in' ? 'var(--gold,#c8a96e)' : 'var(--muted)';
+        var ico = m.channel==='whatsapp' ? '🟢 WA' : '✉️ SMS';
+        var who = m.direction==='in' ? (m.from||'(inconnu)') : (m.to||'');
+        return '<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:12px">'
+          + '<div style="display:flex;justify-content:space-between;gap:8px"><strong style="color:'+color+'">'+inOut+' '+esc(who)+'</strong><span style="color:var(--muted)">'+ico+' · '+esc(String(m.at||'').replace('T',' ').slice(0,16))+'</span></div>'
+          + '<div style="color:var(--white);margin-top:3px;white-space:pre-wrap">'+esc(m.text||'')+'</div>'
+          + '</div>';
+      }).join('');
+    } catch(e){}
+  };
+  // Hook : à l'ouverture de la page IA, charge aussi les messages + état IA
+  var _oldOpen = window.mobileaAiPhoneOpen;
+  window.mobileaAiPhoneOpen = function(){
+    try { _oldOpen && _oldOpen(); } catch(e){}
+    mobileaAiLoadMessages();
+    try {
+      var c=cfg(); if(c.worker) fetch(c.worker+'/api/state', { headers: H() }).then(function(r){return r.json();}).then(function(d){
+        if(d && d.state) mobileaAiPhoneRenderToggle(d.state.ia_active !== false);
+      }).catch(function(){});
+    } catch(e){}
+  };
+  setInterval(function(){ var p=document.getElementById('page-aiphone'); if(p && p.classList.contains('on')) { mobileaAiPhoneLoad(); mobileaAiLoadMessages(); } }, 30000);
+})();
+</script>
 
 </body>
 </html>
