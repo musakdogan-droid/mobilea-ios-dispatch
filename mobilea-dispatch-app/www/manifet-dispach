@@ -1,0 +1,232 @@
+{
+  "id": "fr.mobilea.dispatch",
+  "name": "MOBILEA Dispatch",
+  "short_name": "Dispatch",
+  "description": "Application dispatch MOBILEA — Attribution et suivi des courses VTC en temps réel. Messagerie chauffeurs, planning, GPS.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "/#dispatch",
+  "scope": "/",
+  "scope_extensions": [
+    {
+      "origin": "https://mobilea-6tg.pages.dev"
+    },
+    {
+      "origin": "https://mobilea-stripe.mus-akdogan.workers.dev"
+    }
+  ],
+  "handle_links": "preferred",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui",
+    "browser"
+  ],
+  "orientation": "portrait-primary",
+  "background_color": "#0f1117",
+  "theme_color": "#60a5fa",
+  "icons": [
+    {
+      "src": "/icons/dispatch-72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/dispatch-96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/dispatch-128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/dispatch-144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/dispatch-152.png",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/dispatch-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/dispatch-384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/dispatch-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/icons/dispatch-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "MOBILEA Dispatch — Mobile"
+    },
+    {
+      "src": "/icons/dispatch-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "MOBILEA Dispatch — Desktop"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Courses actives",
+      "short_name": "Actives",
+      "description": "Courses en cours",
+      "url": "/#dispatch",
+      "icons": [
+        {
+          "src": "/icons/dispatch-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Messagerie",
+      "short_name": "Messages",
+      "description": "Messages chauffeurs",
+      "url": "/#dispatch",
+      "icons": [
+        {
+          "src": "/icons/dispatch-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Planning",
+      "short_name": "Planning",
+      "description": "Planning du jour",
+      "url": "/#dispatch",
+      "icons": [
+        {
+          "src": "/icons/dispatch-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    }
+  ],
+  "categories": [
+    "business",
+    "productivity"
+  ],
+  "iarc_rating_id": "e84b072d-71b3-4d3e-86ae-31a8ce4e53b7",
+  "share_target": {
+    "action": "/#dispatch",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
+  "file_handlers": [
+    {
+      "action": "/#dispatch",
+      "accept": {
+        "application/json": [
+          ".json"
+        ],
+        "text/csv": [
+          ".csv"
+        ],
+        "application/pdf": [
+          ".pdf"
+        ]
+      },
+      "icons": [
+        {
+          "src": "/icons/dispatch-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ],
+      "launch_type": "single-client"
+    }
+  ],
+  "protocol_handlers": [
+    {
+      "protocol": "web+mobilea-dispatch",
+      "url": "/#dispatch?from=%s"
+    },
+    {
+      "protocol": "web+mobilea",
+      "url": "/#dispatch?ref=%s"
+    }
+  ],
+  "launch_handler": {
+    "client_mode": [
+      "navigate-existing",
+      "auto"
+    ]
+  },
+  "edge_side_panel": {
+    "preferred_width": 400
+  },
+  "window_controls_overlay": {
+    "theme_color": "#60a5fa"
+  },
+  "widgets": [
+    {
+      "name": "Dispatch Widget",
+      "description": "Widget MOBILEA Dispatch — Accès rapide",
+      "tag": "mobilea-dispatch-widget",
+      "ms_ac_template": "/widgets/dispatch-widget.json",
+      "data": "/widgets/dispatch-data.json",
+      "type": "application/json",
+      "screenshots": [
+        {
+          "src": "/icons/dispatch-192.png",
+          "sizes": "192x192",
+          "label": "Widget MOBILEA Dispatch"
+        }
+      ],
+      "icons": [
+        {
+          "src": "/icons/dispatch-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ],
+      "auth": false,
+      "update": 86400
+    }
+  ],
+  "related_applications": [
+    {
+      "platform": "play",
+      "url": "https://play.google.com/store/apps/details?id=fr.mobilea.dispatch",
+      "id": "fr.mobilea.dispatch"
+    },
+    {
+      "platform": "itunes",
+      "url": "https://apps.apple.com/app/fr.mobilea.dispatch"
+    }
+  ],
+  "prefer_related_applications": false
+}
