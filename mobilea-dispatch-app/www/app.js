@@ -1268,11 +1268,33 @@ async function loadAll() {
         || (monUid && c.chauffeurUid === monUid)
         || (moiCh && moiCh.uid && c.chauffeurUid === moiCh.uid)
         || (monChauffeurId && c.chauffeurId === monChauffeurId);
+      // Toutes les courses visibles par le chauffeur :
+      //  - celles qui lui sont attribuées (par nom, uid ou chauffeurId)
+      //  - les offres ouvertes au réseau (TOUJOURS, en service ou pas — sinon
+      //    un chauffeur qui vient de se logger et n'a pas encore cliqué
+      //    "EN SERVICE" ne verrait rien, ce qui a cassé plein de scénarios)
+      //  - les offres prioritaires si le chauffeur est marqué prioritaire
       D.courses = D.courses.filter(c =>
         estAMoi(c)
-        || (jeSuisEnService && c.statut === 'offre_ouverte' && !c.chauffeur)
-        || (jeSuisEnService && jeSuisPrioritaire && c.statut === 'offre_prioritaire' && !c.chauffeur)
+        || (c.statut === 'offre_ouverte' && !c.chauffeur)
+        || (jeSuisPrioritaire && c.statut === 'offre_prioritaire' && !c.chauffeur)
       );
+      // DIAGNOSTIC : exposer les compteurs pour qu'un panneau debug puisse
+      // afficher ce qui s'est passé (très utile quand "le chauffeur voit rien")
+      try {
+        window._mcDiag = {
+          sessionName: SESSION.name,
+          sessionUid: monUid,
+          sessionChauffeurId: monChauffeurId,
+          moiChTrouve: !!moiCh,
+          totalFirebase: (courses||[]).length,
+          totalApresFiltre: D.courses.length,
+          mesCourses: D.courses.filter(c => estAMoi(c)).length,
+          offresOuvertes: D.courses.filter(c => c.statut==='offre_ouverte'&&!c.chauffeur).length,
+          enService: jeSuisEnService,
+          prioritaire: jeSuisPrioritaire
+        };
+      } catch(e){}
       // Un chauffeur GÉRANT gère une équipe : il garde la liste complète des
       // chauffeurs et charge aussi les véhicules. Un chauffeur normal ne voit
       // que son propre profil, sans les véhicules ni les collègues.
@@ -1995,6 +2017,22 @@ async function _doChauffeurLoginInner(err) {
     const realUid = window.fbAuth.currentUser?.uid;
     if(realUid && found._id && found.uid !== realUid) {
       await fbUpdate('chauffeurs', found._id, { uid: realUid });
+    }
+    // Enregistrer aussi /roles/<uid> = "chauffeur" si manquant. Sans cette
+    // entrée, les règles Firebase refusent la lecture de /courses et le
+    // chauffeur voit un écran vide ("Firebase : 0 courses"). On évite ainsi
+    // d'avoir à le faire manuellement pour chaque nouveau chauffeur.
+    if(realUid) {
+      try {
+        const token = await window.fbAuth.currentUser.getIdToken();
+        const rUrl = FB_URL + '/roles/' + realUid + '.json?auth=' + encodeURIComponent(token);
+        const existing = await fetch(rUrl).then(r => r.ok ? r.json() : null).catch(() => null);
+        if(existing !== 'chauffeur' && existing !== 'admin' && existing !== 'dispatch' && existing !== 'ia_robot') {
+          // Pas encore de rôle (null) ou valeur inattendue : on écrit "chauffeur".
+          // On ne touche jamais à un rôle élevé (admin/dispatch) déjà en place.
+          await fetch(rUrl, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify('chauffeur') });
+        }
+      } catch(e) { /* silencieux : si les règles l'empêchent, l'admin le fera */ }
     }
   } catch(e) {}
 
@@ -9892,14 +9930,10 @@ function renderMesCourses() {
   const earnBtn = document.getElementById('mc-earnings-btn');
   if(earnBtn) earnBtn.style.display = canSeePrix ? '' : 'none';
 
-  // loadAll filtre déjà les courses du chauffeur (y compris les offres partagées
-  // ouvertes à tous ou aux prioritaires s'il est en service), avec un matching
-  // robuste nom/uid/chauffeurId. Un ancien filter(c.chauffeur===name) strict :
-  //  - loupait les courses où la casse ou l'ordre prénom/nom différait
-  //  - retirait TOUTES les offres partagées (dont c.chauffeur=='')
-  // → on utilise D.courses directement.
+  // loadAll filtre déjà les courses du chauffeur (y compris les offres partagées)
   const mine = D.courses;
   const today = new Date().toDateString();
+
   const mois = new Date().getMonth();
   const yr = new Date().getFullYear();
 
@@ -10169,8 +10203,35 @@ function renderMesCourses() {
     let actionHtml = '';
     if(flow) {
       const activeStatuts = ['en_route','sur_place','onboard','depose'];
-      const autreActive = D.courses.find(x=>x._id!==c._id&&x.chauffeur===SESSION.name&&activeStatuts.includes(x.statut));
+      // D.courses est déjà filtré aux courses du chauffeur par loadAll (matching
+      // robuste nom/uid/chauffeurId). Un ancien x.chauffeur===SESSION.name strict
+      // ratait les mismatchs de casse. On compare directement.
+      // On ignore aussi les courses "abandonnées" (plus de 12h après l'heure
+      // prévue, statut jamais mis à jour) pour éviter qu'une vieille course
+      // oubliée en "en_route" bloque toutes les nouvelles.
+      const autreActive = D.courses.find(x => {
+        if (x._id === c._id) return false;
+        if (!activeStatuts.includes(x.statut)) return false;
+        if (x.datetime) {
+          const age = Date.now() - new Date(x.datetime).getTime();
+          if (!isNaN(age) && age > 12 * 60 * 60 * 1000) return false; // abandonnée
+        }
+        return true;
+      });
       const isBlocked = autreActive && activeStatuts.includes(flow.next);
+      // Afficher QUELLE course bloque, avec un bouton pour aller la terminer.
+      // Sans cette info, le chauffeur voit "Terminer la course en cours" sans
+      // savoir laquelle, ni comment la débloquer.
+      let blockingHtml = '';
+      if (isBlocked && autreActive) {
+        const bTime = autreActive.datetime ? autreActive.datetime.slice(11,16) : '';
+        const bRoute = (autreActive.depart||autreActive.lieu||'')+' → '+(autreActive.arrivee||'');
+        blockingHtml = '<div style="background:#fff8ed;border:1px solid #f0c674;border-radius:12px;padding:12px;margin-bottom:8px;font-size:13px;color:#92700a">'
+          + '<div style="font-weight:800;margin-bottom:4px">⚠️ Course en cours à terminer</div>'
+          + '<div style="font-size:12px;margin-bottom:8px">'+bTime+' · '+E(bRoute)+' (statut : '+(STATUT_LABELS[autreActive.statut]||autreActive.statut)+')</div>'
+          + '<button onclick="viewCourseDetail(\''+autreActive._id+'\')" style="background:#b8860b;border:none;border-radius:8px;padding:8px 14px;color:#fff;font-size:13px;font-weight:700;cursor:pointer">→ Ouvrir pour terminer</button>'
+          + '</div>';
+      }
       const btnBg = isBlocked ? '#e0e3e8' : flow.color;
       const btnTxt = isBlocked ? '#999' : '#fff';
       const btnLbl = isBlocked ? 'Terminer la course en cours' : flow.label;
@@ -10196,7 +10257,7 @@ function renderMesCourses() {
           + '</div></div></div>';
       }
 
-      actionHtml = airportHtml
+      actionHtml = blockingHtml + airportHtml
         + '<div style="display:flex;gap:8px;margin-bottom:8px">'
         + '<button '+(isBlocked?'disabled':'')+' onclick="driverNextStep(\''+c._id+'\',\''+flow.next+'\')" style="flex:1;background:'+btnBg+';border:none;border-radius:12px;padding:16px;font-size:15px;font-weight:800;color:'+btnTxt+';cursor:'+(isBlocked?'not-allowed':'pointer')+';box-shadow:'+(isBlocked?'none':'0 4px 12px '+flow.color+'44')+'">'+btnLbl+'</button>'
         + noShowHtml + '</div>'
