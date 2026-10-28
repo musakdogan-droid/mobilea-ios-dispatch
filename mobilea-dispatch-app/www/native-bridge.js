@@ -1,130 +1,135 @@
 /*
- * native-bridge.js — Pont natif MOBILEA DISPATCH.
+ * native-bridge.js — Pont natif MOBILEA pour l'app Capacitor.
  *
- * Le dispatch ne roule pas : PAS de GPS en arrière-plan. On garde uniquement
- * les NOTIFICATIONS (OneSignal natif) pour recevoir les nouvelles demandes et
- * les alertes de zone, même app fermée.
+ * Rôle : fournir window.MobileaNative.{startGPS, stopGPS, updateToken} que
+ * ton index.html appelle déjà. Ici, ces fonctions pilotent le plugin
+ * @capacitor-community/background-geolocation, qui suit la position même
+ * écran éteint / app en arrière-plan (ce que @capacitor/geolocation ne fait
+ * PAS — c'était la cause du GPS qui ne marchait pas).
  *
- * En web normal (hors app), ce fichier ne fait rien.
+ * Ce fichier ne fait RIEN en web normal (hors app) : si Capacitor n'est pas
+ * détecté, window.MobileaNative n'est pas défini, et ton index.html utilise
+ * alors le GPS web habituel. Aucun effet de bord.
+ *
+ * À déployer : placer ce fichier à la racine de ton site (à côté de
+ * index.html), pour que <script src="native-bridge.js"> le charge.
  */
 (function () {
-  function initWhenReady(tries) {
-    var cap = window.Capacitor;
-    if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) {
-      if ((tries || 0) < 40) { setTimeout(function(){ initWhenReady((tries||0)+1); }, 250); }
-      return;
-    }
-    setupBridge(cap);
+  // Détecte l'environnement Capacitor.
+  var cap = window.Capacitor;
+  if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) {
+    // Pas dans l'app native → on ne définit pas MobileaNative (GPS web utilisé).
+    return;
   }
 
-  function setupBridge(cap) {
-    // Signale à la page qu'on est en natif.
-    try { document.documentElement.setAttribute("data-mobilea-native", "1"); } catch (e) {}
+  // Récupère le plugin de géoloc arrière-plan (nom exposé par le plugin
+  // @capacitor-community/background-geolocation).
+  function getBG() {
+    return (cap.Plugins && cap.Plugins.BackgroundGeolocation)
+        || window.BackgroundGeolocation
+        || null;
+  }
 
-    // Le dispatch n'a pas de GPS : on expose MobileaNative avec des GPS no-op,
-    // pour que l'index.html ne plante pas s'il appelle startGPS/stopGPS.
-    window.MobileaNative = {
-      isNative: true,
-      startGPS: function(){ /* pas de GPS côté dispatch */ },
-      stopGPS: function(){ /* pas de GPS côté dispatch */ },
-      updateToken: function(){ /* rien */ }
-    };
+  var FB_URL = "https://simplycab-58808-default-rtdb.europe-west1.firebasedatabase.app";
+  var MIN_INTERVAL_MS = 10000; // au plus une écriture toutes les 10 s
 
-    // ── NOTIFICATIONS (OneSignal natif) ──────────────────────────────────
-    var _osInit = false;
+  var _chauffeurId = null;
+  var _idToken = null;
+  var _watcherId = null;
+  var _lastSent = 0;
 
-    // Initialiser OneSignal DÈS LE LANCEMENT (pas seulement après connexion).
-    // Sinon iOS abandonne la demande de token push (« Apns Delegate Never
-    // Fired »). Le login (external_id) se fera plus tard via mobileaLinkPush.
-    (function initOneSignalNow(){
-      try {
-        var OS = (window.cordova && window.cordova.plugins && window.cordova.plugins.OneSignal)
-               || (window.plugins && window.plugins.OneSignal)
-               || window.OneSignal || null;
-        if (OS && OS.default && typeof OS.initialize !== 'function'
-            && (typeof OS.default.initialize === 'function' || OS.default.Notifications)) { OS = OS.default; }
-        if (!OS) { setTimeout(initOneSignalNow, 400); return; }
-        if (_osInit) return;
-        _osInit = true;
-        var APP_ID = "df716aa7-cc78-46f1-84ef-f95dc420d4b0";
-        if (typeof OS.initialize === "function") {
-          OS.initialize(APP_ID);
-          if (OS.Notifications && OS.Notifications.requestPermission) {
-            try { OS.Notifications.requestPermission(true); } catch(e){}
-          }
-        } else if (typeof OS.setAppId === "function") {
-          OS.setAppId(APP_ID);
-          if (OS.promptForPushNotificationsWithUserResponse) {
-            try { OS.promptForPushNotificationsWithUserResponse(); } catch(e){}
-          }
-        }
-      } catch(e){}
-    })();
+  // Écrit une position dans /chauffeurs/<id> via l'API REST Firebase.
+  function pushPosition(lat, lng, acc, heading, speed) {
+    if (!_chauffeurId || !_idToken) return;
+    var now = Date.now();
+    if (now - _lastSent < MIN_INTERVAL_MS) return;
+    _lastSent = now;
+    var url = FB_URL + "/chauffeurs/" + _chauffeurId + ".json?auth=" + encodeURIComponent(_idToken);
+    var body = JSON.stringify({
+      gps: {
+        lat: lat, lng: lng, acc: Math.round(acc || 0),
+        at: new Date().toISOString(),
+        heading: (heading != null && !isNaN(heading)) ? Math.round(heading) : null,
+        speed: (speed != null && !isNaN(speed)) ? Math.round(speed) : null
+      },
+      gpsActive: true
+    });
+    // fetch fonctionne dans la WebView Capacitor.
+    fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: body })
+      .catch(function () { /* perte réseau : on réessaiera au prochain point */ });
+  }
 
-    window.mobileaLinkPush = function () {
-      function pdiag(){} // diagnostic retiré (no-op) — les notifications marchent
-      try {
-        var OneSignal = (window.cordova && window.cordova.plugins && window.cordova.plugins.OneSignal)
-                     || (window.plugins && window.plugins.OneSignal)
-                     || window.OneSignal
-                     || null;
-        // Le plugin v5 expose parfois l'objet réel sous .default.
-        if (OneSignal && OneSignal.default && typeof OneSignal.initialize !== 'function'
-            && (typeof OneSignal.default.initialize === 'function' || OneSignal.default.Notifications)) {
-          OneSignal = OneSignal.default;
-        }
-        if (!OneSignal) { pdiag('plugin OneSignal ABSENT', false); return; }
-        var APP_ID = "df716aa7-cc78-46f1-84ef-f95dc420d4b0";
-        var S = window.SESSION || {};
-        var extId = S.uid ? ('staff_' + S.uid) : ('staff_' + (S.role || 'dispatch'));
+  window.MobileaNative = {
+    isNative: true,
 
-        function doLogin() {
-          try {
-            if (OneSignal.login) { OneSignal.login(String(extId)); }
-            else if (OneSignal.setExternalUserId) { OneSignal.setExternalUserId(String(extId)); }
-            try {
-              if (OneSignal.User && OneSignal.User.addTag) OneSignal.User.addTag('role', 'staff');
-              else if (OneSignal.sendTag) OneSignal.sendTag('role', 'staff');
-            } catch(e){}
-            pdiag('login OK staff ' + String(extId).slice(0,10), true);
-          } catch (e) { pdiag('login err: ' + e.message, false); }
-        }
+    // Démarre le suivi GPS arrière-plan pour ce chauffeur.
+    startGPS: function (chauffeurId, idToken) {
+      _chauffeurId = chauffeurId;
+      _idToken = idToken;
+      var BG = getBG();
+      if (!BG) { console.warn("[MobileaNative] plugin BackgroundGeolocation absent"); return; }
 
-        if (!_osInit) {
-          _osInit = true;
-          try {
-            if (typeof OneSignal.initialize === "function") {
-              OneSignal.initialize(APP_ID);
-              pdiag('init v5, demande permission...', true);
-              if (OneSignal.Notifications && OneSignal.Notifications.requestPermission) {
-                try {
-                  var pr = OneSignal.Notifications.requestPermission(true);
-                  if (pr && pr.then) { pr.then(function(acc){ pdiag('permission='+acc, !!acc); doLogin(); }).catch(function(){ doLogin(); }); }
-                  else { setTimeout(doLogin, 1500); }
-                } catch(e){ setTimeout(doLogin, 1500); }
-              } else { setTimeout(doLogin, 1500); }
-            } else if (typeof OneSignal.setAppId === "function") {
-              OneSignal.setAppId(APP_ID);
-              pdiag('init v4, demande permission...', true);
-              if (typeof OneSignal.promptForPushNotificationsWithUserResponse === "function") {
-                OneSignal.promptForPushNotificationsWithUserResponse(function(){ doLogin(); });
-              } else { setTimeout(doLogin, 1500); }
-            } else {
-              var methodes = [];
-              try { for (var k in OneSignal) { methodes.push(k); } } catch(e){}
-              pdiag('API inconnue. Dispo: ' + methodes.slice(0,12).join(','), false);
+      // Si un watcher tourne déjà, on ne le double pas.
+      if (_watcherId) return;
+
+      BG.addWatcher(
+        {
+          // Message affiché dans la notification permanente (obligatoire).
+          backgroundMessage: "Suivi de votre position pendant la course.",
+          backgroundTitle: "MOBILEA — course en cours",
+          requestPermissions: true,
+          stale: false,
+          distanceFilter: 20 // mètres entre deux points
+        },
+        function (location, error) {
+          if (error) {
+            if (error.code === "NOT_AUTHORIZED") {
+              // L'utilisateur a refusé : on peut l'inviter à activer dans les réglages.
+              if (window.confirm("MOBILEA a besoin de votre position pour le suivi des courses. Ouvrir les réglages ?")) {
+                BG.openSettings();
+              }
             }
-          } catch (e) { pdiag('erreur init: ' + e.message, false); }
-        } else {
-          doLogin();
+            return;
+          }
+          if (location) {
+            pushPosition(location.latitude, location.longitude, location.accuracy, location.bearing, location.speed);
+          }
         }
-      } catch (e) { /* sans gravité */ }
-    };
-  }
+      ).then(function (id) { _watcherId = id; });
+    },
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function(){ initWhenReady(0); });
-  } else {
-    initWhenReady(0);
-  }
+    // Arrête le suivi.
+    stopGPS: function () {
+      var BG = getBG();
+      if (BG && _watcherId) {
+        BG.removeWatcher({ id: _watcherId }).catch(function () {});
+        _watcherId = null;
+      }
+    },
+
+    // Rafraîchit le jeton Firebase (il expire ~1h ; la page le renvoie).
+    updateToken: function (idToken) {
+      _idToken = idToken;
+    }
+  };
+
+  // Signale à la page qu'on est en natif (utile pour adapter l'UI si besoin).
+  try { document.documentElement.setAttribute("data-mobilea-native", "1"); } catch (e) {}
+
+  // Hook push natif (optionnel) : ton index.html appelle window.mobileaLinkPush()
+  // pour lier les notifications au chauffeur connecté. En Capacitor, le push
+  // passe par @capacitor/push-notifications (plugin natif). Ici on fournit un
+  // point d'entrée neutre : il enregistre l'appareil au push si le plugin est
+  // présent, sinon il ne fait rien (le push web OneSignal continue de marcher
+  // dans la WebView). À enrichir plus tard si tu veux le push 100% natif.
+  window.mobileaLinkPush = function () {
+    try {
+      var Push = (cap.Plugins && cap.Plugins.PushNotifications) || null;
+      if (Push && typeof Push.register === "function") {
+        Push.requestPermissions().then(function (res) {
+          if (res && res.receive === "granted") { Push.register(); }
+        }).catch(function () {});
+      }
+    } catch (e) { /* sans gravité : le push web reste actif */ }
+  };
 })();
