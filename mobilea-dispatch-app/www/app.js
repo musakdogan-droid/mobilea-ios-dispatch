@@ -3735,22 +3735,22 @@ function renderAgenda() {
     // Libelle vehicule lisible : facilite l'affectation d'un chauffeur au bon
     // type de vehicule sans avoir a ouvrir la course.
     const vehNom = {berline:'Berline',van:'Van',sprinter:'Sprinter',bus:'Bus',pmr:'PMR',limousine:'Limousine',classes:'Classe S'}[c.vehicule]||'Berline';
-    const vehBadge = '<span style="display:inline-block;background:rgba(255,255,255,0.28);border-radius:6px;padding:3px 10px;font-weight:800;margin-right:8px;font-size:12px">'+vehNom+' \u00b7 '+pax+' pax</span>';
-    const ligne2 = vehBadge + ' ' + (codeFact?codeFact+' \u00b7 ':'') + (c.chauffeur||'À assigner');
-    return `<div style="position:relative;margin-bottom:10px">
+    const vehBadge = '<span style="display:inline-block;background:rgba(255,255,255,0.28);border-radius:5px;padding:2px 8px;font-weight:800;margin-right:6px;font-size:11.5px">'+vehNom+' \u00b7 '+pax+' pax</span>';
+    const codeFactPart = codeFact ? '<span style="opacity:0.95">'+E(codeFact)+'</span> \u00b7 ' : '';
+    return `<div style="position:relative;margin-bottom:8px">
       <input type="checkbox" class="agenda-chk" data-id="${c._id}" onchange="onAgendaChkChange()" onclick="event.stopPropagation()"
-        style="position:absolute;left:14px;top:50%;transform:translateY(-50%);width:26px;height:26px;cursor:pointer;z-index:2;accent-color:#fff">
-      <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:14px;padding:16px 14px 16px 54px;cursor:pointer;color:#fff;position:relative;overflow:hidden;min-height:84px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
-        <div style="font-family:'Syne',sans-serif;font-size:28px;font-weight:800;line-height:1;letter-spacing:-0.5px;min-width:78px;text-align:center;border-right:2px solid rgba(255,255,255,0.3);padding-right:14px;flex-shrink:0">${time}</div>
-        <div style="flex:1;min-width:0;padding-right:90px">
-          <div style="font-size:17px;font-weight:700;line-height:1.3;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${dirIcon} ${ligne1}</div>
-          <div style="font-size:12.5px;opacity:0.92;line-height:1.4">${ligne2}</div>
+        style="position:absolute;left:12px;top:14px;width:22px;height:22px;cursor:pointer;z-index:2;accent-color:#fff">
+      <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:12px;padding:12px 14px 12px 44px;cursor:pointer;color:#fff;position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;padding-right:70px">
+          <span style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.5px;line-height:1;flex-shrink:0">${time}</span>
+          <span style="font-size:14.5px;font-weight:700;line-height:1.25;flex:1;min-width:0;word-break:break-word">${dirIcon} ${ligne1}</span>
         </div>
-        <div style="position:absolute;right:12px;top:50%;transform:translateY(-50%);display:flex;gap:6px;align-items:center">
+        <div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px">${vehBadge}${codeFactPart}${c.chauffeur||'<em style="opacity:0.85">À assigner</em>'}</div>
+        <div style="position:absolute;right:8px;top:8px;display:flex;gap:4px">
           <button onclick="event.stopPropagation();genererLienExterne('${c._id}')" title="Lien chauffeur externe"
-            style="background:rgba(255,255,255,0.25);border:none;border-radius:10px;padding:8px 12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;min-height:36px">🔗</button>
+            style="background:rgba(255,255,255,0.25);border:none;border-radius:8px;padding:5px 8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer">🔗</button>
           ${!c.chauffeur?`<button onclick="event.stopPropagation();autoDispatch('${c._id}')" title="Auto-dispatch"
-            style="background:rgba(255,255,255,0.25);border:none;border-radius:10px;padding:8px 12px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;min-height:36px">⚡</button>`:''}
+            style="background:rgba(255,255,255,0.25);border:none;border-radius:8px;padding:5px 8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer">⚡</button>`:''}
         </div>
       </div>
     </div>`;
@@ -9892,7 +9892,13 @@ function renderMesCourses() {
   const earnBtn = document.getElementById('mc-earnings-btn');
   if(earnBtn) earnBtn.style.display = canSeePrix ? '' : 'none';
 
-  const mine = D.courses.filter(c=>c.chauffeur===name);
+  // loadAll filtre déjà les courses du chauffeur (y compris les offres partagées
+  // ouvertes à tous ou aux prioritaires s'il est en service), avec un matching
+  // robuste nom/uid/chauffeurId. Un ancien filter(c.chauffeur===name) strict :
+  //  - loupait les courses où la casse ou l'ordre prénom/nom différait
+  //  - retirait TOUTES les offres partagées (dont c.chauffeur=='')
+  // → on utilise D.courses directement.
+  const mine = D.courses;
   const today = new Date().toDateString();
   const mois = new Date().getMonth();
   const yr = new Date().getFullYear();
