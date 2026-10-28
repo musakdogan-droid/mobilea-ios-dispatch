@@ -225,7 +225,7 @@ h1,h2,h3,h4{font-family:'Syne',sans-serif}
 .sb-logout:hover{color:var(--red);border-color:var(--red)}
 
 .main{margin-left:0;min-height:100vh;display:flex;flex-direction:column}
-.topbar{padding:13px 22px;padding-top:max(13px, calc(13px + env(safe-area-inset-top)));border-bottom:1px solid #e0e3e8;display:flex;align-items:center;justify-content:space-between;background:#ffffff;position:sticky;top:0;z-index:50;gap:12px}
+.topbar{padding:13px 22px;padding-top:max(13px, calc(13px + env(safe-area-inset-top, 44px)));border-bottom:1px solid #e0e3e8;display:flex;align-items:center;justify-content:space-between;background:#ffffff;position:sticky;top:0;z-index:50;gap:12px}
 .tbl{display:flex;align-items:center;gap:12px}
 .mob-btn{display:flex;width:40px;height:40px;border-radius:10px;background:#fff;border:1px solid #e0e3e8;color:#333;align-items:center;justify-content:center;cursor:pointer;font-size:18px}.mob-btn:hover{background:#f0f2f5}
 .tb-title{font-family:'Syne',sans-serif;font-size:18px;font-weight:700}
@@ -373,7 +373,7 @@ tr:last-child td{border-bottom:none}
 @media(max-width:768px){
   
   .main{margin-left:0}.mob-btn{display:flex}.sg{grid-template-columns:1fr 1fr}
-  .content{padding:13px;padding-top:calc(13px + env(safe-area-inset-top))}.topbar{padding:11px 14px;padding-top:calc(11px + env(safe-area-inset-top))}.cg{grid-template-columns:1fr}
+  .content{padding:13px;padding-top:calc(13px + env(safe-area-inset-top, 44px))}.topbar{padding:11px 14px;padding-top:calc(11px + env(safe-area-inset-top, 44px))}.cg{grid-template-columns:1fr}
   .sec-h{flex-direction:column;align-items:flex-start}
 }
 @media(max-width:480px){.sg{grid-template-columns:1fr}}
@@ -486,8 +486,8 @@ body[data-driver-skin="premium"]{
   --dp-accent:#f4c300; --dp-online:#10b981;
   background:var(--dp-bg) !important;
 }
-body[data-driver-skin="premium"] .sidebar{ display:none !important; }
-body[data-driver-skin="premium"] .main{ margin-left:0 !important; padding-bottom:92px; background:var(--dp-bg); }
+/* sidebar visible même en mode premium (sinon le menu ≡ ouvre un écran noir) */
+body[data-driver-skin="premium"] .main{ margin-left:0 !important;  background:var(--dp-bg); }
 body[data-driver-skin="premium"] .content{ background:var(--dp-bg); color:var(--dp-text); padding:12px; }
 body[data-driver-skin="premium"] .page{ background:transparent; color:var(--dp-text); }
 
@@ -496,6 +496,7 @@ body[data-driver-skin="premium"] .topbar{
   background:var(--dp-navy); color:#fff;
   border-bottom:0; border-radius:0 0 22px 22px;
   padding:14px 18px 16px;
+  padding-top:max(14px, calc(14px + env(safe-area-inset-top, 44px))) !important;
   box-shadow:0 2px 14px rgba(10,26,63,.18);
   position:sticky; top:0; z-index:50;
 }
@@ -558,24 +559,6 @@ body[data-driver-skin="premium"] .empty-state{
 }
 
 /* BOTTOM NAV FLOTTANT — 5 icônes */
-#dp-bottom-nav{ display:none; }
-body[data-driver-skin="premium"] #dp-bottom-nav{
-  display:flex; position:fixed; left:50%; bottom:12px; transform:translateX(-50%);
-  background:#fff; border-radius:999px;
-  box-shadow:0 6px 24px rgba(10,26,63,.14), 0 0 0 1px rgba(10,26,63,.04);
-  padding:8px 10px; gap:4px; z-index:100;
-  max-width:calc(100% - 20px);
-}
-#dp-bottom-nav .dp-tab{
-  background:transparent; border:0; cursor:pointer;
-  display:flex; flex-direction:column; align-items:center; justify-content:center;
-  padding:8px 12px; min-width:60px;
-  font-size:11px; font-weight:700; color:var(--dp-sub);
-  border-radius:999px; transition:background .15s;
-}
-#dp-bottom-nav .dp-tab i{ font-size:19px; margin-bottom:2px; color:currentColor; }
-#dp-bottom-nav .dp-tab.on{ background:#eef2fb; color:var(--dp-navy); }
-#dp-bottom-nav .dp-tab:hover{ background:#f3f5fb; }
 
 /* Inputs et selects clairs */
 body[data-driver-skin="premium"] input,
@@ -590,10 +573,8 @@ body[data-driver-skin="premium"] .bdg{ border-radius:999px; font-weight:700; }
 @media(max-width:760px){
   body[data-driver-skin="premium"] .main{ margin:0 !important; }
   body[data-driver-skin="premium"] .content{ padding:10px 10px 100px; }
-  body[data-driver-skin="premium"] .topbar{ padding:12px 14px; }
+  body[data-driver-skin="premium"] .topbar{ padding:12px 14px; padding-top:max(14px, calc(10px + env(safe-area-inset-top, 44px))) !important; }
   body[data-driver-skin="premium"] .topbar .tb-title{ font-size:15px; }
-  #dp-bottom-nav .dp-tab{ padding:7px 10px; min-width:54px; font-size:10px; }
-  #dp-bottom-nav .dp-tab i{ font-size:17px; }
 }
 </style>
 <!-- Garde-fou : cache le spinner même si app.js échoue (évite "ça mouline à l'infini") -->
@@ -1953,12 +1934,12 @@ body[data-driver-skin="premium"] .bdg{ border-radius:999px; font-weight:700; }
             <div style="font-size:22px;font-weight:800;font-family:'Syne',sans-serif;color:#111" id="mc-month">0</div>
             <div style="font-size:11px;color:#777;margin-top:2px">Ce mois</div>
           </div>
-          <div id="mc-ca-card" style="background:#fff;border:1px solid #e0e3e8;border-radius:12px;padding:14px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.06)">
+          <div id="mc-ca-card" onclick="openDriverEarnings()" style="background:#fff;border:1px solid #e0e3e8;border-radius:12px;padding:14px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.06);cursor:pointer;position:relative" title="Voir le détail de mes gains">
+            <div style="position:absolute;top:8px;right:10px;color:var(--gold);font-size:11px;opacity:0.75">›</div>
             <div style="font-size:22px;font-weight:800;font-family:'Syne',sans-serif;color:var(--gold)" id="mc-ca">0€</div>
             <div style="font-size:11px;color:#777;margin-top:2px">Revenus mois</div>
           </div>
         </div>
-        <button id="mc-earnings-btn" onclick="openDriverEarnings()" style="width:100%;background:linear-gradient(135deg,#b8860b,#d4a933);border:none;border-radius:12px;padding:13px;color:#fff;font-family:'Syne',sans-serif;font-size:14px;font-weight:800;cursor:pointer;margin-bottom:20px;box-shadow:0 4px 12px rgba(184,134,11,0.3)">💰 Voir mes gains en détail</button>
 
         <!-- TABS -->
         <div style="display:flex;gap:8px;margin-bottom:16px">
@@ -3960,20 +3941,6 @@ function attachPlaces(id) {
 })();
 </script>
 
-<nav id="dp-bottom-nav" role="navigation" aria-label="Navigation chauffeur">
-  <button class="dp-tab on" data-dpnav="mescourses" onclick="dpGoTab(this,'mescourses')"><i class="fas fa-location-arrow"></i><span>Live</span></button>
-  <button class="dp-tab" data-dpnav="dispatch" onclick="dpGoTab(this,'dispatch')"><i class="fas fa-hand-paper"></i><span>À Prendre</span></button>
-  <button class="dp-tab" data-dpnav="mescourses2" onclick="dpGoTab(this,'mescourses')"><i class="fas fa-calendar-check"></i><span>Mes Jobs</span></button>
-  <button class="dp-tab" data-dpnav="revenus" onclick="dpGoTab(this,'revenus')"><i class="fas fa-euro-sign"></i><span>Finance</span></button>
-  <button class="dp-tab" data-dpnav="parametres" onclick="dpGoTab(this,'parametres')"><i class="fas fa-user"></i><span>Mon espace</span></button>
-</nav>
-<script>
-(function(){
-  window.dpGoTab = function(el, page){
-    try { document.querySelectorAll('#dp-bottom-nav .dp-tab').forEach(function(b){ b.classList.remove('on'); }); if(el) el.classList.add('on'); } catch(e){}
-    try { if (typeof gp === 'function') gp(page); } catch(e){}
-  };
-})();
-</script>
+
 </body>
 </html>
