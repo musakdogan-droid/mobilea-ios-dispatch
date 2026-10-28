@@ -1,0 +1,245 @@
+{
+  "id": "fr.mobilea.admin",
+  "name": "MOBILEA Admin",
+  "short_name": "Admin",
+  "description": "Tableau de bord administrateur MOBILEA — Gestion complète VTC Premium Île-de-France. Dispatch, facturation, chauffeurs, rapports.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "/#admin",
+  "scope": "/",
+  "scope_extensions": [
+    {
+      "origin": "https://mobilea-6tg.pages.dev"
+    },
+    {
+      "origin": "https://mobilea-stripe.mus-akdogan.workers.dev"
+    }
+  ],
+  "handle_links": "preferred",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui",
+    "browser"
+  ],
+  "orientation": "portrait-primary",
+  "background_color": "#0f1117",
+  "theme_color": "#c8a96e",
+  "icons": [
+    {
+      "src": "/icons/admin-72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/admin-96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/admin-128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/admin-144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/admin-152.png",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/admin-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/admin-384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/admin-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/icons/admin-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "MOBILEA Admin — Mobile"
+    },
+    {
+      "src": "/icons/admin-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "MOBILEA Admin — Desktop"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dispatch",
+      "short_name": "Dispatch",
+      "description": "Courses en cours",
+      "url": "/#admin",
+      "icons": [
+        {
+          "src": "/icons/admin-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Planning",
+      "short_name": "Planning",
+      "description": "Planning chauffeurs",
+      "url": "/#admin",
+      "icons": [
+        {
+          "src": "/icons/admin-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Facturation",
+      "short_name": "Factures",
+      "description": "Factures et paiements",
+      "url": "/#admin",
+      "icons": [
+        {
+          "src": "/icons/admin-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "Rapports",
+      "short_name": "Rapports",
+      "description": "Statistiques",
+      "url": "/#admin",
+      "icons": [
+        {
+          "src": "/icons/admin-96.png",
+          "sizes": "96x96"
+        }
+      ]
+    }
+  ],
+  "categories": [
+    "business",
+    "productivity",
+    "utilities"
+  ],
+  "iarc_rating_id": "e84b072d-71b3-4d3e-86ae-31a8ce4e53b7",
+  "share_target": {
+    "action": "/#admin",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
+  "file_handlers": [
+    {
+      "action": "/#admin",
+      "accept": {
+        "application/json": [
+          ".json"
+        ],
+        "text/csv": [
+          ".csv"
+        ],
+        "application/pdf": [
+          ".pdf"
+        ]
+      },
+      "icons": [
+        {
+          "src": "/icons/admin-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ],
+      "launch_type": "single-client"
+    }
+  ],
+  "protocol_handlers": [
+    {
+      "protocol": "web+mobilea-admin",
+      "url": "/#admin?from=%s"
+    },
+    {
+      "protocol": "web+mobilea",
+      "url": "/#admin?ref=%s"
+    }
+  ],
+  "launch_handler": {
+    "client_mode": [
+      "navigate-existing",
+      "auto"
+    ]
+  },
+  "edge_side_panel": {
+    "preferred_width": 400
+  },
+  "window_controls_overlay": {
+    "theme_color": "#c8a96e"
+  },
+  "widgets": [
+    {
+      "name": "Admin Widget",
+      "description": "Widget MOBILEA Admin — Accès rapide",
+      "tag": "mobilea-admin-widget",
+      "ms_ac_template": "/widgets/admin-widget.json",
+      "data": "/widgets/admin-data.json",
+      "type": "application/json",
+      "screenshots": [
+        {
+          "src": "/icons/admin-192.png",
+          "sizes": "192x192",
+          "label": "Widget MOBILEA Admin"
+        }
+      ],
+      "icons": [
+        {
+          "src": "/icons/admin-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ],
+      "auth": false,
+      "update": 86400
+    }
+  ],
+  "related_applications": [
+    {
+      "platform": "play",
+      "url": "https://play.google.com/store/apps/details?id=fr.mobilea.admin",
+      "id": "fr.mobilea.admin"
+    },
+    {
+      "platform": "itunes",
+      "url": "https://apps.apple.com/app/fr.mobilea.admin"
+    }
+  ],
+  "prefer_related_applications": false
+}
