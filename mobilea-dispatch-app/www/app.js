@@ -10229,8 +10229,10 @@ function renderMesCourses() {
         blockingHtml = '<div style="background:#fff8ed;border:1px solid #f0c674;border-radius:12px;padding:12px;margin-bottom:8px;font-size:13px;color:#92700a">'
           + '<div style="font-weight:800;margin-bottom:4px">⚠️ Course en cours à terminer</div>'
           + '<div style="font-size:12px;margin-bottom:8px">'+bTime+' · '+E(bRoute)+' (statut : '+(STATUT_LABELS[autreActive.statut]||autreActive.statut)+')</div>'
+          + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
           + '<button onclick="viewCourseDetail(\''+autreActive._id+'\')" style="background:#b8860b;border:none;border-radius:8px;padding:8px 14px;color:#fff;font-size:13px;font-weight:700;cursor:pointer">→ Ouvrir pour terminer</button>'
-          + '</div>';
+          + '<button onclick="driverForceUnblock(\''+autreActive._id+'\')" title="Si la course est un fantôme" style="background:transparent;border:1px solid #b8860b;border-radius:8px;padding:8px 14px;color:#92700a;font-size:13px;font-weight:700;cursor:pointer">🗑️ Débloquer (fantôme)</button>'
+          + '</div></div>';
       }
       const btnBg = isBlocked ? '#e0e3e8' : flow.color;
       const btnTxt = isBlocked ? '#999' : '#fff';
@@ -11269,6 +11271,29 @@ if(!window._attenteInterval) {
 window.driverNoShow = async function(id) {
   if(!confirm('Marquer comme No-show ?')) return;
   await driverUpd(id, 'noshow', null);
+};
+
+// Déblocage "fantôme" : quand une course bloquante n'existe plus dans Firebase
+// mais est encore dans le cache local, on la vire de D.courses + on vide le
+// cache + on force un re-fetch. Si la course existe VRAIMENT dans Firebase,
+// elle reviendra après le re-fetch et il faudra l'ouvrir pour la terminer.
+window.driverForceUnblock = async function(id) {
+  if(!confirm('Débloquer cette course ?\n\nÀ utiliser SEULEMENT si la course n\'existe plus ou est bloquée depuis trop longtemps. Si elle existe encore côté dispatch, elle reviendra après rafraîchissement.')) return;
+  try {
+    // 1. Retirer de D.courses en mémoire (effet immédiat)
+    D.courses = (D.courses||[]).filter(x => x._id !== id);
+    // 2. Vider le cache localStorage (fbcache_*)
+    try { Object.keys(localStorage).filter(k => k.indexOf('fbcache_') === 0).forEach(k => localStorage.removeItem(k)); } catch(e) {}
+    try { _fbCache.clear(); } catch(e) {}
+    // 3. Essayer de forcer la terminaison côté Firebase (au cas où elle existe)
+    try { await fbUpdate('courses', id, { statut:'terminee', termineeLe:new Date().toISOString(), termineePar:'auto-unblock' }); } catch(e) {}
+    showToast && showToast('✓ Course débloquée');
+    // 4. Re-rendre immédiatement + re-fetcher en arrière-plan
+    try { renderMesCourses(); } catch(e){}
+    try { if(typeof loadAll === 'function') await loadAll(); renderMesCourses(); } catch(e){}
+  } catch(e) {
+    showToast && showToast('Erreur : ' + (e && e.message || e), true);
+  }
 };
 
 
