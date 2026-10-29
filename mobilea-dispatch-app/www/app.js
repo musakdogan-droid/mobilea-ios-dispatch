@@ -17895,7 +17895,7 @@ function renderHistorique() {
 // ── PARAMS ──
 // ── SYNCHRONISATION LOGIPAX ────────────────────────────────────
 // URL du Worker de synchronisation LogiPax (à mettre à jour après déploiement)
-const LOGIPAX_SYNC_URL = 'https://mobilea-logipax.mus-akdogan.workers.dev';
+const LOGIPAX_SYNC_URL = 'https://mobilea-logipax-import.mus-akdogan.workers.dev';
 const COURSE_LINK_URL = 'https://mobilea-course-link.mus-akdogan.workers.dev';
 // Synchronisation LogiPax : TOUS les clients.
 // Laisser ce tableau VIDE = aucun filtre client, toutes les courses remontent.
