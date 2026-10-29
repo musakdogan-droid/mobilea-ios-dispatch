@@ -1,14 +1,22 @@
 {
   "appId": "fr.mobilea.dispatch",
-  "appName": "MOBILEA Dispatch",
+  "appName": "MOBILEA DISPATCH",
   "webDir": "www",
   "server": {
     "androidScheme": "https",
     "iosScheme": "https"
   },
+  "ios": {
+    "contentInset": "never"
+  },
   "plugins": {
-    "PushNotifications": {
-      "presentationOptions": ["badge", "sound", "alert"]
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "launchAutoHide": true,
+      "backgroundColor": "#0f1117",
+      "showSpinner": false,
+      "splashFullScreen": true,
+      "splashImmersive": true
     }
   }
 }
