@@ -4224,6 +4224,11 @@ window.saveCourseGoogle = async function(id) {
     updatedAt: new Date().toISOString()
   };
   await fbUpdate('courses', id, maj);
+  // ★ Synchroniser vers LogiPax (attribution chauffeur, modif infos course)
+  try {
+    const updated = {...(avant||{}), ...maj, _id:id};
+    syncToLogipax(updated, updated.logipaxNumBon ? 'update' : 'insert');
+  } catch(e){ console.warn('syncToLogipax:', e); }
   const detail = diffChamps(avant, maj, {
     depart:'Départ', arrivee:'Arrivée', datetime:'Date/heure', codeFact:'Code facturation',
     chauffeur:'Chauffeur', client:'Client', tel:'Téléphone', vehicule:'Véhicule',
