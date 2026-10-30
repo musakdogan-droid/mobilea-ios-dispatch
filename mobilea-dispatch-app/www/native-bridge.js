@@ -127,71 +127,144 @@
   // Cette fonction est appelee par app.js juste apres le login (chauffeur,
   // dispatch ou client) et ecrit l'external_id qui permet au worker
   // mobilea-push de cibler cet appareil precis.
+  // DIAG : affiche sur l'ecran un message pendant 5 sec (debug visuel).
+  function diagShow(msg) {
+    try {
+      var d = document.createElement("div");
+      d.textContent = "[OS] " + msg;
+      d.style.cssText = "position:fixed;bottom:40px;left:10px;right:10px;background:#111;color:#0f0;padding:10px;border-radius:8px;z-index:999999;font:12px monospace;box-shadow:0 2px 8px rgba(0,0,0,.3);white-space:pre-wrap;word-break:break-all";
+      document.body.appendChild(d);
+      setTimeout(function(){ try{ d.remove(); }catch(e){} }, 7000);
+    } catch(e){}
+  }
+
+  // Essaie plusieurs chemins possibles pour acceder au plugin OneSignal natif
+  // (selon la version du plugin et la facon dont Capacitor l'expose).
+  function findOneSignal() {
+    try {
+      if (window.OneSignal && (typeof window.OneSignal.login === "function" || typeof window.OneSignal.setExternalUserId === "function")) {
+        return { os: window.OneSignal, path: "window.OneSignal" };
+      }
+      if (cap && cap.Plugins && cap.Plugins.OneSignal) {
+        return { os: cap.Plugins.OneSignal, path: "Capacitor.Plugins.OneSignal" };
+      }
+      if (window.cordova && window.cordova.plugins && window.cordova.plugins.OneSignal) {
+        return { os: window.cordova.plugins.OneSignal, path: "cordova.plugins.OneSignal" };
+      }
+      if (window.plugins && window.plugins.OneSignal) {
+        return { os: window.plugins.OneSignal, path: "window.plugins.OneSignal" };
+      }
+    } catch(e){}
+    return null;
+  }
+
+  // Extraire l'appId OneSignal de la config dejà presente dans le HTML.
+  // Chaque app (Dispatch/Driver/Client) a son propre appId dans son index.html.
+  function getOneSignalAppId() {
+    try {
+      var scripts = document.getElementsByTagName("script");
+      for (var i = 0; i < scripts.length; i++) {
+        var t = scripts[i].textContent || "";
+        var m = t.match(/appId:\s*["']([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})["']/i);
+        if (m) return m[1];
+      }
+    } catch(e){}
+    return null;
+  }
+
+  var _oneSignalInitialized = false;
+
   window.mobileaLinkPush = function () {
     try {
-      // Attendre que window.OneSignal (plugin natif Cordova) soit present.
-      var OS = window.OneSignal || null;
-      if (!OS || typeof OS.login !== "function" && typeof OS.setExternalUserId !== "function") {
-        // Repli : si seul @capacitor/push-notifications est dispo, on enregistre
-        // au moins l'appareil pour APNs (ne cible pas par user mais au moins
-        // l'appareil est reveille).
-        var Push = (cap.Plugins && cap.Plugins.PushNotifications) || null;
-        if (Push && typeof Push.register === "function") {
-          Push.requestPermissions().then(function (res) {
-            if (res && res.receive === "granted") { Push.register(); }
-          }).catch(function () {});
+      // Chercher le plugin OneSignal avec retry (il peut mettre 1-2s a se charger).
+      var tries = 0;
+      var findInterval = setInterval(function() {
+        tries++;
+        var found = findOneSignal();
+        if (found) {
+          clearInterval(findInterval);
+          // ★ Initialiser OneSignal AVANT tout (requis par v5)
+          if (!_oneSignalInitialized && typeof found.os.initialize === "function") {
+            var appId = getOneSignalAppId();
+            if (appId) {
+              try {
+                found.os.initialize(appId);
+                _oneSignalInitialized = true;
+                diagShow("OneSignal.initialize OK\nappId=" + appId.slice(0,8) + "...");
+              } catch(e) { diagShow("OneSignal.initialize ERR: " + String(e)); }
+            } else {
+              diagShow("appId OneSignal introuvable dans le HTML — impossible d'initialiser");
+            }
+          }
+          // Laisser 1 sec pour que l'init se propage avant login
+          setTimeout(function(){ doLink(found.os, found.path); }, 1000);
+          return;
         }
-        return;
-      }
+        if (tries > 20) {
+          clearInterval(findInterval);
+          diagShow("Plugin OneSignal introuvable apres 10s. APIs testees : window.OneSignal, Capacitor.Plugins.OneSignal, cordova.plugins.OneSignal");
+          // Repli push-notifications standard
+          var Push = (cap.Plugins && cap.Plugins.PushNotifications) || null;
+          if (Push && typeof Push.register === "function") {
+            Push.requestPermissions().then(function (res) {
+              if (res && res.receive === "granted") { Push.register(); }
+            }).catch(function () {});
+          }
+        }
+      }, 500);
+    } catch(e){ diagShow("mobileaLinkPush ERR: " + String(e)); }
+  };
 
-      // Demander la permission notification si pas encore donnee.
+  function doLink(OS, foundPath) {
+    try {
+      diagShow("Plugin trouve : " + foundPath + "\nlogin=" + (typeof OS.login) + " setExternalUserId=" + (typeof OS.setExternalUserId));
+
+      // Demander la permission si pas encore donnee.
       try {
         if (OS.Notifications && typeof OS.Notifications.requestPermission === "function") {
           OS.Notifications.requestPermission(true);
+        } else if (typeof OS.promptForPushNotificationsWithUserResponse === "function") {
+          OS.promptForPushNotificationsWithUserResponse(function(){});
         }
       } catch(e){}
 
-      // Determiner l'external_id depuis la session active.
       var S = window.SESSION || null;
-      if (!S) return;
+      if (!S) { diagShow("SESSION absent, abandon"); return; }
 
       var externalId = null;
       var tagRole = null;
       if (S.role === "chauffeur" && S.chauffeurId) {
-        externalId = String(S.chauffeurId);
-        tagRole = "chauffeur";
+        externalId = String(S.chauffeurId); tagRole = "chauffeur";
       } else if (S.role === "admin" || S.role === "dispatch") {
-        externalId = "staff_" + (S.uid || S.role);
-        tagRole = "staff";
+        externalId = "staff_" + (S.uid || S.role); tagRole = "staff";
       } else if (S.role === "client") {
-        externalId = String(S.clientUser || S.email || "").trim();
-        tagRole = "client";
+        externalId = String(S.clientUser || S.email || "").trim(); tagRole = "client";
       }
 
-      if (!externalId) return;
+      if (!externalId) { diagShow("external_id vide (role=" + S.role + ")"); return; }
 
-      // API v5 (recommandee) : OneSignal.login + User.addTag
+      // Appeler login / setExternalUserId
+      var called = null;
       try {
         if (typeof OS.login === "function") {
-          OS.login(externalId);
+          OS.login(externalId); called = "login";
         } else if (typeof OS.setExternalUserId === "function") {
-          // Legacy v3/v4
-          OS.setExternalUserId(externalId);
+          OS.setExternalUserId(externalId); called = "setExternalUserId";
         }
-      } catch(e){ console.warn("[MobileaNative] OneSignal.login:", e); }
+      } catch(e){ diagShow("login ERR: " + String(e)); }
 
+      // Tags
       try {
         if (OS.User && typeof OS.User.addTag === "function") {
           OS.User.addTag("role", tagRole);
           var _s = (S.societe || "").trim().toLowerCase().slice(0, 40);
           if (_s) OS.User.addTag("societe", _s);
         } else if (typeof OS.sendTag === "function") {
-          // Legacy
           OS.sendTag("role", tagRole);
         }
-      } catch(e){ console.warn("[MobileaNative] OneSignal.addTag:", e); }
+      } catch(e){}
 
-      console.log("[MobileaNative] OneSignal lie a external_id =", externalId, "role =", tagRole);
-    } catch (e) { console.warn("[MobileaNative] mobileaLinkPush:", e); }
-  };
+      diagShow("OneSignal lie\nAPI=" + called + "\nexternal_id=" + externalId + "\nrole=" + tagRole);
+    } catch(e){ diagShow("doLink ERR: " + String(e)); }
+  }
 })();
