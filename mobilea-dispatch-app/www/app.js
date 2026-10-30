@@ -3805,155 +3805,199 @@ function renderAgenda() {
 
 
 
-// ── FICHE DÉTAIL STYLE GOOGLE AGENDA ──
+// ── FICHE DÉTAIL — DESIGN PROPRE EN SECTIONS (comme la vue édition) ──
 window.viewCourseDetail = function(id) {
   const c = D.courses.find(x=>x._id===id);
   if(!c) return;
   const color = getClientColor(c.client, c);
   const time = c.datetime?.slice(11,16)||'—';
-  const dateStr = c.datetime ? parseLocalDT(c.datetime).toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long',timeZone:'UTC'}) : '';
-  const vehL = {berline:'B',van:'V',sprinter:'SP',bus:'BU',pmr:'PMR',limousine:'LIMO'}[c.vehicule]||'B';
+  const dateStr = c.datetime ? parseLocalDT(c.datetime).toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long',year:'numeric',timeZone:'UTC'}) : '—';
   const pax = c.passagers?.length || c.pax || 1;
-  const terms = c.terminaux ? c.terminaux.replace(/CDG/g,'') : '';
   const info = getClientInfo(c.client);
+  const codeFact = c.codeFact || (c.ref||'').split('/').filter(x=>x&&x!=='NC').slice(0,3).join(' / ');
+  const vehNom = {berline:'Berline',van:'Van',sprinter:'Sprinter',bus:'Bus',pmr:'PMR',limousine:'Limousine',classes:'Classe S'}[c.vehicule]||'Berline';
+  const vehIcon = {berline:'🚗',van:'🚐',sprinter:'🚌',bus:'🚍',pmr:'♿',limousine:'🥂',classes:'🖤'}[c.vehicule]||'🚗';
+  const estStaff = SESSION.role!=='chauffeur';
 
-  // Titre : l'ARRIVEE telle qu'elle est saisie sur la course, sans y accoler
-  // le nom du client (qui apparait deja plus bas dans la fiche).
-  const titre = (c.arrivee||c.duree||'—') + (terms?' '+terms:'');
-  // Ligne lieu : ref / véhicule / pax / chauffeur
-  const lieuLine = (c.ref||'') + ' / ' + vehL + ' / ' + pax + ' / ' + (c.chauffeur||'À assigner');
+  // Nom passager + téléphone
+  const passagerNom = c.passagers?.length
+    ? (c.passagers[0].prenom||'') + ' ' + (c.passagers[0].nom||'')
+    : (c.passager||'');
+  const passagerTel = c.passagers?.[0]?.tel || c.tel || '';
 
-  // Description passagers — comme Google : heure / vol / terminal / ref / nom + tel cliquable
-  const paxLines = (c.passagers||[]).map(p => {
-    const tel = (p.tel||'').replace(/\s/g,'');
-    return '<div style="margin-bottom:14px;font-size:30px;color:#222;line-height:1.3;line-height:1.55">'
-      + (p.harrivee?p.harrivee+' / ':'') + (p.vol?p.vol+' / ':'') + (p.terminal?p.terminal+' / ':'') + (p.refClient?p.refClient+' / ':'')
-      + '<strong>'+(p.prenom||'')+' '+(p.nom||'')+'</strong>'
-      + (tel?'<br><a href="tel:'+tel+'" style="color:#1a73e8;text-decoration:none">'+p.tel+'</a>':'')
-      + '</div>';
-  }).join('');
+  // Notes — nettoyage : si c'est un bloc LogiPax ("Nb Bagages:... TYPE VEHICULE:..."), on affiche en liste
+  let notesHtml = '';
+  if(c.notes) {
+    const notes = String(c.notes).trim();
+    const items = notes.split(/\r?\n/).filter(x=>x.trim());
+    if(items.length > 1) {
+      notesHtml = items.map(it => '<div style="padding:4px 0;color:#4a4a4a">' + E(it.trim()) + '</div>').join('');
+    } else {
+      notesHtml = '<div style="color:#4a4a4a">' + E(notes).replace(/\n/g,'<br>') + '</div>';
+    }
+  }
 
-  // Les courses importees de LogiPax n'ont pas de liste "passagers" detaillee :
-  // elles portent un simple champ texte "passager" (nom_personne). Sans ce
-  // repli, le nom du passager n'apparaissait nulle part sur la fiche.
-  const paxSimple = (!paxLines && c.passager)
-    ? '<div style="margin-bottom:14px;font-size:30px;color:#222;line-height:1.55"><strong>'
-      + E(c.passager) + '</strong>'
-      + (c.tel ? '<br><a href="tel:' + String(c.tel).replace(/\s/g,'') + '" style="color:#1a73e8;text-decoration:none">' + E(c.tel) + '</a>' : '')
-      + '</div>'
-    : '';
-  const paxBloc = paxLines || paxSimple;
+  // Helpers de section
+  const section = (iconOrLabel, titre, contenu) => `
+    <div style="margin-top:18px;padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
+      <div style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">${iconOrLabel}${titre?' '+titre:''}</div>
+      <div style="font-size:17px;color:#1a1a1a;line-height:1.35">${contenu}</div>
+    </div>`;
+
+  const twoCol = (label1, val1, label2, val2) => `
+    <div style="margin-top:18px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
+        <div style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">${label1}</div>
+        <div style="font-size:17px;color:#1a1a1a;line-height:1.3;word-break:break-word">${val1||'—'}</div>
+      </div>
+      <div style="padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
+        <div style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">${label2}</div>
+        <div style="font-size:17px;color:#1a1a1a;line-height:1.3;word-break:break-word">${val2||'—'}</div>
+      </div>
+    </div>`;
+
+  // Bloc prix (admin/dispatch uniquement)
+  let bPrix = '';
+  if(estStaff && (c.prix != null || c.prixChauffeur != null)) {
+    const pClient = c.prix != null ? parseFloat(c.prix).toFixed(2) : null;
+    const pChauff = c.prixChauffeur != null ? parseFloat(c.prixChauffeur).toFixed(2) : null;
+    const diff = (pClient && pChauff) ? Math.max(0, parseFloat(pClient) - parseFloat(pChauff)).toFixed(2) : null;
+    bPrix = `
+      <div style="margin-top:18px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
+          <div style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">💶 Prix client</div>
+          <div style="font-size:22px;color:#1a1a1a;font-weight:700">${pClient!=null?pClient+'€':'—'}</div>
+        </div>
+        <div style="padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
+          <div style="font-size:11px;font-weight:700;color:#16a34a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">🚗 Prix chauffeur</div>
+          <div style="font-size:22px;color:#16a34a;font-weight:700">${pChauff!=null?pChauff+'€':'—'}</div>
+        </div>
+      </div>
+      ${diff!=null?`<div style="margin-top:10px;padding:12px 16px;background:rgba(217,119,6,0.08);border:1px solid rgba(217,119,6,0.3);border-radius:14px;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;font-weight:700;color:#b45309">Différence (commission)</div>
+        <div style="font-size:18px;font-weight:700;color:#b45309">${diff}€</div>
+      </div>`:''}`;
+  }
+
+  // Bloc attente
+  let bAttente = '';
+  const w = calcWaitFees(c);
+  if(w) {
+    const hasChf = w.chauffeurFee > 0;
+    const hasCl = w.clientFee > 0;
+    bAttente = `
+      <div style="margin-top:18px;padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
+        <div style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:8px">⏱️ Temps d'attente</div>
+        <div style="font-size:17px;color:#1a1a1a;font-weight:700;margin-bottom:6px">${fmtWaitDuration(w.waitMin)}</div>
+        ${estStaff?`
+          <div style="font-size:13px;color:${hasCl?'#d97706':'#666'};margin-top:4px">${hasCl?`💰 Supplément client : +${w.clientFee}€`:`✓ Dans le forfait client`}</div>
+          <div style="font-size:13px;color:${hasChf?'#0891b2':'#666'};margin-top:4px">${hasChf?`🚗 À payer chauffeur : +${w.chauffeurFee}€`:`✓ Dans le forfait chauffeur`}</div>
+        `:`<div style="font-size:13px;color:${hasChf?'#0891b2':'#666'};margin-top:4px">${hasChf?`Supplément attente : +${w.chauffeurFee}€`:`${w.chauffeurFreeMin} min incluses`}</div>`}
+      </div>`;
+  }
+
+  // Bloc vol avec lien
+  let bVol = '';
+  if(c.vol) {
+    bVol = `
+      <div style="margin-top:18px;padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
+        <div style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">✈️ Vol</div>
+        <div style="font-size:17px;color:#1a1a1a;font-weight:700">${E(c.vol)}</div>
+        <a href="https://www.flightradar24.com/data/flights/${encodeURIComponent(c.vol.replace(/\s+/g,'').toLowerCase())}" target="_blank" style="display:inline-block;margin-top:10px;background:#0891b2;border-radius:10px;padding:9px 14px;font-size:13px;color:#fff;font-weight:600;text-decoration:none">Suivre en direct →</a>
+      </div>`;
+  }
+
+  // Bloc options
+  let bOptions = '';
+  if(c.options && c.options.length) {
+    bOptions = `
+      <div style="margin-top:18px;padding:14px 16px;background:rgba(217,119,6,0.06);border:1px solid rgba(217,119,6,0.25);border-radius:14px">
+        <div style="font-size:11px;font-weight:700;color:#b45309;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">⭐ Options</div>
+        <div style="font-size:16px;color:#b45309;font-weight:600">${c.options.map(E).join(' · ')}</div>
+      </div>`;
+  }
 
   const ov = document.createElement('div');
   ov.id = 'course-detail-ov';
   ov.style.cssText = 'position:fixed;inset:0;background:#fff;z-index:600;display:flex;flex-direction:column;overflow:hidden';
   ov.innerHTML = `
-    <!-- Barre haut style Google -->
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:calc(14px + env(safe-area-inset-top, 0px)) 18px 14px">
-      <button onclick="document.getElementById('course-detail-ov').remove()" style="background:none;border:none;font-size:30px;cursor:pointer;color:#333;padding:8px">✕</button>
-      <div style="display:flex;align-items:center;gap:20px">
-        <button onclick="editCourseGoogle('${c._id}')" style="background:none;border:none;font-size:30px;cursor:pointer;color:#333;padding:8px">✏️</button>
+    <!-- Barre haut -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:calc(14px + env(safe-area-inset-top, 0px)) 18px 10px;border-bottom:1px solid #f0f0f0">
+      <button onclick="document.getElementById('course-detail-ov').remove()" style="background:none;border:none;font-size:26px;cursor:pointer;color:#333;padding:6px">✕</button>
+      <div style="display:flex;align-items:center;gap:14px">
+        <button onclick="editCourseGoogle('${c._id}')" title="Modifier" style="background:none;border:none;font-size:24px;cursor:pointer;color:#333;padding:6px">✏️</button>
         <div style="position:relative">
-          <button onclick="document.getElementById('cd-menu').style.display=document.getElementById('cd-menu').style.display==='block'?'none':'block'" style="background:none;border:none;font-size:30px;cursor:pointer;color:#333;padding:8px">⋯</button>
-          <div id="cd-menu" style="display:none;position:absolute;right:0;top:36px;background:#f8f9fa;border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,0.2);overflow:hidden;min-width:220px;z-index:10">
-            <button onclick="duplicateCourse('${c._id}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;border-bottom:1px solid #e8e8e8;padding:16px 20px;font-size:20px;color:#222;cursor:pointer;text-align:left">Dupliquer <span>📋</span></button>
-            <button onclick="document.getElementById('course-detail-ov').remove();delCourse('${c._id}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;padding:16px 20px;font-size:20px;color:#d93025;cursor:pointer;text-align:left">Supprimer <span>🗑️</span></button>
+          <button onclick="document.getElementById('cd-menu').style.display=document.getElementById('cd-menu').style.display==='block'?'none':'block'" style="background:none;border:none;font-size:28px;cursor:pointer;color:#333;padding:6px">⋯</button>
+          <div id="cd-menu" style="display:none;position:absolute;right:0;top:36px;background:#fff;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.18);overflow:hidden;min-width:200px;z-index:10;border:1px solid #e8e8e8">
+            <button onclick="duplicateCourse('${c._id}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;border-bottom:1px solid #f0f0f0;padding:14px 18px;font-size:15px;color:#222;cursor:pointer;text-align:left">Dupliquer <span>📋</span></button>
+            <button onclick="document.getElementById('course-detail-ov').remove();delCourse('${c._id}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;padding:14px 18px;font-size:15px;color:#d93025;cursor:pointer;text-align:left">Supprimer <span>🗑️</span></button>
           </div>
         </div>
       </div>
     </div>
 
     <!-- Contenu scrollable -->
-    <div style="flex:1;overflow-y:auto;padding:6px 24px 40px">
-      <!-- Titre -->
-      <div style="display:flex;align-items:flex-start;gap:16px;margin-bottom:6px">
-        <div style="width:48px;height:48px;border-radius:12px;background:${color};flex-shrink:0;margin-top:6px"></div>
-        <div>
-          <div style="font-size:50px;font-weight:600;line-height:1.15;color:#1a1a1a;line-height:1.25">${titre}</div>
-          <div style="font-size:30px;color:#555;margin-top:12px;line-height:1.2">${dateStr} · ${time}</div>
+    <div style="flex:1;overflow-y:auto;padding:18px 18px 60px">
+      <!-- Bandeau client coloré -->
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:${color};border-radius:14px;color:#fff;margin-bottom:8px">
+        <div style="width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,0.25);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800">${(c.client||'?').slice(0,1).toUpperCase()}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:16px;font-weight:700;line-height:1.2;word-break:break-word">${E(info.label||c.client||'—')}</div>
+          <div style="font-size:12px;opacity:0.92;margin-top:2px">${sBdg(c.statut)}</div>
         </div>
       </div>
 
-      <!-- Lieu / Ref -->
-      <div style="display:flex;align-items:flex-start;gap:16px;margin-top:26px">
-        <div style="font-size:30px;color:#5f6368;flex-shrink:0">📍</div>
-        <div style="font-size:30px;color:#222;line-height:1.3">${lieuLine}</div>
-      </div>
+      <!-- Départ -->
+      ${section('📍', 'DÉPART', E(c.depart||c.lieu||'—'))}
+      <!-- Arrivée -->
+      ${section('🏁', 'ARRIVÉE', E(c.arrivee||c.duree||'—'))}
+      <!-- Date / Heure -->
+      ${section('🕐', 'DATE & HEURE', dateStr + ' <strong style="color:#000">' + time + '</strong>')}
 
-      <!-- Statut -->
-      <div style="display:flex;align-items:flex-start;gap:16px;margin-top:22px">
-        <div style="font-size:30px;color:#5f6368;flex-shrink:0">🔄</div>
-        <div>${sBdg(c.statut)}</div>
-      </div>
+      <!-- Code facturation si présent -->
+      ${codeFact?section('🔖', 'CODE FACTURATION', E(codeFact)):''}
 
-      <!-- Véhicule + passagers + bagages -->
-      <div style="display:flex;align-items:flex-start;gap:16px;margin-top:22px">
-        <div style="font-size:30px;color:#5f6368;flex-shrink:0">${{berline:'🚗',van:'🚐',sprinter:'🚌',bus:'🚍',pmr:'♿',limousine:'🥂',classes:'🖤'}[c.vehicule]||'🚗'}</div>
-        <div style="font-size:30px;color:#222;line-height:1.3">${vI(c.vehicule)} · 👤 ${c.pax||c.passagers?.length||1} pax${c.bags||c.bagages?' · 🧳 '+(c.bags||c.bagages)+' bagage'+((c.bags||c.bagages)>1?'s':''):''}</div>
-      </div>
-      ${c.options&&c.options.length?`
-      <div style="display:flex;align-items:flex-start;gap:16px;margin-top:14px">
-        <div style="font-size:30px;color:#5f6368;flex-shrink:0">⭐</div>
-        <div style="font-size:26px;color:#d97706;line-height:1.3;font-weight:600">${c.options.join(' · ')}</div>
-      </div>`:''}
-      ${c.vol?`
-      <div style="display:flex;align-items:flex-start;gap:16px;margin-top:14px">
-        <div style="font-size:30px;color:#5f6368;flex-shrink:0">✈️</div>
-        <div style="flex:1">
-          <div style="font-size:30px;color:#222;line-height:1.3">Vol ${E(c.vol)}</div>
-          <a href="https://www.flightradar24.com/data/flights/${encodeURIComponent((c.vol||'').replace(/\s+/g,'').toLowerCase())}" target="_blank" style="display:inline-block;margin-top:8px;background:#0891b2;border:none;border-radius:10px;padding:10px 16px;font-size:20px;color:#fff;cursor:pointer;font-weight:600;text-decoration:none">✈️ Suivre le vol en direct →</a>
-        </div>
-      </div>`:''}
+      <!-- Chauffeur -->
+      ${section('👤', 'CHAUFFEUR', c.chauffeur?E(c.chauffeur)+(c.chauffeurTel?' · <a href="tel:'+String(c.chauffeurTel).replace(/\s/g,'')+'" style="color:#1a73e8;text-decoration:none">'+E(c.chauffeurTel)+'</a>':''):'<em style="color:#999">À assigner</em>')}
 
-      <!-- Description passagers -->
-      ${paxBloc?`
-      <div style="display:flex;align-items:flex-start;gap:16px;margin-top:22px">
-        <div style="font-size:30px;color:#5f6368;flex-shrink:0">≡</div>
-        <div style="flex:1">${paxBloc}</div>
-      </div>`:''}
+      <!-- Client / Téléphone -->
+      ${twoCol('👤 CLIENT', E(c.client||'—'), '📞 TÉLÉPHONE', c.tel?'<a href="tel:'+String(c.tel).replace(/\s/g,'')+'" style="color:#1a73e8;text-decoration:none">'+E(c.tel)+'</a>':'—')}
+
+      <!-- Passager (si différent du client) -->
+      ${passagerNom.trim()?section('🧳', 'PASSAGER', '<strong>'+E(passagerNom.trim())+'</strong>'+(passagerTel?' · <a href="tel:'+String(passagerTel).replace(/\s/g,'')+'" style="color:#1a73e8;text-decoration:none">'+E(passagerTel)+'</a>':'')):''}
+
+      <!-- Véhicule + Pax -->
+      ${twoCol(vehIcon+' VÉHICULE', E(vehNom), '👥 PASSAGERS', pax+' pax'+(c.bags||c.bagages?' · 🧳 '+(c.bags||c.bagages):''))}
+
+      <!-- Options -->
+      ${bOptions}
+
+      <!-- Vol -->
+      ${bVol}
+
+      <!-- Prix (staff seulement) -->
+      ${bPrix}
+
+      <!-- Mode de paiement -->
+      ${estStaff && c.payMode?section('💳', 'MODE DE PAIEMENT', c.payMode==='direct'?'Direct chauffeur':c.payMode==='mobilea'?'MOBILEA':E(c.payMode)):''}
+
+      <!-- Temps d'attente -->
+      ${bAttente}
 
       <!-- Notes -->
-      ${c.notes?`
-      <div style="display:flex;align-items:flex-start;gap:16px;margin-top:10px">
-        <div style="font-size:30px;color:#5f6368;flex-shrink:0">📝</div>
-        <div style="font-size:30px;color:#333;line-height:1.3">${E(c.notes).replace(/\n/g,'<br>')}</div>
+      ${notesHtml?`<div style="margin-top:18px;padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
+        <div style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:8px">📝 NOTES</div>
+        <div style="font-size:14px">${notesHtml}</div>
       </div>`:''}
 
-      <!-- Prix (admin/dispatch seulement) -->
-      ${SESSION.role!=='chauffeur'&&c.prix?`
-      <div style="display:flex;align-items:flex-start;gap:16px;margin-top:22px">
-        <div style="font-size:30px;color:#5f6368;flex-shrink:0">💶</div>
-        <div style="font-size:30px;color:#222;line-height:1.3">${parseFloat(c.prix).toFixed(2)}€ TTC${c.prixChauffeur?' · Chauffeur : '+parseFloat(c.prixChauffeur).toFixed(2)+'€':''}</div>
-      </div>`:''}
-
-      <!-- Temps d'attente et frais -->
-      ${(()=>{
-        const w = calcWaitFees(c);
-        if(!w) return '';
-        const hasClientFee = w.clientFee > 0;
-        const hasChauffeurFee = w.chauffeurFee > 0;
-        return `<div style="display:flex;align-items:flex-start;gap:16px;margin-top:22px">
-          <div style="font-size:30px;color:#5f6368;flex-shrink:0">⏱️</div>
-          <div style="flex:1">
-            <div style="font-size:30px;color:#222;line-height:1.3;font-weight:600">Attente : ${fmtWaitDuration(w.waitMin)}</div>
-            ${SESSION.role!=='chauffeur'?`
-              <div style="font-size:24px;color:${hasClientFee?'#d97706':'#888'};margin-top:8px">${hasClientFee?`💰 Supplément client : +${w.clientFee}€ (${w.clientTranches}×30min)`:`✓ Dans le forfait client (${w.clientFreeMin} min offertes)`}</div>
-              <div style="font-size:24px;color:${hasChauffeurFee?'#0891b2':'#888'};margin-top:4px">${hasChauffeurFee?`🚗 À payer chauffeur : +${w.chauffeurFee}€ (${w.chauffeurTranches}×30min)`:`✓ Dans le forfait chauffeur (${w.chauffeurFreeMin} min incluses)`}</div>
-            `:`
-              <div style="font-size:24px;color:${hasChauffeurFee?'#0891b2':'#888'};margin-top:8px">${hasChauffeurFee?`Supplément attente : +${w.chauffeurFee}€`:`${w.chauffeurFreeMin} min incluses`}</div>
-            `}
-          </div>
-        </div>`;
-      })()}
-
-      <!-- Client / Calendrier — cliquable pour voir tous ses transferts -->
+      <!-- Voir tous les transferts du client -->
       <div onclick="document.getElementById('course-detail-ov').remove();viewClientCourses('${(c.client||'').replace(/'/g,"\\'")}')"
-        style="display:flex;align-items:flex-start;gap:16px;margin-top:22px;cursor:pointer;padding:10px;margin-left:-10px;border-radius:12px" onmouseover="this.style.background='#f5f5f5'" onmouseout="this.style.background='none'">
-        <div style="font-size:30px;color:#5f6368;flex-shrink:0">📅</div>
-        <div style="flex:1">
-          <div style="font-size:30px;color:#222;line-height:1.3;font-weight:600">${info.label||c.client||'—'}</div>
-          <div style="font-size:30px;color:#888;margin-top:6px">Voir tous les transferts de ce client →</div>
+        style="margin-top:18px;padding:14px 16px;background:#f0f7ff;border:1px solid #cfe3ff;border-radius:14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#1a73e8;letter-spacing:0.5px;text-transform:uppercase">📅 Historique client</div>
+          <div style="font-size:14px;color:#1a73e8;margin-top:4px">Voir tous les transferts de ${E(c.client||'ce client')}</div>
         </div>
+        <div style="font-size:18px;color:#1a73e8">→</div>
       </div>
     </div>`;
   document.body.appendChild(ov);
@@ -11708,6 +11752,10 @@ window.sendMsg = async function() {
   // destinataire du fil.
   try {
     const apercu = text.length > 120 ? text.slice(0,117) + '…' : text;
+    // ★ H : Détection message urgent — mots-clés critiques
+    const txtLow = text.toLowerCase();
+    const motsUrgence = ['urgent','probleme','problème','accident','panne','grave','police','blesse','blessé','ambulance','danger','agression','vol'];
+    const estUrgent = motsUrgence.some(mot => txtLow.includes(mot));
     if(SESSION.role === 'admin' || SESSION.role === 'dispatch') {
       // Le staff répond : notifier UNIQUEMENT le chauffeur concerné par ce fil.
       const m = convId.match(/^(?:support_drv_|drv_)(.+)$/);
@@ -11719,7 +11767,13 @@ window.sendMsg = async function() {
     } else {
       // Chauffeur, client ou partenaire écrit : notifier le staff (tag staff).
       const qui = SESSION.name || SESSION.societe || 'Message';
-      await sendPushNotification(`💬 ${E(qui)}`, apercu, null, null, { key:'role', value:'staff' });
+      if(estUrgent) {
+        // ★ H : message urgent — titre spécial pour sonnerie plus voyante
+        await sendPushNotification(`🚨 URGENT — ${E(qui)}`, '⚠️ ' + apercu + ' ⚠️', null, null, { key:'role', value:'staff' });
+        try { await addLog(`🚨 Message urgent de ${E(qui)} : « ${apercu} »`); } catch(e){}
+      } else {
+        await sendPushNotification(`💬 ${E(qui)}`, apercu, null, null, { key:'role', value:'staff' });
+      }
     }
   } catch(e) { console.warn('notif message:', e); }
 };
@@ -12384,15 +12438,16 @@ window.confirmReservation = async function(id) {
 // ══════════════════════════════════════════
 async function checkRappels() {
   const now = new Date();
-  // Horaires de rappel configurés (minutes avant la course). Défaut : 60 + 30.
-  const offsets = (Array.isArray(window._rappelOffsets) && window._rappelOffsets.length) ? window._rappelOffsets : [60, 30];
-  // On regarde toutes les courses a venir attribuees/acceptees.
-  const courses = D.courses.filter(c=>['attribuee','acceptee','en_attente'].includes(c.statut)&&c.datetime);
+  // Horaires de rappel configurés (minutes avant la course). Défaut : 120 + 60.
+  const offsets = (Array.isArray(window._rappelOffsets) && window._rappelOffsets.length) ? window._rappelOffsets : [120, 60];
+  // On regarde toutes les courses a venir attribuees/acceptees + nouvelles.
+  const courses = D.courses.filter(c=>['nouvelle','attribuee','acceptee','en_attente','offre_ouverte'].includes(c.statut)&&c.datetime);
   for(const c of courses) {
     const dt = new Date(c.datetime);
     const diffMin = (dt-now)/60000;
     const _remDrvId = c.chauffeur ? getChauffeurIdByName(c.chauffeur) : null;
 
+    // ── RAPPELS STANDARD (2h / 1h avant) ──────────────────────────────────
     for(const O of offsets) {
       // Fenêtre de ±5 min autour de l'échéance (la boucle tourne toutes les 5 min).
       if(diffMin <= (O-5) || diffMin >= (O+5)) continue;
@@ -12408,8 +12463,87 @@ async function checkRappels() {
       await fbUpdate('courses', c._id, upd);
       await addLog(`Rappel ${_fmtOffset(O)} envoyé : ${E(c.client)} à ${fdt(c.datetime)}`);
     }
+
+    // ── K : COURSE IMMINENTE (15 min avant) ───────────────────────────────
+    // Rappel final au chauffeur et au dispatch.
+    if(diffMin > 10 && diffMin < 20 && !c.rappel_15_env) {
+      const titre = `🔥 Départ imminent — ${E(c.chauffeur||'À assigner')}`;
+      const corps = `${E(c.client)} | ${fdt(c.datetime)} | ${E(c.depart||c.lieu||'')} → ${E(c.arrivee||c.duree||'')}`;
+      if(_remDrvId){ try { await sendPushNotification(titre, corps, null, [_remDrvId]); } catch(e){} }
+      try { await sendPushNotification(titre, corps, null, null, { key:'role', value:'staff' }); } catch(e){}
+      try { await fbUpdate('courses', c._id, { rappel_15_env: true }); } catch(e){}
+      try { await addLog(`🔥 Rappel 15 min envoyé : ${E(c.client)} à ${fdt(c.datetime)}`); } catch(e){}
+    }
+
+    // ── A : CHAUFFEUR EN RETARD (15 min avant pickup, pas encore en_route) ─
+    // Dispatch alerté pour pouvoir réagir / appeler le chauffeur.
+    if(diffMin > 10 && diffMin < 20 && c.chauffeur && c.statut !== 'en_route' && c.statut !== 'sur_place' && c.statut !== 'onboard' && c.statut !== 'depose' && c.statut !== 'terminee' && !c.rappel_retard_env) {
+      const titre = `⚠️ Chauffeur en retard — ${E(c.chauffeur)}`;
+      const corps = `${E(c.chauffeur)} n'est pas encore en route pour ${E(c.client)} (${fdt(c.datetime)}) — appelle-le`;
+      try { await sendPushNotification(titre, corps, null, null, { key:'role', value:'staff' }); } catch(e){}
+      try { await fbUpdate('courses', c._id, { rappel_retard_env: true }); } catch(e){}
+      try { await addLog(`⚠️ Alerte retard envoyée au dispatch : ${E(c.chauffeur)} / ${E(c.client)}`); } catch(e){}
+    }
+
+    // ── B : COURSE J-24h SANS CHAUFFEUR ────────────────────────────────────
+    // Dispatch alerté le jour avant pour qu'il attribue à temps.
+    if(diffMin > 23*60 && diffMin < 25*60 && !c.chauffeur && !c.rappel_j24_env) {
+      const titre = `📅 Course demain sans chauffeur`;
+      const corps = `${E(c.client)} — ${fdt(c.datetime)} | ${E(c.depart||c.lieu||'')} → ${E(c.arrivee||c.duree||'')} — à assigner`;
+      try { await sendPushNotification(titre, corps, null, null, { key:'role', value:'staff' }); } catch(e){}
+      try { await fbUpdate('courses', c._id, { rappel_j24_env: true }); } catch(e){}
+      try { await addLog(`📅 Alerte J-24h course non attribuée : ${E(c.client)}`); } catch(e){}
+    }
   }
 }
+
+// ── J : FÉLICITATIONS HEBDO AU CHAUFFEUR (dimanche soir, 10+ courses) ─────
+async function checkFelicitationsHebdo() {
+  try {
+    const now = new Date();
+    // Dimanche = 0, on tourne entre 19h et 22h
+    if(now.getDay() !== 0 || now.getHours() < 19 || now.getHours() >= 22) return;
+    // Clé semaine : YYYY-Www pour éviter doublons
+    const yearStart = new Date(now.getFullYear(), 0, 1);
+    const weekNum = Math.ceil(((now - yearStart) / 86400000 + yearStart.getDay() + 1) / 7);
+    const semaineKey = now.getFullYear() + '-S' + String(weekNum).padStart(2, '0');
+    // Si deja envoye cette semaine, skip
+    try {
+      const dejaEnvoye = await fbGet('settings/felicitations_hebdo/' + semaineKey);
+      if(dejaEnvoye) return;
+    } catch(e){}
+    // Debut de semaine (lundi 00:00)
+    const dLundi = new Date(now);
+    const dayOffset = (dLundi.getDay() + 6) % 7; // 0 pour lundi
+    dLundi.setDate(dLundi.getDate() - dayOffset);
+    dLundi.setHours(0, 0, 0, 0);
+    // Fin de semaine (dimanche 23:59)
+    const dDimanche = new Date(dLundi); dDimanche.setDate(dDimanche.getDate() + 6); dDimanche.setHours(23, 59, 59, 999);
+    // Compter par chauffeur
+    const parChauffeur = {};
+    for(const c of (D.courses||[])) {
+      if(c.statut !== 'terminee' || !c.chauffeur || !c.datetime) continue;
+      const dt = new Date(c.datetime);
+      if(dt < dLundi || dt > dDimanche) continue;
+      parChauffeur[c.chauffeur] = (parChauffeur[c.chauffeur] || 0) + 1;
+    }
+    // Envoyer aux chauffeurs qui atteignent 10+
+    const envoyes = [];
+    for(const nom in parChauffeur) {
+      if(parChauffeur[nom] < 10) continue;
+      const drvId = getChauffeurIdByName(nom);
+      if(!drvId) continue;
+      const titre = `🏆 Bravo ${nom.split(' ')[0]} !`;
+      const corps = `${parChauffeur[nom]} courses terminées cette semaine — chapeau 👏 Bonne semaine prochaine !`;
+      try { await sendPushNotification(titre, corps, null, [drvId]); envoyes.push(nom + ' (' + parChauffeur[nom] + ')'); } catch(e){}
+    }
+    // Marquer la semaine comme envoyée
+    try { await fbUpdate('settings/felicitations_hebdo', { [semaineKey]: { at: now.toISOString(), envoyes: envoyes } }); } catch(e){}
+    if(envoyes.length) try { await addLog(`🏆 Félicitations hebdo envoyées à ${envoyes.length} chauffeur(s) : ${envoyes.join(', ')}`); } catch(e){}
+  } catch(e) { console.warn('checkFelicitationsHebdo:', e); }
+}
+// Démarre la vérif félicitations toutes les 30 min (dimanche soir uniquement)
+setInterval(checkFelicitationsHebdo, 30 * 60 * 1000);
 
 // Start rappel check every 5 minutes
 setInterval(checkRappels, 5*60*1000);
@@ -14948,6 +15082,45 @@ window.notifierClientArrivee = async function(courseId){
   try {
     await sendPushNotification(titre, msg, null, null, { key:'societe', value: soc.toLowerCase().slice(0,40) });
     showToast('🔔 ' + soc + ' prévenu de l\'arrivée');
+  } catch(e){ showToast('Échec de l\'envoi', true); }
+};
+
+// ★ BROADCAST — Envoyer une notification manuelle à tous les chauffeurs.
+// Réservé admin/dispatch. Ouvre une modale avec champ titre + message.
+window.openBroadcastChauffeurs = function(){
+  if(!SESSION || (SESSION.role!=='admin' && SESSION.role!=='dispatch')){ showToast('Réservé à l\'admin / dispatch', true); return; }
+  const existing = document.getElementById('bc-ov'); if(existing) existing.remove();
+  const ov = document.createElement('div');
+  ov.id = 'bc-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = `
+    <div style="background:#fff;border-radius:16px;padding:20px;max-width:460px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.3)">
+      <div style="font-size:18px;font-weight:700;margin-bottom:4px">📢 Message à tous les chauffeurs</div>
+      <div style="font-size:12px;color:#666;margin-bottom:16px">Push instantanée aux chauffeurs connectés via l'app Driver</div>
+      <label style="font-size:12px;font-weight:600;color:#333">Titre</label>
+      <input id="bc-title" type="text" placeholder="📢 Info équipe" value="📢 Info équipe" maxlength="60" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:14px;margin:4px 0 12px;box-sizing:border-box">
+      <label style="font-size:12px;font-weight:600;color:#333">Message</label>
+      <textarea id="bc-msg" placeholder="Votre message aux chauffeurs..." maxlength="300" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:14px;margin:4px 0 16px;box-sizing:border-box;resize:vertical;min-height:90px;font-family:inherit"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="document.getElementById('bc-ov').remove()" style="background:#eee;border:none;padding:10px 18px;border-radius:8px;font-size:14px;cursor:pointer">Annuler</button>
+        <button onclick="window.sendBroadcastChauffeurs()" style="background:#0b1538;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer">Envoyer</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(ov);
+  setTimeout(function(){ try{ document.getElementById('bc-msg').focus(); }catch(e){} }, 100);
+};
+
+window.sendBroadcastChauffeurs = async function(){
+  if(!SESSION || (SESSION.role!=='admin' && SESSION.role!=='dispatch')){ showToast('Réservé à l\'admin / dispatch', true); return; }
+  const titre = (document.getElementById('bc-title')?.value || '📢 Info équipe').trim().slice(0, 60);
+  const msg = (document.getElementById('bc-msg')?.value || '').trim().slice(0, 300);
+  if(!msg){ showToast('Entrez un message', true); return; }
+  try {
+    await sendPushNotification(titre, msg, null, null, { key:'role', value:'chauffeur' });
+    try { await addLog(`📢 Broadcast chauffeurs par ${SESSION.name||SESSION.role} : « ${msg} »`); } catch(e){}
+    showToast('📢 Envoyé à tous les chauffeurs ✓');
+    const ov = document.getElementById('bc-ov'); if(ov) ov.remove();
   } catch(e){ showToast('Échec de l\'envoi', true); }
 };
 
@@ -17531,6 +17704,17 @@ window.driverUpd = async function(id, statut, note) {
   if(statut) {
     const c = D.courses.find(x=>x._id===id);
     if(c) { const updated = {...c, ...update}; syncToLogipax(updated, updated.logipaxNumBon ? 'update' : 'insert'); }
+  }
+  // ★ Notif dispatch quand le chauffeur ajoute une note sur une course
+  if(note && note.trim()) {
+    try {
+      const _cNote = D.courses.find(x=>x._id===id);
+      const _ref = _cNote ? ((_cNote.client||'') + ' | ' + fdt(_cNote.datetime) + ' | ' + (_cNote.depart||_cNote.lieu||'') + ' → ' + (_cNote.arrivee||_cNote.duree||'')) : '';
+      await notifierStaff(
+        '📝 Note chauffeur — ' + (SESSION.name||''),
+        '« ' + note.trim() + ' »' + (_ref ? '\n' + _ref : '')
+      );
+    } catch(e){ console.warn('notif note chauffeur:', e); }
   }
   if(note && note.trim()) { const el=document.getElementById('note-'+id); if(el)el.value=''; }
   if(ok) {
