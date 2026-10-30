@@ -942,6 +942,7 @@ body[data-driver-skin="premium"] .bdg{ border-radius:999px; font-weight:700; }
           <select class="fsel" id="ch-s" onchange="renderChauffeurs()"><option value="" data-t="all">Tous</option><option value="disponible">Disponible</option><option value="indisponible">Indisponible</option><option value="archived">📦 Archivés</option></select>
           <button class="btn btn-p btn-sm admin-only" id="btn-add-chauffeur" onclick="openChauffeurModal()"><i class="fas fa-plus"></i> Ajouter chauffeur</button>
           <button class="btn btn-s btn-sm" onclick="toggleLiveMap()"><i class="fas fa-map-marked-alt"></i> Carte temps réel</button>
+          <button class="btn btn-sm" style="background:#0b1538;color:#fff;border:none" onclick="openBroadcastChauffeurs()" title="Envoyer une notification à tous les chauffeurs"><i class="fas fa-bullhorn"></i> Notif à tous</button>
         </div>
 
         <!-- CARTE TEMPS RÉEL -->
