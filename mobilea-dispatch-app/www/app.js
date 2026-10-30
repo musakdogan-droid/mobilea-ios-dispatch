@@ -18021,6 +18021,14 @@ async function syncToLogipax(course, action) {
           vehMarque: course.vehMarque || '',
           vehModele: course.vehModele || '',
           vehImmat: course.vehImmat || '',
+          // ── Horodatages des étapes (pour que le worker alimente heure_place /
+          //    heure_charge / heure_depose côté LogiPax quand le chauffeur avance)
+          heureAcceptee: course.heureAcceptee || '',
+          heureEnRoute: course.heureEnRoute || '',
+          heureSurPlace: course.heureSurPlace || '',
+          heureOnboard: course.heureOnboard || '',
+          heureDepose: course.heureDepose || '',
+          heureTerminee: course.heureTerminee || '',
         }
       })
     });
