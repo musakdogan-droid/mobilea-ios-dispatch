@@ -116,20 +116,82 @@
   // Signale à la page qu'on est en natif (utile pour adapter l'UI si besoin).
   try { document.documentElement.setAttribute("data-mobilea-native", "1"); } catch (e) {}
 
-  // Hook push natif (optionnel) : ton index.html appelle window.mobileaLinkPush()
-  // pour lier les notifications au chauffeur connecté. En Capacitor, le push
-  // passe par @capacitor/push-notifications (plugin natif). Ici on fournit un
-  // point d'entrée neutre : il enregistre l'appareil au push si le plugin est
-  // présent, sinon il ne fait rien (le push web OneSignal continue de marcher
-  // dans la WebView). À enrichir plus tard si tu veux le push 100% natif.
+  // Hook push natif : relie l'app installee a OneSignal pour recevoir les
+  // notifications ciblees sur l'utilisateur connecte.
+  //
+  // IMPORTANT : en Capacitor native, le OneSignal Web SDK (OneSignalDeferred)
+  // ne marche PAS fiablement (pas de Service Worker iOS, pas d'APNs). Il faut
+  // le plugin natif onesignal-cordova-plugin qui expose window.OneSignal avec
+  // l'API v5+ (login / addTag / Notifications.requestPermission).
+  //
+  // Cette fonction est appelee par app.js juste apres le login (chauffeur,
+  // dispatch ou client) et ecrit l'external_id qui permet au worker
+  // mobilea-push de cibler cet appareil precis.
   window.mobileaLinkPush = function () {
     try {
-      var Push = (cap.Plugins && cap.Plugins.PushNotifications) || null;
-      if (Push && typeof Push.register === "function") {
-        Push.requestPermissions().then(function (res) {
-          if (res && res.receive === "granted") { Push.register(); }
-        }).catch(function () {});
+      // Attendre que window.OneSignal (plugin natif Cordova) soit present.
+      var OS = window.OneSignal || null;
+      if (!OS || typeof OS.login !== "function" && typeof OS.setExternalUserId !== "function") {
+        // Repli : si seul @capacitor/push-notifications est dispo, on enregistre
+        // au moins l'appareil pour APNs (ne cible pas par user mais au moins
+        // l'appareil est reveille).
+        var Push = (cap.Plugins && cap.Plugins.PushNotifications) || null;
+        if (Push && typeof Push.register === "function") {
+          Push.requestPermissions().then(function (res) {
+            if (res && res.receive === "granted") { Push.register(); }
+          }).catch(function () {});
+        }
+        return;
       }
-    } catch (e) { /* sans gravité : le push web reste actif */ }
+
+      // Demander la permission notification si pas encore donnee.
+      try {
+        if (OS.Notifications && typeof OS.Notifications.requestPermission === "function") {
+          OS.Notifications.requestPermission(true);
+        }
+      } catch(e){}
+
+      // Determiner l'external_id depuis la session active.
+      var S = window.SESSION || null;
+      if (!S) return;
+
+      var externalId = null;
+      var tagRole = null;
+      if (S.role === "chauffeur" && S.chauffeurId) {
+        externalId = String(S.chauffeurId);
+        tagRole = "chauffeur";
+      } else if (S.role === "admin" || S.role === "dispatch") {
+        externalId = "staff_" + (S.uid || S.role);
+        tagRole = "staff";
+      } else if (S.role === "client") {
+        externalId = String(S.clientUser || S.email || "").trim();
+        tagRole = "client";
+      }
+
+      if (!externalId) return;
+
+      // API v5 (recommandee) : OneSignal.login + User.addTag
+      try {
+        if (typeof OS.login === "function") {
+          OS.login(externalId);
+        } else if (typeof OS.setExternalUserId === "function") {
+          // Legacy v3/v4
+          OS.setExternalUserId(externalId);
+        }
+      } catch(e){ console.warn("[MobileaNative] OneSignal.login:", e); }
+
+      try {
+        if (OS.User && typeof OS.User.addTag === "function") {
+          OS.User.addTag("role", tagRole);
+          var _s = (S.societe || "").trim().toLowerCase().slice(0, 40);
+          if (_s) OS.User.addTag("societe", _s);
+        } else if (typeof OS.sendTag === "function") {
+          // Legacy
+          OS.sendTag("role", tagRole);
+        }
+      } catch(e){ console.warn("[MobileaNative] OneSignal.addTag:", e); }
+
+      console.log("[MobileaNative] OneSignal lie a external_id =", externalId, "role =", tagRole);
+    } catch (e) { console.warn("[MobileaNative] mobileaLinkPush:", e); }
   };
 })();
