@@ -17984,9 +17984,11 @@ async function syncToLogipax(course, action) {
   const estStaff = SESSION && (SESSION.role === 'admin' || SESSION.role === 'dispatch');
   const alerteStaff = (msg) => { if(estStaff && typeof showToast === 'function') showToast(msg, true); };
   // Timeout : sans lui, un LogiPax en panne peut laisser la requête suspendue
-  // et figer le parcours du chauffeur.
+  // et figer le parcours du chauffeur. 25s = assez pour un cold start du
+  // worker Cloudflare (chargement annuaires LogiPax si KV expire), tout en
+  // restant largement sous un seuil "panne".
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 12000);
+  const timer = setTimeout(() => ctrl.abort(), 25000);
   try {
     const r = await fetch(LOGIPAX_SYNC_URL, {
       method: 'POST',
