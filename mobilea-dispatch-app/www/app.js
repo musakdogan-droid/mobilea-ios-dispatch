@@ -18015,6 +18015,7 @@ async function syncToLogipax(course, action) {
           vol: course.vol || '',
           notes: course.notes || '',
           prix: course.prix || null,
+          prixChauffeur: course.prixChauffeur != null ? course.prixChauffeur : null,
           statut: course.statut || 'nouvelle',
           // ── Chauffeur assigné (envoyé à LogiPax lors de l'attribution)
           chauffeur: course.chauffeur || '',
@@ -18035,13 +18036,26 @@ async function syncToLogipax(course, action) {
       })
     });
 
-    // ERREUR HTTP : on la rend VISIBLE (toast) et on la trace en base.
-    // Auparavant tout etait silencieux, ce qui rendait les pannes indetectables.
+    // ERREUR HTTP : on la trace en base, mais on module l'alarme.
+    // - Un 502 avec "status":500 en interne = bug cote LogiPax (.NET renvoie
+    //   "An error has occurred" mais sauve souvent quand meme en base) :
+    //   on log en warn, pas de toast staff, pas de resynchro forcee.
+    // - Toute autre erreur = vraie panne : on alerte le staff comme avant.
     if(!r.ok) {
       const txt = await r.text();
-      console.error('LogiPax HTTP ' + r.status + ':', txt.slice(0,400));
-      if(course._id) { try { await fbUpdate('courses', course._id, { logipaxErreur: 'HTTP '+r.status, logipaxSynced: false, logipaxARelancer: true }); } catch(e){} }
-      alerteStaff('LogiPax indisponible (HTTP '+r.status+') — course enregistrée, à resynchroniser');
+      let bodyParsed = null;
+      try { bodyParsed = JSON.parse(txt); } catch(e){}
+      const logipaxInterne500 = (r.status === 502 && bodyParsed && bodyParsed.status === 500);
+      if(logipaxInterne500) {
+        console.warn('LogiPax 500 interne (course possiblement sauvegardee quand meme):', txt.slice(0,200));
+        if(course._id) { try { await fbUpdate('courses', course._id, { logipaxErreur: 'LogiPax 500', logipaxSynced: false }); } catch(e){} }
+        // Pas de toast, pas de logipaxARelancer : LogiPax a probablement sauve
+        // en base cote serveur. Si rien n'a bouge, le staff le verra au tableau.
+      } else {
+        console.error('LogiPax HTTP ' + r.status + ':', txt.slice(0,400));
+        if(course._id) { try { await fbUpdate('courses', course._id, { logipaxErreur: 'HTTP '+r.status, logipaxSynced: false, logipaxARelancer: true }); } catch(e){} }
+        alerteStaff('LogiPax indisponible (HTTP '+r.status+') — course enregistrée, à resynchroniser');
+      }
       return;
     }
 
