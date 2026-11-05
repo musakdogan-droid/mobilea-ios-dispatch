@@ -10505,8 +10505,21 @@ function renderMesCourses() {
         + '</div></div>' : '';
     const wazeBtn = navBtns;
 
-    // Passagers button
-    const paxBtn = (c.passagers && c.passagers.length) ? '<button onclick="viewPax(\''+c._id+'\')" style="width:100%;background:#f0f2f5;border:1px solid #e0e3e8;border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:14px;text-align:left"><span style="font-size:18px">&#128101;</span><div><div style="font-size:13px;font-weight:700;color:#111">'+paxCount+' passager'+(paxCount>1?'s':'')+'</div><div style="font-size:11px;color:#777">'+c.passagers.slice(0,2).map(p=>p.prenom+' '+p.nom).join(', ')+(c.passagers.length>2?'...':'')+'</div></div><i class="fas fa-chevron-right" style="margin-left:auto;color:#aaa;font-size:12px"></i></button>' : '';
+    // Passagers — affiche le nom même si le tableau structuré c.passagers est vide
+    // (cas des anciens imports ou des courses saisies sans détail passager structuré)
+    let paxBtn = '';
+    if (c.passagers && c.passagers.length) {
+      // Cas standard : bouton qui ouvre la liste complète
+      paxBtn = '<button onclick="viewPax(\''+c._id+'\')" style="width:100%;background:#f0f2f5;border:1px solid #e0e3e8;border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:14px;text-align:left"><span style="font-size:18px">&#128101;</span><div><div style="font-size:13px;font-weight:700;color:#111">'+paxCount+' passager'+(paxCount>1?'s':'')+'</div><div style="font-size:11px;color:#777">'+c.passagers.slice(0,2).map(p=>((p.prenom||'')+' '+(p.nom||'')).trim()).filter(x=>x).join(', ')+(c.passagers.length>2?'...':'')+'</div></div><i class="fas fa-chevron-right" style="margin-left:auto;color:#aaa;font-size:12px"></i></button>';
+    } else {
+      // Fallback : pas de tableau structuré → on affiche quand même le nom/tel
+      // depuis les champs simples (c.passager, c.tel) ou à défaut c.client
+      const _paxNom = nomPassagerChauffeur(c);
+      const _paxTel = telPassagerChauffeur(c);
+      if (_paxNom && _paxNom !== '—') {
+        paxBtn = '<div style="width:100%;background:#f0f2f5;border:1px solid #e0e3e8;border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:14px;text-align:left"><span style="font-size:18px">&#128100;</span><div><div style="font-size:13px;font-weight:700;color:#111">'+paxCount+' passager'+(paxCount>1?'s':'')+'</div><div style="font-size:11px;color:#777">'+E(_paxNom)+(_paxTel?' &middot; '+E(_paxTel):'')+'</div></div></div>';
+      }
+    }
 
     // Lien de suivi du vol (Flightradar24 — gratuit, pas de requête API)
     const flightBtn = c.vol ? '<a href="https://www.flightradar24.com/data/flights/'+encodeURIComponent(c.vol.replace(/\s+/g,'').toLowerCase())+'" target="_blank" style="width:100%;background:#e0f7fa;border:1px solid #0891b2;border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:14px;text-align:left;text-decoration:none;box-sizing:border-box"><span style="font-size:18px">&#9992;&#65039;</span><div><div style="font-size:13px;font-weight:700;color:#0891b2">Vol '+c.vol+'</div><div style="font-size:11px;color:#0891b2">Toucher pour suivre le vol en direct</div></div><i class="fas fa-external-link-alt" style="margin-left:auto;color:#0891b2;font-size:12px"></i></a>' : '';
@@ -11129,10 +11142,25 @@ window.generateDriverPDF = function(courseId) {
   const estGerant = (c.creePar==='gerant' && c.donneurOrdre && (c.donneurOrdre.nom||'').trim());
   const dondo = estGerant ? c.donneurOrdre : null;
   const commLabel = estGerant ? ('Commission à reverser à '+ (dondo.nom||'votre donneur d\'ordre')) : 'Commission à reverser à MOBILEA';
-  const paxList = (c.passagers||[]).map(p=>{
-    const nom = (p.prenom||'')+(p.nom?' '+p.nom:'');
-    return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${nom||'—'}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.tel||'—')}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.vol||c.vol||'—')}</td></tr>`;
-  }).join('') || '<tr><td colspan="3" style="padding:10px;text-align:center;color:#999">Aucun passager renseigné</td></tr>';
+  // Liste passagers du bon de commande : utilise le tableau structuré si présent,
+  // sinon fallback sur les champs simples (c.passager + c.tel + c.vol) pour qu'il
+  // y ait AU MOINS une ligne avec le nom du passager — sinon le bon de commande
+  // dit "Aucun passager renseigné" alors qu'on a bien le nom dans la course.
+  let paxList = '';
+  if (c.passagers && c.passagers.length) {
+    paxList = c.passagers.map(p => {
+      const nom = ((p.prenom||'')+(p.nom?' '+p.nom:'')).trim();
+      return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(nom)||'—'}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.tel||'—')}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.vol||c.vol||'—')}</td></tr>`;
+    }).join('');
+  } else {
+    const _pNom = nomPassagerChauffeur(c);
+    const _pTel = telPassagerChauffeur(c);
+    const _pVol = c.vol || '—';
+    if (_pNom && _pNom !== '—') {
+      paxList = `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(_pNom)}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(_pTel||'—')}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(_pVol)}</td></tr>`;
+    }
+  }
+  if (!paxList) paxList = '<tr><td colspan="3" style="padding:10px;text-align:center;color:#999">Aucun passager renseigné</td></tr>';
 
   openPrintableDoc(`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Bon de commande ${E(c.ref||c._id.slice(0,6))}</title>
   <style>
