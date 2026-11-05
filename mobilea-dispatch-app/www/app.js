@@ -20326,31 +20326,37 @@ function _srInjectStyle(){
   document.head.appendChild(s);
 }
 
-function srOpenTab(tab) {
+async function srOpenTab(tab) {
+  console.log('[SR] srOpenTab', tab);
   SR.currentTab = tab;
   document.querySelectorAll('.sr-tab').forEach(function(b){ b.classList.remove('active'); });
   var el = document.getElementById('sr-tab-' + tab); if (el) el.classList.add('active');
-  var c = document.getElementById('sr-content');
-  if (c) c.innerHTML = '<p style="text-align:center;padding:40px;color:#999">Chargement…</p>';
-  if (tab === 'csp') srLoadCsp();
-  else if (tab === 'audit') srLoadAudit();
-  else if (tab === 'rgpd') srLoadRgpd();
+  _srSet('<p style="text-align:center;padding:40px;color:#999">Chargement…</p>');
+  try {
+    if (tab === 'csp') await srLoadCsp();
+    else if (tab === 'audit') await srLoadAudit();
+    else if (tab === 'rgpd') await srLoadRgpd();
+    console.log('[SR] srOpenTab', tab, 'terminé');
+  } catch(e) {
+    console.error('[SR] srOpenTab ERREUR:', e);
+    _srSet('<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>');
+  }
 }
 
 // ===========================================================================
 // ONGLET 1 — Violations CSP
 // ===========================================================================
 async function srLoadCsp() {
-  try {
-    // fbGet retourne un array [{_id, ...data}, ...]
-    var entries = await fbGet('csp_reports');
-    if (!Array.isArray(entries)) entries = [];
-    entries.sort(function(a, b){ return (b.timestamp || '').localeCompare(a.timestamp || ''); });
-    SR.cspData = entries;
-    srRenderCsp();
-  } catch (e) {
-    _srSet('<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>');
-  }
+  console.log('[SR] srLoadCsp start');
+  // fbGet retourne un array [{_id, ...data}, ...]
+  var entries = await fbGet('csp_reports');
+  console.log('[SR] srLoadCsp fbGet retour:', entries ? entries.length : 'null');
+  if (!Array.isArray(entries)) entries = [];
+  entries.sort(function(a, b){ return (b.timestamp || '').localeCompare(a.timestamp || ''); });
+  SR.cspData = entries;
+  console.log('[SR] srLoadCsp appel srRenderCsp');
+  srRenderCsp();
+  console.log('[SR] srLoadCsp srRenderCsp OK, contenu length:', document.getElementById('sr-content')?.innerHTML?.length);
 }
 
 function srRenderCsp() {
@@ -20436,15 +20442,11 @@ async function srPurgeOldCsp() {
 // ONGLET 2 — Audit d'accès
 // ===========================================================================
 async function srLoadAudit() {
-  try {
-    var entries = await fbGet('audit_access');
-    if (!Array.isArray(entries)) entries = [];
-    entries.sort(function(a, b){ return (b.timestamp || '').localeCompare(a.timestamp || ''); });
-    SR.auditData = entries;
-    srRenderAudit();
-  } catch (e) {
-    _srSet('<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>');
-  }
+  var entries = await fbGet('audit_access');
+  if (!Array.isArray(entries)) entries = [];
+  entries.sort(function(a, b){ return (b.timestamp || '').localeCompare(a.timestamp || ''); });
+  SR.auditData = entries;
+  srRenderAudit();
 }
 
 function srRenderAudit() {
@@ -20496,15 +20498,11 @@ function srExportAuditCsv() {
 // ONGLET 3 — Demandes RGPD
 // ===========================================================================
 async function srLoadRgpd() {
-  try {
-    var entries = await fbGet('rgpd_suppression_requests');
-    if (!Array.isArray(entries)) entries = [];
-    entries.sort(function(a, b){ return (b.createdAt || '').localeCompare(a.createdAt || ''); });
-    SR.rgpdData = entries;
-    srRenderRgpd();
-  } catch (e) {
-    _srSet('<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>');
-  }
+  var entries = await fbGet('rgpd_suppression_requests');
+  if (!Array.isArray(entries)) entries = [];
+  entries.sort(function(a, b){ return (b.createdAt || '').localeCompare(a.createdAt || ''); });
+  SR.rgpdData = entries;
+  srRenderRgpd();
 }
 
 function _srStatutBadge(s) {
