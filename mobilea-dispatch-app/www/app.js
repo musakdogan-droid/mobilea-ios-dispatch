@@ -3784,11 +3784,58 @@ function renderAgenda() {
   }
 
   // Courses du jour triées par heure
-  const courses = D.courses.filter(c=>c.datetime&&c.datetime.startsWith(selStr))
+  const toutesCourses = D.courses.filter(c=>c.datetime&&c.datetime.startsWith(selStr))
     .sort((a,b)=>a.datetime.localeCompare(b.datetime));
 
+  // Filtre "Non attribués" (toggle via le bouton à côté du compteur)
+  const filtreNonAttribue = !!window.agendaFiltreNonAttribue;
+  const courses = filtreNonAttribue
+    ? toutesCourses.filter(c => !c.chauffeur && !c.chauffeurUid)
+    : toutesCourses;
+
+  const nbTotal = toutesCourses.length;
+  const nbNonAttribues = toutesCourses.filter(c => !c.chauffeur && !c.chauffeurUid).length;
+
   const cnt = document.getElementById('agenda-cnt');
-  if(cnt) cnt.textContent = `${courses.length} course${courses.length!==1?'s':''}`;
+  if(cnt) {
+    if (filtreNonAttribue) {
+      cnt.textContent = `${courses.length} / ${nbTotal} à attribuer`;
+    } else {
+      cnt.textContent = `${nbTotal} course${nbTotal!==1?'s':''}`;
+    }
+  }
+
+  // Injection du bouton toggle à côté du compteur (une seule fois)
+  if (cnt && !document.getElementById('agenda-filter-btn')) {
+    const btn = document.createElement('button');
+    btn.id = 'agenda-filter-btn';
+    btn.className = 'btn btn-ghost btn-sm';
+    btn.style.cssText = 'margin-left:4px;font-size:12px;padding:6px 12px';
+    btn.setAttribute('title', 'Afficher seulement les transferts non attribués à un chauffeur');
+    btn.onclick = function(){
+      window.agendaFiltreNonAttribue = !window.agendaFiltreNonAttribue;
+      renderAgenda();
+    };
+    cnt.insertAdjacentElement('afterend', btn);
+  }
+  // Mise à jour du texte et style du bouton (reflet de l'état)
+  const btnF = document.getElementById('agenda-filter-btn');
+  if (btnF) {
+    if (filtreNonAttribue) {
+      btnF.innerHTML = '<i class="fas fa-eye"></i> Voir tout';
+      btnF.style.background = '#fff3cd';
+      btnF.style.color = '#856404';
+      btnF.style.border = '1px solid #ffc107';
+    } else {
+      const badge = nbNonAttribues > 0
+        ? ' <span style="background:#dc3545;color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;font-weight:700;margin-left:4px">'+nbNonAttribues+'</span>'
+        : '';
+      btnF.innerHTML = '<i class="fas fa-user-slash"></i> À attribuer' + badge;
+      btnF.style.background = '';
+      btnF.style.color = '';
+      btnF.style.border = '';
+    }
+  }
 
   const list = document.getElementById('agenda-list');
   if(!list) return;
