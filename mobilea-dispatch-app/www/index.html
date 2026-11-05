@@ -458,7 +458,7 @@ tr:last-child td{border-bottom:none}
   window.OneSignalDeferred = window.OneSignalDeferred || [];
   OneSignalDeferred.push(async function(OneSignal) {
     await OneSignal.init({
-      appId: "df716aa7-cc78-46f1-84ef-f95dc420d4b0",
+      appId: "85e71302-1646-456d-9db4-a1875bb7d25c",
       safari_web_id: "web.onesignal.auto.064b44a8-1dd7-4e10-9d87-452ef5b9c9dd",
       notifyButton: { enable: true },
     });
@@ -1057,10 +1057,13 @@ body[data-driver-skin="premium"] .bdg{ border-radius:999px; font-weight:700; }
             <div class="sec-t"><i class="fas fa-map-marked-alt" style="color:var(--green)"></i> Carte des chauffeurs <span id="cc-count" class="bdg bdg-green" style="margin-left:6px">0 actif(s)</span></div>
             <div class="sec-a">
               <span style="font-size:11px;color:var(--muted)" id="cc-updated"></span>
+              <button id="cc-live-trace-btn" class="btn btn-sm" style="background:#2ecc8a;color:#fff;border:none" onclick="toggleLiveTraces()" title="Afficher/masquer le tracé GPS en direct"><i class="fas fa-route"></i> Masquer les tracés</button>
+              <button class="btn btn-ghost btn-sm" onclick="clearLiveTraces()" title="Effacer tous les tracés en cours"><i class="fas fa-eraser"></i> Effacer tracés</button>
               <button class="btn btn-s btn-sm" onclick="refreshCarteChauffeurs()"><i class="fas fa-sync"></i> Actualiser</button>
             </div>
           </div>
-          <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--card2)">
+          <!-- Historique de déplacement : masqué pour le gérant (il voit uniquement SES chauffeurs en temps réel) -->
+          <div id="cc-historique-bar" style="padding:10px 16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--card2)">
             <span style="font-size:12px;color:var(--muted);font-weight:600"><i class="fas fa-route" style="color:var(--gold)"></i> Historique de déplacement :</span>
             <select id="cc-hist-driver" class="fsel" style="padding:6px 8px;min-width:150px"><option value="">Choisir un chauffeur…</option></select>
             <input type="date" id="cc-hist-date" class="fsel" style="padding:6px 8px">
@@ -2060,9 +2063,9 @@ body[data-driver-skin="premium"] .bdg{ border-radius:999px; font-weight:700; }
               </div>
               <div style="background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:14px;margin-bottom:12px">
                 <div style="font-size:13px;font-weight:700;color:var(--white);margin-bottom:4px">🔎 Attribuer à un chauffeur du réseau MOBILEA</div>
-                <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Choisir un chauffeur précis dans toute la liste MOBILEA — recherche par nom, prénom ou numéro de téléphone.</div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Accès complet à tous les chauffeurs MOBILEA — recherche par nom, prénom ou numéro de téléphone.</div>
                 <div style="position:relative;margin-bottom:10px">
-                  <input type="text" id="gn-autre-ch-search" placeholder="🔎 Rechercher par nom ou téléphone (ex: Hamza, 0686...)" autocomplete="off" maxlength="80" style="width:100%;padding:12px 14px;border:1px solid var(--border2);border-radius:10px;background:var(--card2);color:var(--white);font-size:14px;outline:none;font-family:inherit">
+                  <input type="text" id="gn-autre-ch-search" placeholder="🔎 Rechercher par nom ou téléphone (ex: Hamza, 0686...)" autocomplete="off" maxlength="80" oninput="gnAutreChSearch(this.value)" onfocus="gnAutreChSearch(this.value)" style="width:100%;padding:12px 14px;border:1px solid var(--border2);border-radius:10px;background:var(--card2);color:var(--white);font-size:14px;outline:none;font-family:inherit">
                   <input type="hidden" id="gn-autre-ch" value="">
                   <div id="gn-autre-ch-selected" style="display:none;margin-top:8px;padding:10px 12px;background:#1e3a8a;border:1px solid #3b82f6;border-radius:8px;font-size:13px;color:#fff;font-weight:700"></div>
                   <div id="gn-autre-ch-drop" style="display:none;position:absolute;left:0;right:0;top:100%;margin-top:4px;background:var(--card2);border:1px solid var(--border2);border-radius:10px;max-height:280px;overflow-y:auto;z-index:1000;box-shadow:0 6px 24px rgba(0,0,0,.35)"></div>
@@ -2831,6 +2834,84 @@ body[data-driver-skin="premium"] .bdg{ border-radius:999px; font-weight:700; }
             <div>
               <div style="font-size:13px;font-weight:700;color:#b45309">⭐ Chauffeur prioritaire</div>
               <div style="font-size:11px;color:#92400e">Reçoit les transferts ouverts en priorité, avant qu'ils ne soient proposés à tous les chauffeurs</div>
+            </div>
+          </label>
+
+          <!-- ★ MENUS ACCESSIBLES — chaque menu dans sa propre carte, comme les autres sections -->
+          <div style="margin-top:14px;padding-top:12px;border-top:2px dashed #e2e8f0">
+            <div style="font-size:13px;font-weight:800;color:#334155;margin-bottom:4px">📱 MENUS ACCESSIBLES DANS L'APP CHAUFFEUR</div>
+            <div style="font-size:11px;color:#64748b;margin-bottom:12px">Cochez chaque menu auquel ce chauffeur a accès. Par défaut tout est autorisé.</div>
+          </div>
+
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#ecfdf5;border:1px solid #86efac;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-menu-mescourses" checked style="width:18px;height:18px;cursor:pointer;accent-color:#16a34a">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#15803d">🛣️ Mes courses</div>
+              <div style="font-size:11px;color:#166534">Le chauffeur voit la liste de ses courses attribuées, les offres ouvertes, et peut avancer dans le workflow (en route, sur place, à bord, déposé).</div>
+            </div>
+          </label>
+
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#ecfdf5;border:1px solid #86efac;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-menu-mesrevenus" checked style="width:18px;height:18px;cursor:pointer;accent-color:#16a34a">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#15803d">📈 Mes revenus</div>
+              <div style="font-size:11px;color:#166534">Le chauffeur voit ses gains (jour, semaine, mois) et peut télécharger sa facture.</div>
+            </div>
+          </label>
+
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#ecfdf5;border:1px solid #86efac;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-menu-messagerie" checked style="width:18px;height:18px;cursor:pointer;accent-color:#16a34a">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#15803d">💬 Messagerie</div>
+              <div style="font-size:11px;color:#166534">Chat avec le support MOBILEA (dispatch / admin). Décochez si vous ne voulez pas que ce chauffeur discute avec le staff.</div>
+            </div>
+          </label>
+
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#eff6ff;border:1px solid #93c5fd;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-menu-tableaubord" checked style="width:18px;height:18px;cursor:pointer;accent-color:#2563eb">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#1d4ed8">📊 Mon tableau de bord <span style="font-size:10px;color:#64748b;font-weight:500">(gérant)</span></div>
+              <div style="font-size:11px;color:#1e40af">Visible uniquement si "Transferts & tableau de bord" ou "Gérant" sont également cochés plus haut. Permet de voir le CA de sa société.</div>
+            </div>
+          </label>
+
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#eff6ff;border:1px solid #93c5fd;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-menu-nouveautransfert" checked style="width:18px;height:18px;cursor:pointer;accent-color:#2563eb">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#1d4ed8">➕ Nouveau transfert <span style="font-size:10px;color:#64748b;font-weight:500">(gérant)</span></div>
+              <div style="font-size:11px;color:#1e40af">Permet au gérant de créer un transfert et de l'attribuer à ses propres chauffeurs ou de le proposer au réseau.</div>
+            </div>
+          </label>
+
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#eff6ff;border:1px solid #93c5fd;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-menu-mestransferts" checked style="width:18px;height:18px;cursor:pointer;accent-color:#2563eb">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#1d4ed8">📋 Mes transferts <span style="font-size:10px;color:#64748b;font-weight:500">(gérant)</span></div>
+              <div style="font-size:11px;color:#1e40af">Liste des transferts créés par le gérant pour sa société, avec leur statut.</div>
+            </div>
+          </label>
+
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#eff6ff;border:1px solid #93c5fd;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-menu-cartechauffeurs" checked style="width:18px;height:18px;cursor:pointer;accent-color:#2563eb">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#1d4ed8">🗺️ Carte chauffeurs <span style="font-size:10px;color:#64748b;font-weight:500">(gérant)</span></div>
+              <div style="font-size:11px;color:#1e40af">Position GPS temps réel des chauffeurs de la société du gérant.</div>
+            </div>
+          </label>
+
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#eff6ff;border:1px solid #93c5fd;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-menu-meschauffeurs" checked style="width:18px;height:18px;cursor:pointer;accent-color:#2563eb">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#1d4ed8">👥 Mes chauffeurs <span style="font-size:10px;color:#64748b;font-weight:500">(gérant)</span></div>
+              <div style="font-size:11px;color:#1e40af">Visible uniquement si "Gérant de la société" est coché plus haut. Permet d'ajouter / modifier les chauffeurs de sa société.</div>
+            </div>
+          </label>
+
+          <label style="display:flex;align-items:center;gap:10px;padding:12px;background:#eff6ff;border:1px solid #93c5fd;border-radius:var(--r-sm);cursor:pointer;margin-top:10px">
+            <input type="checkbox" id="ch-menu-mesvehicules" checked style="width:18px;height:18px;cursor:pointer;accent-color:#2563eb">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#1d4ed8">🚗 Mes véhicules <span style="font-size:10px;color:#64748b;font-weight:500">(gérant)</span></div>
+              <div style="font-size:11px;color:#1e40af">Visible uniquement si "Gérant de la société" est coché plus haut. Gestion de la flotte de la société.</div>
             </div>
           </label>
         </div>
