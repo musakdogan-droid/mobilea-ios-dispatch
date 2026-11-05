@@ -20,7 +20,7 @@ function sanitize(str, maxLen) {
   if(!str) return ''; 
   let s = String(str).trim();
   // Supprimer les balises HTML/script
-  s = s.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+  s = s.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ''); 
   s = s.replace(/<[^>]+>/g, '');
   // Limiter la longueur
   if(maxLen && s.length > maxLen) s = s.slice(0, maxLen);
