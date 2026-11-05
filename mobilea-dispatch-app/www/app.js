@@ -17,7 +17,7 @@ const E = escHtml;
 // ── SANITISATION DES ENTRÉES ──
 // Nettoie une chaîne avant de la sauvegarder dans Firebase
 function sanitize(str, maxLen) {
-  if(!str) return '';
+  if(!str) return ''; 
   let s = String(str).trim();
   // Supprimer les balises HTML/script
   s = s.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
