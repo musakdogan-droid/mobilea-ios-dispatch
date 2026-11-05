@@ -20654,3 +20654,22 @@ async function logAuditAccess(opts) {
 }
 
 // Note: pas de ré-ouverture automatique au load — ça causait un conflit avec le router existant
+
+// PATCH DÉFINITIF : wrap gp() pour toujours nettoyer les inline styles.display
+// (héritage d'anciennes versions qui mettaient style.display='none' partout et
+// bloquaient la navigation après avoir ouvert la page Sécurité & RGPD)
+(function(){
+  if (typeof window.gp === 'function' && !window.gp._srCleanPatched) {
+    var _origGp = window.gp;
+    window.gp = function(name, btn){
+      // Nettoie tous les inline style.display sur les pages
+      try {
+        document.querySelectorAll('.page, [id^="page-"]').forEach(function(s){
+          if (s.style && s.style.display) s.style.removeProperty('display');
+        });
+      } catch(e){}
+      return _origGp.apply(this, arguments);
+    };
+    window.gp._srCleanPatched = true;
+  }
+})();
