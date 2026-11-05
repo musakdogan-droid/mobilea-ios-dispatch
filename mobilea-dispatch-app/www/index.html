@@ -740,6 +740,7 @@ body[data-driver-skin="premium"] .bdg{ border-radius:999px; font-weight:700; }
       <button class="ni" data-p="historique" onclick="gp('historique',this)"><i style="width:16px;text-align:center" class="fas fa-history"></i> Historique</button>
       <button class="ni admin-only" data-p="aiphone" onclick="gp('aiphone',this)"><i style="width:16px;text-align:center" class="fas fa-phone-volume"></i> IA Téléphonique</button>
       <button class="ni admin-only" data-p="parametres" onclick="gp('parametres',this)"><i style="width:16px;text-align:center" class="fas fa-cog"></i> Paramètres</button>
+      <button class="ni admin-only" data-p="securite-rgpd" onclick="openSecuriteRgpd(); this.parentNode.querySelectorAll('.ni').forEach(b=>b.classList.remove('on')); this.classList.add('on');"><i style="width:16px;text-align:center" class="fas fa-shield-alt"></i> Sécurité &amp; RGPD</button>
     </nav>
     <div class="sb-bot">
       <div class="sb-user">
@@ -4053,6 +4054,370 @@ function attachPlaces(id) {
     } catch(e){}
   };
   setInterval(function(){ var p=document.getElementById('page-aiphone'); if(p && p.classList.contains('on')) { mobileaAiPhoneLoad(); mobileaAiLoadMessages(); } }, 30000);
+})();
+</script>
+
+
+<!-- ============================================================================
+     POINT 7 — Module Sécurité & RGPD (inline, auto-injecté)
+     ============================================================================ -->
+<style>
+.sr-tab { padding:10px 20px; background:none; border:none; cursor:pointer; font-size:14px; color:#666; border-bottom:3px solid transparent; margin-bottom:-2px; transition:all 0.2s; }
+.sr-tab:hover { background:#f5f5f5; color:#333; }
+.sr-tab.active { color:#d4a017; border-bottom-color:#d4a017; font-weight:600; }
+.sr-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:20px; }
+.sr-stat { background:#fff; border:1px solid #eee; border-radius:8px; padding:16px; text-align:center; }
+.sr-stat-val { font-size:28px; font-weight:700; color:#d4a017; }
+.sr-stat-lbl { font-size:12px; color:#666; margin-top:4px; text-transform:uppercase; }
+.sr-chart { background:#fff; border:1px solid #eee; border-radius:8px; padding:16px; margin-bottom:20px; }
+.sr-bar { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+.sr-bar-label { min-width:150px; font-size:12px; color:#333; font-family:monospace; }
+.sr-bar-track { flex:1; background:#f0f0f0; border-radius:4px; height:24px; position:relative; overflow:hidden; }
+.sr-bar-fill { background:linear-gradient(90deg,#d4a017,#e8c050); height:100%; display:flex; align-items:center; padding-left:8px; color:#fff; font-weight:600; font-size:12px; }
+.sr-table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #eee; border-radius:8px; overflow:hidden; margin-top:10px; }
+.sr-table th { background:#fafafa; text-align:left; padding:10px; font-size:12px; text-transform:uppercase; color:#666; border-bottom:1px solid #eee; }
+.sr-table td { padding:10px; font-size:13px; border-bottom:1px solid #f5f5f5; }
+.sr-table tr:hover td { background:#fafafa; }
+.sr-table code { background:#f5f5f5; padding:2px 6px; border-radius:3px; font-size:11px; }
+.sr-actions { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+.sr-btn { padding:8px 16px; border:1px solid #ddd; background:#fff; border-radius:6px; cursor:pointer; font-size:13px; }
+.sr-btn:hover { background:#f5f5f5; }
+.sr-btn-danger { background:#dc3545; color:#fff; border-color:#dc3545; }
+.sr-btn-danger:hover { background:#b02a37; }
+.sr-btn-success { background:#28a745; color:#fff; border-color:#28a745; }
+.sr-btn-success:hover { background:#1e7e34; }
+.sr-badge { padding:3px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+.sr-badge-pending { background:#fff3cd; color:#856404; }
+.sr-badge-approved { background:#d4edda; color:#155724; }
+.sr-badge-rejected { background:#f8d7da; color:#721c24; }
+.sr-empty { text-align:center; padding:40px; color:#999; }
+</style>
+<script>
+(function(){
+  var SR = { currentTab:'csp', cspData:[], auditData:[], rgpdData:[] };
+  function _esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function _getSession(){ try { return window.SESSION || window.session || null; } catch(e){ return null; } }
+  function _isAdmin(){ var s=_getSession(); return s && (s.role==='admin' || s.role==='administrateur'); }
+  function _fb(){ try { return firebase.database(); } catch(e){ return null; } }
+
+  window.openSecuriteRgpd = async function(){
+    if (!_isAdmin()) { alert('⛔ Accès refusé — administrateurs uniquement.'); return; }
+    try { if (location.hash !== '#securite-rgpd') location.hash = 'securite-rgpd'; } catch(e){}
+    // Cache toutes les pages existantes
+    document.querySelectorAll('.page, [id^="page-"], .section').forEach(function(s){ s.classList.remove('on'); s.style.display='none'; });
+    // Met à jour le titre
+    var tt = document.getElementById('page-title'); if (tt) tt.textContent = 'Sécurité & RGPD';
+    // Crée ou réaffiche notre page
+    var host = document.getElementById('page-securite-rgpd');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'page-securite-rgpd';
+      host.className = 'page on';
+      host.style.padding = '20px';
+      (document.querySelector('main.main') || document.querySelector('main') || document.body).appendChild(host);
+    }
+    host.style.display = 'block';
+    host.classList.add('on');
+    host.innerHTML =
+      '<div class="sr-page">' +
+        '<h1 style="margin:16px 0 8px">🔒 Sécurité &amp; RGPD</h1>' +
+        '<p style="color:#666;margin:0 0 20px">Monitoring des violations CSP, journal d\'audit, et gestion des demandes RGPD.</p>' +
+        '<div class="sr-tabs" style="display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #eee;padding-bottom:0">' +
+          '<button id="sr-tab-csp" onclick="srOpenTab(\'csp\')" class="sr-tab">⚠️ Violations CSP</button>' +
+          '<button id="sr-tab-audit" onclick="srOpenTab(\'audit\')" class="sr-tab">📋 Audit d\'accès</button>' +
+          '<button id="sr-tab-rgpd" onclick="srOpenTab(\'rgpd\')" class="sr-tab">🗑️ Demandes RGPD</button>' +
+        '</div>' +
+        '<div id="sr-content" style="min-height:400px"><p style="text-align:center;padding:40px;color:#999">Chargement…</p></div>' +
+      '</div>';
+    srOpenTab(SR.currentTab);
+  };
+
+  window.srOpenTab = function(tab){
+    SR.currentTab = tab;
+    document.querySelectorAll('.sr-tab').forEach(function(b){ b.classList.remove('active'); });
+    var el = document.getElementById('sr-tab-' + tab); if (el) el.classList.add('active');
+    var c = document.getElementById('sr-content');
+    if (c) c.innerHTML = '<p style="text-align:center;padding:40px;color:#999">Chargement…</p>';
+    if (tab === 'csp') srLoadCsp();
+    else if (tab === 'audit') srLoadAudit();
+    else if (tab === 'rgpd') srLoadRgpd();
+  };
+
+  async function srLoadCsp(){
+    var fb = _fb(); if (!fb){ document.getElementById('sr-content').innerHTML='<div class="sr-empty">❌ Firebase indisponible.</div>'; return; }
+    try {
+      var snap = await fb.ref('csp_reports').limitToLast(1000).once('value');
+      var data = snap.val() || {};
+      var entries = Object.keys(data).map(function(k){ var o=data[k]; o.id=k; return o; });
+      entries.sort(function(a,b){ return (b.timestamp||'').localeCompare(a.timestamp||''); });
+      SR.cspData = entries;
+      srRenderCsp();
+    } catch(e){
+      document.getElementById('sr-content').innerHTML = '<div class="sr-empty">❌ Erreur : ' + _esc(e.message) + '</div>';
+    }
+  }
+
+  function srRenderCsp(){
+    var entries = SR.cspData;
+    var now = Date.now();
+    var c24 = entries.filter(function(e){ return new Date(e.timestamp).getTime() > now - 86400000; }).length;
+    var c7 = entries.filter(function(e){ return new Date(e.timestamp).getTime() > now - 604800000; }).length;
+    var c30 = entries.filter(function(e){ return new Date(e.timestamp).getTime() > now - 2592000000; }).length;
+    var byDir = {};
+    entries.forEach(function(e){ var d = e.violatedDirective || 'unknown'; byDir[d] = (byDir[d]||0)+1; });
+    var maxC = Math.max(1, ...Object.values(byDir));
+    var html = '<div class="sr-stats">' +
+      '<div class="sr-stat"><div class="sr-stat-val">'+entries.length+'</div><div class="sr-stat-lbl">Total</div></div>' +
+      '<div class="sr-stat"><div class="sr-stat-val">'+c24+'</div><div class="sr-stat-lbl">24h</div></div>' +
+      '<div class="sr-stat"><div class="sr-stat-val">'+c7+'</div><div class="sr-stat-lbl">7 jours</div></div>' +
+      '<div class="sr-stat"><div class="sr-stat-val">'+c30+'</div><div class="sr-stat-lbl">30 jours</div></div>' +
+      '</div>';
+    if (entries.length === 0) {
+      html += '<div class="sr-empty">✅ Aucune violation CSP enregistrée.</div>';
+      document.getElementById('sr-content').innerHTML = html; return;
+    }
+    html += '<h3 style="margin:20px 0 10px">📊 Répartition par directive</h3><div class="sr-chart">';
+    Object.keys(byDir).sort(function(a,b){ return byDir[b]-byDir[a]; }).forEach(function(k){
+      html += '<div class="sr-bar"><span class="sr-bar-label">'+_esc(k)+'</span><div class="sr-bar-track"><div class="sr-bar-fill" style="width:'+((byDir[k]/maxC)*100)+'%">'+byDir[k]+'</div></div></div>';
+    });
+    html += '</div>';
+    html += '<h3 style="margin:20px 0 10px">📋 Dernières violations (100 max)</h3>';
+    html += '<div class="sr-actions">' +
+      '<button class="sr-btn" onclick="srExportCspCsv()">📥 Exporter CSV</button>' +
+      '<button class="sr-btn sr-btn-danger" onclick="srPurgeOldCsp()">🗑️ Purger &gt;30 jours</button>' +
+      '<button class="sr-btn" onclick="srOpenTab(\'csp\')">🔄 Rafraîchir</button>' +
+      '</div>';
+    html += '<table class="sr-table"><thead><tr><th>Date</th><th>Directive</th><th>Bloqué</th><th>Source</th><th>Ligne</th></tr></thead><tbody>';
+    entries.slice(0,100).forEach(function(e){
+      var bu = e.blockedUri || '';
+      var sf = e.sourceFile || '';
+      html += '<tr>' +
+        '<td style="white-space:nowrap">'+new Date(e.timestamp).toLocaleString('fr-FR')+'</td>' +
+        '<td><code>'+_esc(e.violatedDirective || '-')+'</code></td>' +
+        '<td title="'+_esc(bu)+'"><code>'+_esc(bu.slice(0,50))+(bu.length>50?'…':'')+'</code></td>' +
+        '<td title="'+_esc(sf)+'"><code>'+_esc(sf.slice(0,50))+(sf.length>50?'…':'')+'</code></td>' +
+        '<td>'+(e.lineNumber||'-')+'</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    document.getElementById('sr-content').innerHTML = html;
+  }
+
+  window.srExportCspCsv = function(){
+    var rows = [['Date','Directive','Bloqué','Source','Ligne','Colonne','Disposition']];
+    SR.cspData.forEach(function(e){ rows.push([e.timestamp||'', e.violatedDirective||'', e.blockedUri||'', e.sourceFile||'', e.lineNumber||'', e.columnNumber||'', e.disposition||'']); });
+    _downloadCsv(rows, 'csp-reports-' + new Date().toISOString().slice(0,10) + '.csv');
+  };
+
+  window.srPurgeOldCsp = async function(){
+    if (!confirm('Supprimer toutes les violations CSP de plus de 30 jours ?')) return;
+    var cutoff = Date.now() - 2592000000;
+    var old = SR.cspData.filter(function(e){ return new Date(e.timestamp).getTime() < cutoff; });
+    if (old.length === 0){ alert('Rien à supprimer.'); return; }
+    if (!confirm(old.length + ' entrées seront supprimées. Confirmer ?')) return;
+    var fb = _fb(); if (!fb) return;
+    var updates = {};
+    old.forEach(function(e){ updates['csp_reports/'+e.id] = null; });
+    try { await fb.ref().update(updates); alert('✅ ' + old.length + ' entrées supprimées.'); srOpenTab('csp'); }
+    catch(e){ alert('❌ Erreur : ' + e.message); }
+  };
+
+  async function srLoadAudit(){
+    var fb = _fb(); if (!fb) return;
+    try {
+      var snap = await fb.ref('audit_access').limitToLast(1000).once('value');
+      var data = snap.val() || {};
+      var entries = Object.keys(data).map(function(k){ var o=data[k]; o.id=k; return o; });
+      entries.sort(function(a,b){ return (b.timestamp||'').localeCompare(a.timestamp||''); });
+      SR.auditData = entries;
+      srRenderAudit();
+    } catch(e){
+      document.getElementById('sr-content').innerHTML = '<div class="sr-empty">❌ Erreur : ' + _esc(e.message) + '</div>';
+    }
+  }
+
+  function srRenderAudit(){
+    var entries = SR.auditData;
+    var now = Date.now();
+    var c24 = entries.filter(function(e){ return new Date(e.timestamp).getTime() > now - 86400000; }).length;
+    var c7 = entries.filter(function(e){ return new Date(e.timestamp).getTime() > now - 604800000; }).length;
+    var byAct = {}; entries.forEach(function(e){ var a=e.action||'unknown'; byAct[a]=(byAct[a]||0)+1; });
+    var html = '<div class="sr-stats">' +
+      '<div class="sr-stat"><div class="sr-stat-val">'+entries.length+'</div><div class="sr-stat-lbl">Total</div></div>' +
+      '<div class="sr-stat"><div class="sr-stat-val">'+c24+'</div><div class="sr-stat-lbl">24h</div></div>' +
+      '<div class="sr-stat"><div class="sr-stat-val">'+c7+'</div><div class="sr-stat-lbl">7 jours</div></div>' +
+      '<div class="sr-stat"><div class="sr-stat-val">'+Object.keys(byAct).length+'</div><div class="sr-stat-lbl">Actions distinctes</div></div>' +
+      '</div>';
+    if (entries.length === 0){
+      html += '<div class="sr-empty"><p>📭 Aucun événement d\'audit enregistré.</p><p style="font-size:12px;margin-top:8px">Le journal se remplira dès que du code appellera <code>logAuditAccess({action:..., target:...})</code>.</p></div>';
+      document.getElementById('sr-content').innerHTML = html; return;
+    }
+    html += '<div class="sr-actions"><button class="sr-btn" onclick="srExportAuditCsv()">📥 Exporter CSV</button><button class="sr-btn" onclick="srOpenTab(\'audit\')">🔄 Rafraîchir</button></div>';
+    html += '<table class="sr-table"><thead><tr><th>Date</th><th>Utilisateur</th><th>Action</th><th>Cible</th><th>Détails</th></tr></thead><tbody>';
+    entries.slice(0,200).forEach(function(e){
+      html += '<tr>' +
+        '<td style="white-space:nowrap">'+new Date(e.timestamp).toLocaleString('fr-FR')+'</td>' +
+        '<td>'+_esc(e.userName||e.uid||'-')+'</td>' +
+        '<td><code>'+_esc(e.action||'-')+'</code></td>' +
+        '<td>'+_esc(e.target||'-')+'</td>' +
+        '<td style="font-size:11px;color:#666">'+_esc(e.details||'-')+'</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    document.getElementById('sr-content').innerHTML = html;
+  }
+
+  window.srExportAuditCsv = function(){
+    var rows = [['Date','UID','Nom','Action','Cible','Détails','IP Hash']];
+    SR.auditData.forEach(function(e){ rows.push([e.timestamp||'', e.uid||'', e.userName||'', e.action||'', e.target||'', e.details||'', e.ipHash||'']); });
+    _downloadCsv(rows, 'audit-access-' + new Date().toISOString().slice(0,10) + '.csv');
+  };
+
+  async function srLoadRgpd(){
+    var fb = _fb(); if (!fb) return;
+    try {
+      var snap = await fb.ref('rgpd_suppression_requests').once('value');
+      var data = snap.val() || {};
+      var entries = Object.keys(data).map(function(k){ var o=data[k]; o.id=k; return o; });
+      entries.sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+      SR.rgpdData = entries;
+      srRenderRgpd();
+    } catch(e){
+      document.getElementById('sr-content').innerHTML = '<div class="sr-empty">❌ Erreur : ' + _esc(e.message) + '</div>';
+    }
+  }
+
+  function _statut(s){
+    if (s==='en_attente') return '<span class="sr-badge sr-badge-pending">En attente</span>';
+    if (s==='approuvee') return '<span class="sr-badge sr-badge-approved">Approuvée</span>';
+    if (s==='refusee') return '<span class="sr-badge sr-badge-rejected">Refusée</span>';
+    return '<span class="sr-badge">'+_esc(s||'-')+'</span>';
+  }
+
+  function srRenderRgpd(){
+    var entries = SR.rgpdData;
+    var pending = entries.filter(function(e){ return e.statut==='en_attente'; }).length;
+    var approved = entries.filter(function(e){ return e.statut==='approuvee'; }).length;
+    var rejected = entries.filter(function(e){ return e.statut==='refusee'; }).length;
+    var html = '<div class="sr-stats">' +
+      '<div class="sr-stat"><div class="sr-stat-val">'+entries.length+'</div><div class="sr-stat-lbl">Total</div></div>' +
+      '<div class="sr-stat"><div class="sr-stat-val" style="color:#856404">'+pending+'</div><div class="sr-stat-lbl">En attente</div></div>' +
+      '<div class="sr-stat"><div class="sr-stat-val" style="color:#155724">'+approved+'</div><div class="sr-stat-lbl">Approuvées</div></div>' +
+      '<div class="sr-stat"><div class="sr-stat-val" style="color:#721c24">'+rejected+'</div><div class="sr-stat-lbl">Refusées</div></div>' +
+      '</div>';
+    if (entries.length === 0){
+      html += '<div class="sr-empty"><p>📭 Aucune demande de suppression RGPD.</p><p style="font-size:12px;margin-top:8px">Les demandes arrivent via le profil client (bouton "Supprimer mon compte").</p></div>';
+      document.getElementById('sr-content').innerHTML = html; return;
+    }
+    html += '<div class="sr-actions"><button class="sr-btn" onclick="srExportRgpdCsv()">📥 Exporter CSV</button><button class="sr-btn" onclick="srOpenTab(\'rgpd\')">🔄 Rafraîchir</button></div>';
+    html += '<table class="sr-table"><thead><tr><th>Demande</th><th>Utilisateur</th><th>Motif</th><th>Statut</th><th>Actions</th></tr></thead><tbody>';
+    entries.forEach(function(e){
+      html += '<tr>' +
+        '<td style="white-space:nowrap">'+new Date(e.createdAt).toLocaleString('fr-FR')+'</td>' +
+        '<td><div><strong>'+_esc(e.nom||e.uid||'-')+'</strong></div><div style="font-size:11px;color:#666">'+_esc(e.email||'')+'</div></td>' +
+        '<td style="font-size:12px;max-width:300px">'+_esc(e.motif||'-')+'</td>' +
+        '<td>'+_statut(e.statut)+'</td>' +
+        '<td>';
+      if (e.statut === 'en_attente'){
+        html += '<button class="sr-btn sr-btn-success" onclick="srApproveRgpd(\''+e.id+'\')">✅ Approuver</button> ' +
+                '<button class="sr-btn sr-btn-danger" onclick="srRejectRgpd(\''+e.id+'\')">❌ Refuser</button>';
+      } else {
+        html += '<div style="font-size:11px;color:#666">Par '+_esc(e.traitePar||'-')+'<br>Le '+(e.traiteAt?new Date(e.traiteAt).toLocaleDateString('fr-FR'):'-')+'</div>';
+        if (e.motifRefus) html += '<div style="font-size:11px;color:#721c24;margin-top:4px">'+_esc(e.motifRefus)+'</div>';
+      }
+      html += '</td></tr>';
+    });
+    html += '</tbody></table>';
+    document.getElementById('sr-content').innerHTML = html;
+  }
+
+  window.srApproveRgpd = async function(id){
+    var req = SR.rgpdData.find(function(r){ return r.id === id; });
+    if (!req) return;
+    if (!confirm('⚠️ APPROUVER la suppression RGPD ?\n\nUtilisateur : ' + (req.nom||req.uid) + '\nEmail : ' + (req.email||'-') + '\n\nCette action va :\n• Anonymiser ses données dans les courses passées\n• Supprimer son compte client_accounts\n• Marquer la demande comme approuvée\n\nOpération IRRÉVERSIBLE. Continuer ?')) return;
+    var fb = _fb(); if (!fb) return;
+    try {
+      var coursesSnap = await fb.ref('courses').orderByChild('createdByUid').equalTo(req.uid).once('value');
+      var courses = coursesSnap.val() || {};
+      var accSnap = await fb.ref('client_accounts').orderByChild('uid').equalTo(req.uid).once('value');
+      var accounts = accSnap.val() || {};
+      var updates = {};
+      Object.keys(courses).forEach(function(cid){
+        updates['courses/'+cid+'/client'] = '[Supprimé RGPD]';
+        updates['courses/'+cid+'/nom'] = '[Anonyme]';
+        updates['courses/'+cid+'/tel'] = '';
+        updates['courses/'+cid+'/email'] = '';
+        updates['courses/'+cid+'/adresseDepart'] = '[Supprimé]';
+        updates['courses/'+cid+'/adresseArrivee'] = '[Supprimé]';
+      });
+      Object.keys(accounts).forEach(function(aid){ updates['client_accounts/'+aid] = null; });
+      var s = _getSession() || {};
+      updates['rgpd_suppression_requests/'+id+'/statut'] = 'approuvee';
+      updates['rgpd_suppression_requests/'+id+'/traitePar'] = s.nom || s.email || s.uid;
+      updates['rgpd_suppression_requests/'+id+'/traiteAt'] = new Date().toISOString();
+      updates['rgpd_suppression_requests/'+id+'/coursesAnonymisees'] = Object.keys(courses).length;
+      updates['rgpd_suppression_requests/'+id+'/comptesSupprimes'] = Object.keys(accounts).length;
+      await fb.ref().update(updates);
+      alert('✅ Suppression RGPD effectuée.\n\n• ' + Object.keys(courses).length + ' course(s) anonymisée(s)\n• ' + Object.keys(accounts).length + ' compte(s) supprimé(s)\n\nPense à envoyer un email de confirmation au client.');
+      srOpenTab('rgpd');
+    } catch(e){ alert('❌ Erreur : ' + e.message); }
+  };
+
+  window.srRejectRgpd = async function(id){
+    var motif = prompt('Motif du refus (obligatoire, sera communiqué au client) :');
+    if (!motif || motif.trim().length < 5){ alert('Motif trop court. Refus annulé.'); return; }
+    var fb = _fb(); if (!fb) return;
+    var s = _getSession() || {};
+    try {
+      await fb.ref('rgpd_suppression_requests/'+id).update({
+        statut:'refusee', motifRefus:motif.trim(),
+        traitePar: s.nom || s.email || s.uid,
+        traiteAt: new Date().toISOString()
+      });
+      alert('✅ Demande marquée comme refusée.');
+      srOpenTab('rgpd');
+    } catch(e){ alert('❌ Erreur : ' + e.message); }
+  };
+
+  window.srExportRgpdCsv = function(){
+    var rows = [['Date demande','UID','Nom','Email','Motif','Statut','Traité par','Date traitement','Motif refus']];
+    SR.rgpdData.forEach(function(e){ rows.push([e.createdAt||'', e.uid||'', e.nom||'', e.email||'', e.motif||'', e.statut||'', e.traitePar||'', e.traiteAt||'', e.motifRefus||'']); });
+    _downloadCsv(rows, 'rgpd-demandes-' + new Date().toISOString().slice(0,10) + '.csv');
+  };
+
+  function _downloadCsv(rows, filename){
+    var csv = rows.map(function(r){ return r.map(function(cell){
+      var s = String(cell==null?'':cell);
+      if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) return '"' + s.replace(/"/g,'""') + '"';
+      return s;
+    }).join(','); }).join('\n');
+    var blob = new Blob(['﻿' + csv], { type:'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Helper global pour logger un accès sensible depuis n'importe où dans ton code
+  window.logAuditAccess = async function(opts){
+    opts = opts || {};
+    var s = _getSession(); if (!s) return;
+    var fb = _fb(); if (!fb) return;
+    try {
+      await fb.ref('audit_access').push({
+        uid: s.uid || 'unknown',
+        userName: s.nom || s.email || '',
+        action: String(opts.action || '').slice(0,100),
+        target: String(opts.target || '').slice(0,200),
+        details: String(opts.details || '').slice(0,500),
+        timestamp: new Date().toISOString()
+      });
+    } catch(e){ console.warn('audit log failed:', e.message); }
+  };
+
+  // Re-ouvre la page si l'URL contient notre hash au chargement
+  window.addEventListener('load', function(){
+    if (location.hash === '#securite-rgpd') { setTimeout(window.openSecuriteRgpd, 500); }
+  });
 })();
 </script>
 
