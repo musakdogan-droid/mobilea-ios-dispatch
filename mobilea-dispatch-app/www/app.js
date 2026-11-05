@@ -20227,3 +20227,599 @@ window.importExcel = async function(input) {
   }
   if(document.body) demarrer(); else document.addEventListener('DOMContentLoaded', demarrer);
 })();
+// ============================================================================
+// MOBILEA — Module Sécurité & RGPD (Point 7)
+// ----------------------------------------------------------------------------
+// À ajouter dans app.js (à la toute fin, avant la dernière accolade fermante
+// ou dans le bloc des fonctions admin).
+//
+// Prérequis :
+//   - Règles Firebase RGPD publiées (Point 5)
+//   - Worker CSP déployé (Point 6)
+//   - SESSION.role === 'admin' pour accéder
+//   - firebase.database() disponible (déjà le cas dans app.js)
+//   - escapeHtml() helper déjà défini (sinon utilise la version fournie en bas)
+// ============================================================================
+
+// État local du module
+const SR = {
+  currentTab: 'csp',
+  cspData: [],
+  auditData: [],
+  rgpdData: [],
+  filters: { cspPeriod: '7d', auditPeriod: '7d' }
+};
+
+// ---------------------------------------------------------------------------
+// Point d'entrée : ouvrir la page Sécurité & RGPD
+// ---------------------------------------------------------------------------
+async function openSecuriteRgpd() {
+  if (!SESSION || SESSION.role !== 'admin') {
+    alert('⛔ Accès refusé — administrateurs uniquement.');
+    return;
+  }
+
+  // Navigation hash (optionnel — si tu utilises le routing par hash)
+  if (location.hash !== '#securite-rgpd') {
+    location.hash = '#securite-rgpd';
+  }
+
+  // Cache toutes les sections, affiche la nôtre
+  document.querySelectorAll('.section').forEach(s => s.style.display = 'none');
+  let section = document.getElementById('section-securite-rgpd');
+  if (!section) {
+    section = document.createElement('section');
+    section.id = 'section-securite-rgpd';
+    section.className = 'section';
+    document.querySelector('main').appendChild(section);
+  }
+  section.style.display = 'block';
+  section.innerHTML = renderSecuriteRgpdShell();
+
+  // Charge l'onglet actif
+  srOpenTab(SR.currentTab);
+}
+
+// ---------------------------------------------------------------------------
+// Rendu de la coque (header + onglets + zone de contenu)
+// ---------------------------------------------------------------------------
+function renderSecuriteRgpdShell() {
+  return `
+    <div class="sr-page">
+      <h1 style="margin:16px 0 8px">🔒 Sécurité & RGPD</h1>
+      <p style="color:#666;margin:0 0 20px">Monitoring des violations CSP, journal d'audit, et gestion des demandes RGPD.</p>
+
+      <div class="sr-tabs" style="display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid #eee;padding-bottom:0">
+        <button id="sr-tab-csp" onclick="srOpenTab('csp')" class="sr-tab">⚠️ Violations CSP</button>
+        <button id="sr-tab-audit" onclick="srOpenTab('audit')" class="sr-tab">📋 Audit d'accès</button>
+        <button id="sr-tab-rgpd" onclick="srOpenTab('rgpd')" class="sr-tab">🗑️ Demandes RGPD</button>
+      </div>
+
+      <div id="sr-content" style="min-height:400px">
+        <p style="text-align:center;padding:40px;color:#999">Chargement…</p>
+      </div>
+    </div>
+
+    <style>
+      .sr-tab {
+        padding:10px 20px; background:none; border:none; cursor:pointer;
+        font-size:14px; color:#666; border-bottom:3px solid transparent;
+        margin-bottom:-2px; transition:all 0.2s;
+      }
+      .sr-tab:hover { background:#f5f5f5; color:#333; }
+      .sr-tab.active { color:#d4a017; border-bottom-color:#d4a017; font-weight:600; }
+      .sr-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:20px; }
+      .sr-stat { background:#fff; border:1px solid #eee; border-radius:8px; padding:16px; text-align:center; }
+      .sr-stat-val { font-size:28px; font-weight:700; color:#d4a017; }
+      .sr-stat-lbl { font-size:12px; color:#666; margin-top:4px; text-transform:uppercase; }
+      .sr-chart { background:#fff; border:1px solid #eee; border-radius:8px; padding:16px; margin-bottom:20px; }
+      .sr-bar { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+      .sr-bar-label { min-width:150px; font-size:12px; color:#333; font-family:monospace; }
+      .sr-bar-track { flex:1; background:#f0f0f0; border-radius:4px; height:24px; position:relative; overflow:hidden; }
+      .sr-bar-fill { background:linear-gradient(90deg,#d4a017,#e8c050); height:100%; display:flex; align-items:center; padding-left:8px; color:#fff; font-weight:600; font-size:12px; }
+      .sr-table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #eee; border-radius:8px; overflow:hidden; }
+      .sr-table th { background:#fafafa; text-align:left; padding:10px; font-size:12px; text-transform:uppercase; color:#666; border-bottom:1px solid #eee; }
+      .sr-table td { padding:10px; font-size:13px; border-bottom:1px solid #f5f5f5; }
+      .sr-table tr:hover td { background:#fafafa; }
+      .sr-table code { background:#f5f5f5; padding:2px 6px; border-radius:3px; font-size:11px; }
+      .sr-actions { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+      .sr-btn { padding:8px 16px; border:1px solid #ddd; background:#fff; border-radius:6px; cursor:pointer; font-size:13px; }
+      .sr-btn:hover { background:#f5f5f5; }
+      .sr-btn-primary { background:#d4a017; color:#fff; border-color:#d4a017; }
+      .sr-btn-primary:hover { background:#b8891b; }
+      .sr-btn-danger { background:#dc3545; color:#fff; border-color:#dc3545; }
+      .sr-btn-danger:hover { background:#b02a37; }
+      .sr-btn-success { background:#28a745; color:#fff; border-color:#28a745; }
+      .sr-btn-success:hover { background:#1e7e34; }
+      .sr-badge { padding:3px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+      .sr-badge-pending { background:#fff3cd; color:#856404; }
+      .sr-badge-approved { background:#d4edda; color:#155724; }
+      .sr-badge-rejected { background:#f8d7da; color:#721c24; }
+      .sr-empty { text-align:center; padding:40px; color:#999; }
+    </style>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Switch d'onglet
+// ---------------------------------------------------------------------------
+function srOpenTab(tab) {
+  SR.currentTab = tab;
+
+  document.querySelectorAll('.sr-tab').forEach(b => b.classList.remove('active'));
+  document.getElementById(`sr-tab-${tab}`)?.classList.add('active');
+
+  const content = document.getElementById('sr-content');
+  content.innerHTML = '<p style="text-align:center;padding:40px;color:#999">Chargement…</p>';
+
+  if (tab === 'csp') srLoadCsp();
+  else if (tab === 'audit') srLoadAudit();
+  else if (tab === 'rgpd') srLoadRgpd();
+}
+
+// ===========================================================================
+// ONGLET 1 — Violations CSP
+// ===========================================================================
+async function srLoadCsp() {
+  try {
+    const snap = await firebase.database().ref('csp_reports').limitToLast(1000).once('value');
+    const data = snap.val() || {};
+    const entries = Object.entries(data).map(([k, v]) => ({ id: k, ...v }));
+    entries.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+    SR.cspData = entries;
+    srRenderCsp();
+  } catch (e) {
+    document.getElementById('sr-content').innerHTML = `<div class="sr-empty">❌ Erreur : ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function srRenderCsp() {
+  const entries = SR.cspData;
+  const now = Date.now();
+  const count24h = entries.filter(e => new Date(e.timestamp).getTime() > now - 86400000).length;
+  const count7d = entries.filter(e => new Date(e.timestamp).getTime() > now - 604800000).length;
+  const count30d = entries.filter(e => new Date(e.timestamp).getTime() > now - 2592000000).length;
+
+  const byDirective = {};
+  for (const e of entries) {
+    const d = e.violatedDirective || 'unknown';
+    byDirective[d] = (byDirective[d] || 0) + 1;
+  }
+  const maxCount = Math.max(1, ...Object.values(byDirective));
+
+  let html = `
+    <div class="sr-stats">
+      <div class="sr-stat"><div class="sr-stat-val">${entries.length}</div><div class="sr-stat-lbl">Total</div></div>
+      <div class="sr-stat"><div class="sr-stat-val">${count24h}</div><div class="sr-stat-lbl">24h</div></div>
+      <div class="sr-stat"><div class="sr-stat-val">${count7d}</div><div class="sr-stat-lbl">7 jours</div></div>
+      <div class="sr-stat"><div class="sr-stat-val">${count30d}</div><div class="sr-stat-lbl">30 jours</div></div>
+    </div>
+  `;
+
+  if (entries.length === 0) {
+    html += `<div class="sr-empty">✅ Aucune violation CSP enregistrée.</div>`;
+    document.getElementById('sr-content').innerHTML = html;
+    return;
+  }
+
+  html += `
+    <h3 style="margin:20px 0 10px">📊 Répartition par directive</h3>
+    <div class="sr-chart">
+      ${Object.entries(byDirective).sort((a,b)=>b[1]-a[1]).map(([k,v]) => `
+        <div class="sr-bar">
+          <span class="sr-bar-label">${escapeHtml(k)}</span>
+          <div class="sr-bar-track">
+            <div class="sr-bar-fill" style="width:${(v/maxCount)*100}%">${v}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+
+    <h3 style="margin:20px 0 10px">📋 Dernières violations (100 max)</h3>
+    <div class="sr-actions">
+      <button class="sr-btn" onclick="srExportCspCsv()">📥 Exporter CSV</button>
+      <button class="sr-btn sr-btn-danger" onclick="srPurgeOldCsp()">🗑️ Purger >30 jours</button>
+      <button class="sr-btn" onclick="srOpenTab('csp')">🔄 Rafraîchir</button>
+    </div>
+
+    <table class="sr-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Directive</th>
+          <th>Bloqué</th>
+          <th>Source</th>
+          <th>Ligne</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${entries.slice(0, 100).map(e => `
+          <tr>
+            <td style="white-space:nowrap">${new Date(e.timestamp).toLocaleString('fr-FR')}</td>
+            <td><code>${escapeHtml(e.violatedDirective || '-')}</code></td>
+            <td title="${escapeHtml(e.blockedUri || '')}"><code>${escapeHtml((e.blockedUri || '').slice(0, 50))}${(e.blockedUri || '').length > 50 ? '…' : ''}</code></td>
+            <td title="${escapeHtml(e.sourceFile || '')}"><code>${escapeHtml((e.sourceFile || '').slice(0, 50))}${(e.sourceFile || '').length > 50 ? '…' : ''}</code></td>
+            <td>${e.lineNumber || '-'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+
+  document.getElementById('sr-content').innerHTML = html;
+}
+
+function srExportCspCsv() {
+  const rows = [['Date', 'Directive', 'Bloqué', 'Source', 'Ligne', 'Colonne', 'Disposition']];
+  for (const e of SR.cspData) {
+    rows.push([
+      e.timestamp || '',
+      e.violatedDirective || '',
+      e.blockedUri || '',
+      e.sourceFile || '',
+      e.lineNumber || '',
+      e.columnNumber || '',
+      e.disposition || ''
+    ]);
+  }
+  srDownloadCsv(rows, `csp-reports-${new Date().toISOString().slice(0,10)}.csv`);
+}
+
+async function srPurgeOldCsp() {
+  if (!confirm('Supprimer toutes les violations CSP de plus de 30 jours ?')) return;
+
+  const cutoff = Date.now() - 2592000000;
+  const old = SR.cspData.filter(e => new Date(e.timestamp).getTime() < cutoff);
+
+  if (old.length === 0) {
+    alert('Rien à supprimer.');
+    return;
+  }
+
+  if (!confirm(`${old.length} entrées seront supprimées. Confirmer ?`)) return;
+
+  const updates = {};
+  for (const e of old) updates[`csp_reports/${e.id}`] = null;
+
+  try {
+    await firebase.database().ref().update(updates);
+    alert(`✅ ${old.length} entrées supprimées.`);
+    srOpenTab('csp');
+  } catch (e) {
+    alert(`❌ Erreur : ${e.message}`);
+  }
+}
+
+// ===========================================================================
+// ONGLET 2 — Audit d'accès
+// ===========================================================================
+async function srLoadAudit() {
+  try {
+    const snap = await firebase.database().ref('audit_access').limitToLast(1000).once('value');
+    const data = snap.val() || {};
+    const entries = Object.entries(data).map(([k, v]) => ({ id: k, ...v }));
+    entries.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+    SR.auditData = entries;
+    srRenderAudit();
+  } catch (e) {
+    document.getElementById('sr-content').innerHTML = `<div class="sr-empty">❌ Erreur : ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function srRenderAudit() {
+  const entries = SR.auditData;
+  const now = Date.now();
+  const count24h = entries.filter(e => new Date(e.timestamp).getTime() > now - 86400000).length;
+  const count7d = entries.filter(e => new Date(e.timestamp).getTime() > now - 604800000).length;
+
+  const byAction = {};
+  for (const e of entries) {
+    const a = e.action || 'unknown';
+    byAction[a] = (byAction[a] || 0) + 1;
+  }
+
+  let html = `
+    <div class="sr-stats">
+      <div class="sr-stat"><div class="sr-stat-val">${entries.length}</div><div class="sr-stat-lbl">Total</div></div>
+      <div class="sr-stat"><div class="sr-stat-val">${count24h}</div><div class="sr-stat-lbl">24h</div></div>
+      <div class="sr-stat"><div class="sr-stat-val">${count7d}</div><div class="sr-stat-lbl">7 jours</div></div>
+      <div class="sr-stat"><div class="sr-stat-val">${Object.keys(byAction).length}</div><div class="sr-stat-lbl">Actions distinctes</div></div>
+    </div>
+  `;
+
+  if (entries.length === 0) {
+    html += `
+      <div class="sr-empty">
+        <p>📭 Aucun événement d'audit enregistré.</p>
+        <p style="font-size:12px;margin-top:8px">Le journal se remplira dès que du code appellera <code>logAuditAccess({...})</code>.</p>
+      </div>
+    `;
+    document.getElementById('sr-content').innerHTML = html;
+    return;
+  }
+
+  html += `
+    <div class="sr-actions">
+      <button class="sr-btn" onclick="srExportAuditCsv()">📥 Exporter CSV</button>
+      <button class="sr-btn" onclick="srOpenTab('audit')">🔄 Rafraîchir</button>
+    </div>
+
+    <table class="sr-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Utilisateur</th>
+          <th>Action</th>
+          <th>Cible</th>
+          <th>Détails</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${entries.slice(0, 200).map(e => `
+          <tr>
+            <td style="white-space:nowrap">${new Date(e.timestamp).toLocaleString('fr-FR')}</td>
+            <td>${escapeHtml(e.userName || e.uid || '-')}</td>
+            <td><code>${escapeHtml(e.action || '-')}</code></td>
+            <td>${escapeHtml(e.target || '-')}</td>
+            <td style="font-size:11px;color:#666">${escapeHtml(e.details || '-')}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+
+  document.getElementById('sr-content').innerHTML = html;
+}
+
+function srExportAuditCsv() {
+  const rows = [['Date', 'UID', 'Nom', 'Action', 'Cible', 'Détails', 'IP Hash']];
+  for (const e of SR.auditData) {
+    rows.push([
+      e.timestamp || '',
+      e.uid || '',
+      e.userName || '',
+      e.action || '',
+      e.target || '',
+      e.details || '',
+      e.ipHash || ''
+    ]);
+  }
+  srDownloadCsv(rows, `audit-access-${new Date().toISOString().slice(0,10)}.csv`);
+}
+
+// ===========================================================================
+// ONGLET 3 — Demandes RGPD
+// ===========================================================================
+async function srLoadRgpd() {
+  try {
+    const snap = await firebase.database().ref('rgpd_suppression_requests').once('value');
+    const data = snap.val() || {};
+    const entries = Object.entries(data).map(([k, v]) => ({ id: k, ...v }));
+    entries.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    SR.rgpdData = entries;
+    srRenderRgpd();
+  } catch (e) {
+    document.getElementById('sr-content').innerHTML = `<div class="sr-empty">❌ Erreur : ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function srRenderRgpd() {
+  const entries = SR.rgpdData;
+  const pending = entries.filter(e => e.statut === 'en_attente').length;
+  const approved = entries.filter(e => e.statut === 'approuvee').length;
+  const rejected = entries.filter(e => e.statut === 'refusee').length;
+
+  let html = `
+    <div class="sr-stats">
+      <div class="sr-stat"><div class="sr-stat-val">${entries.length}</div><div class="sr-stat-lbl">Total</div></div>
+      <div class="sr-stat"><div class="sr-stat-val" style="color:#856404">${pending}</div><div class="sr-stat-lbl">En attente</div></div>
+      <div class="sr-stat"><div class="sr-stat-val" style="color:#155724">${approved}</div><div class="sr-stat-lbl">Approuvées</div></div>
+      <div class="sr-stat"><div class="sr-stat-val" style="color:#721c24">${rejected}</div><div class="sr-stat-lbl">Refusées</div></div>
+    </div>
+  `;
+
+  if (entries.length === 0) {
+    html += `
+      <div class="sr-empty">
+        <p>📭 Aucune demande de suppression RGPD.</p>
+        <p style="font-size:12px;margin-top:8px">Les demandes arrivent via le profil client (bouton "Supprimer mon compte").</p>
+      </div>
+    `;
+    document.getElementById('sr-content').innerHTML = html;
+    return;
+  }
+
+  html += `
+    <div class="sr-actions">
+      <button class="sr-btn" onclick="srExportRgpdCsv()">📥 Exporter CSV</button>
+      <button class="sr-btn" onclick="srOpenTab('rgpd')">🔄 Rafraîchir</button>
+    </div>
+
+    <table class="sr-table">
+      <thead>
+        <tr>
+          <th>Demande</th>
+          <th>Utilisateur</th>
+          <th>Motif</th>
+          <th>Statut</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${entries.map(e => `
+          <tr>
+            <td style="white-space:nowrap">${new Date(e.createdAt).toLocaleString('fr-FR')}</td>
+            <td>
+              <div><strong>${escapeHtml(e.nom || e.uid || '-')}</strong></div>
+              <div style="font-size:11px;color:#666">${escapeHtml(e.email || '')}</div>
+            </td>
+            <td style="font-size:12px;max-width:300px">${escapeHtml(e.motif || '-')}</td>
+            <td>${srStatutBadge(e.statut)}</td>
+            <td>
+              ${e.statut === 'en_attente' ? `
+                <button class="sr-btn sr-btn-success" onclick="srApproveRgpd('${e.id}')">✅ Approuver</button>
+                <button class="sr-btn sr-btn-danger" onclick="srRejectRgpd('${e.id}')">❌ Refuser</button>
+              ` : `
+                <div style="font-size:11px;color:#666">
+                  Par ${escapeHtml(e.traitePar || '-')}<br>
+                  Le ${e.traiteAt ? new Date(e.traiteAt).toLocaleDateString('fr-FR') : '-'}
+                </div>
+                ${e.motifRefus ? `<div style="font-size:11px;color:#721c24;margin-top:4px">${escapeHtml(e.motifRefus)}</div>` : ''}
+              `}
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+
+  document.getElementById('sr-content').innerHTML = html;
+}
+
+function srStatutBadge(statut) {
+  if (statut === 'en_attente') return '<span class="sr-badge sr-badge-pending">En attente</span>';
+  if (statut === 'approuvee') return '<span class="sr-badge sr-badge-approved">Approuvée</span>';
+  if (statut === 'refusee') return '<span class="sr-badge sr-badge-rejected">Refusée</span>';
+  return `<span class="sr-badge">${escapeHtml(statut || '-')}</span>`;
+}
+
+async function srApproveRgpd(id) {
+  const req = SR.rgpdData.find(r => r.id === id);
+  if (!req) return;
+
+  if (!confirm(
+    `⚠️ APPROUVER la suppression RGPD ?\n\n` +
+    `Utilisateur : ${req.nom || req.uid}\n` +
+    `Email : ${req.email || '-'}\n\n` +
+    `Cette action va :\n` +
+    `• Anonymiser ses données dans les courses passées\n` +
+    `• Supprimer son compte client_accounts\n` +
+    `• Marquer la demande comme approuvée\n\n` +
+    `Opération IRRÉVERSIBLE. Continuer ?`
+  )) return;
+
+  try {
+    // 1. Anonymise les courses où le client apparaît
+    const coursesSnap = await firebase.database().ref('courses').orderByChild('createdByUid').equalTo(req.uid).once('value');
+    const courses = coursesSnap.val() || {};
+    const updates = {};
+    for (const cid of Object.keys(courses)) {
+      updates[`courses/${cid}/client`] = '[Supprimé RGPD]';
+      updates[`courses/${cid}/nom`] = '[Anonyme]';
+      updates[`courses/${cid}/tel`] = '';
+      updates[`courses/${cid}/email`] = '';
+      updates[`courses/${cid}/adresseDepart`] = '[Supprimé]';
+      updates[`courses/${cid}/adresseArrivee`] = '[Supprimé]';
+    }
+
+    // 2. Supprime le compte client
+    const accSnap = await firebase.database().ref('client_accounts').orderByChild('uid').equalTo(req.uid).once('value');
+    const accounts = accSnap.val() || {};
+    for (const aid of Object.keys(accounts)) {
+      updates[`client_accounts/${aid}`] = null;
+    }
+
+    // 3. Met à jour la demande
+    updates[`rgpd_suppression_requests/${id}/statut`] = 'approuvee';
+    updates[`rgpd_suppression_requests/${id}/traitePar`] = SESSION.nom || SESSION.email || SESSION.uid;
+    updates[`rgpd_suppression_requests/${id}/traiteAt`] = new Date().toISOString();
+    updates[`rgpd_suppression_requests/${id}/coursesAnonymisees`] = Object.keys(courses).length;
+    updates[`rgpd_suppression_requests/${id}/comptesSupprimes`] = Object.keys(accounts).length;
+
+    await firebase.database().ref().update(updates);
+
+    alert(
+      `✅ Suppression RGPD effectuée.\n\n` +
+      `• ${Object.keys(courses).length} course(s) anonymisée(s)\n` +
+      `• ${Object.keys(accounts).length} compte(s) supprimé(s)\n\n` +
+      `Pense à envoyer un email de confirmation au client.`
+    );
+
+    srOpenTab('rgpd');
+  } catch (e) {
+    alert(`❌ Erreur : ${e.message}`);
+  }
+}
+
+async function srRejectRgpd(id) {
+  const motif = prompt('Motif du refus (obligatoire, sera communiqué au client) :');
+  if (!motif || motif.trim().length < 5) {
+    alert('Motif trop court. Refus annulé.');
+    return;
+  }
+
+  try {
+    await firebase.database().ref(`rgpd_suppression_requests/${id}`).update({
+      statut: 'refusee',
+      motifRefus: motif.trim(),
+      traitePar: SESSION.nom || SESSION.email || SESSION.uid,
+      traiteAt: new Date().toISOString()
+    });
+    alert('✅ Demande marquée comme refusée.');
+    srOpenTab('rgpd');
+  } catch (e) {
+    alert(`❌ Erreur : ${e.message}`);
+  }
+}
+
+function srExportRgpdCsv() {
+  const rows = [['Date demande', 'UID', 'Nom', 'Email', 'Motif', 'Statut', 'Traité par', 'Date traitement', 'Motif refus']];
+  for (const e of SR.rgpdData) {
+    rows.push([
+      e.createdAt || '',
+      e.uid || '',
+      e.nom || '',
+      e.email || '',
+      e.motif || '',
+      e.statut || '',
+      e.traitePar || '',
+      e.traiteAt || '',
+      e.motifRefus || ''
+    ]);
+  }
+  srDownloadCsv(rows, `rgpd-demandes-${new Date().toISOString().slice(0,10)}.csv`);
+}
+
+// ===========================================================================
+// Helper CSV
+// ===========================================================================
+function srDownloadCsv(rows, filename) {
+  const csv = rows.map(r => r.map(cell => {
+    const s = String(cell ?? '');
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  }).join(',')).join('\n');
+
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ===========================================================================
+// Helper appelable depuis ton code pour journaliser un accès sensible
+// Utilisation : logAuditAccess({ action: 'view_client', target: 'client-uid-xxx' })
+// ===========================================================================
+async function logAuditAccess({ action, target, details }) {
+  if (!SESSION) return;
+  try {
+    await firebase.database().ref('audit_access').push({
+      uid: SESSION.uid || 'unknown',
+      userName: SESSION.nom || SESSION.email || '',
+      action: String(action || '').slice(0, 100),
+      target: String(target || '').slice(0, 200),
+      details: String(details || '').slice(0, 500),
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) {
+    console.warn('audit log failed:', e.message);
+  }
+}
+
+// Si escapeHtml n'existe pas déjà, décommente la ligne suivante :
+// function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
