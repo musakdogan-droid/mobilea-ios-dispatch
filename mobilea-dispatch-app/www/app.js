@@ -17,10 +17,10 @@ const E = escHtml;
 // ── SANITISATION DES ENTRÉES ──
 // Nettoie une chaîne avant de la sauvegarder dans Firebase
 function sanitize(str, maxLen) {
-  if(!str) return ''; 
+  if(!str) return '';
   let s = String(str).trim();
   // Supprimer les balises HTML/script
-  s = s.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ''); 
+  s = s.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
   s = s.replace(/<[^>]+>/g, '');
   // Limiter la longueur
   if(maxLen && s.length > maxLen) s = s.slice(0, maxLen);
@@ -20247,25 +20247,28 @@ async function openSecuriteRgpd() {
     alert('⛔ Accès refusé — administrateurs uniquement.');
     return;
   }
-  // NOTE: on ne change PAS location.hash, car ça déclenche applyLoginMode (ligne 19089)
-  // qui perturbe le rendu. On reste sur un affichage pur DOM.
+  // IMPORTANT: on utilise UNIQUEMENT classList (comme gp() ligne 18798).
+  // Pas d'inline style.display car ça casserait le CSS .page.on { display:block }
+  // et bloquerait la navigation vers les autres pages ensuite.
 
-  // Cache toutes les pages existantes
-  document.querySelectorAll('.page, [id^="page-"], .section').forEach(function(s){
-    s.classList.remove('on'); s.style.display='none';
+  // Nettoie d'abord tout inline style.display qu'une ancienne version aurait laissé
+  document.querySelectorAll('.page, [id^="page-"]').forEach(function(s){
+    if (s.style && s.style.display) s.style.removeProperty('display');
+    s.classList.remove('on');
   });
+  document.querySelectorAll('.ni').forEach(function(n){ n.classList.remove('on'); });
+
   var tt = document.getElementById('page-title'); if (tt) tt.textContent = 'Sécurité & RGPD';
 
   var host = document.getElementById('page-securite-rgpd');
   if (!host) {
     host = document.createElement('div');
     host.id = 'page-securite-rgpd';
-    host.className = 'page on';
+    host.className = 'page';
     host.style.padding = '20px';
     (document.querySelector('main.main') || document.querySelector('main') || document.body).appendChild(host);
   }
-  host.style.display = 'block';
-  host.classList.add('on');
+  host.classList.add('on');  // devient visible via .page.on { display:block } du CSS existant
   host.innerHTML = _srShell();
   _srInjectStyle();
   // Petit délai pour laisser le DOM se stabiliser avant de charger les données
