@@ -10571,12 +10571,17 @@ function renderMesCourses() {
         + '</div></div>' : '';
     const wazeBtn = navBtns;
 
-    // Passagers — affiche le nom même si le tableau structuré c.passagers est vide
-    // (cas des anciens imports ou des courses saisies sans détail passager structuré)
+    // Passagers — affiche le nom (ou "Passager N" si le nom est vide) + vol
     let paxBtn = '';
     if (c.passagers && c.passagers.length) {
-      // Cas standard : bouton qui ouvre la liste complète
-      paxBtn = '<button onclick="viewPax(\''+c._id+'\')" style="width:100%;background:#f0f2f5;border:1px solid #e0e3e8;border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:14px;text-align:left"><span style="font-size:18px">&#128101;</span><div><div style="font-size:13px;font-weight:700;color:#111">'+paxCount+' passager'+(paxCount>1?'s':'')+'</div><div style="font-size:11px;color:#777">'+c.passagers.slice(0,2).map(p=>((p.prenom||'')+' '+(p.nom||'')).trim()).filter(x=>x).join(', ')+(c.passagers.length>2?'...':'')+'</div></div><i class="fas fa-chevron-right" style="margin-left:auto;color:#aaa;font-size:12px"></i></button>';
+      // Récap des 2 premiers : nom OU "Passager N" OU vol
+      const paxPreview = c.passagers.slice(0,2).map(function(p, i){
+        const nomP = ((p.prenom||'')+' '+(p.nom||'')).trim();
+        if (nomP) return E(nomP);
+        if (p.vol) return 'Vol ' + E(p.vol);
+        return 'Passager ' + (i+1);
+      }).join(', ') + (c.passagers.length>2 ? '...' : '');
+      paxBtn = '<button onclick="viewPax(\''+c._id+'\')" style="width:100%;background:#f0f2f5;border:1px solid #e0e3e8;border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:14px;text-align:left"><span style="font-size:18px">&#128101;</span><div><div style="font-size:13px;font-weight:700;color:#111">'+paxCount+' passager'+(paxCount>1?'s':'')+'</div><div style="font-size:11px;color:#777">'+paxPreview+'</div></div><i class="fas fa-chevron-right" style="margin-left:auto;color:#aaa;font-size:12px"></i></button>';
     } else {
       // Fallback : pas de tableau structuré → on affiche quand même le nom/tel
       // depuis les champs simples (c.passager, c.tel) ou à défaut c.client
@@ -11209,14 +11214,13 @@ window.generateDriverPDF = function(courseId) {
   const dondo = estGerant ? c.donneurOrdre : null;
   const commLabel = estGerant ? ('Commission à reverser à '+ (dondo.nom||'votre donneur d\'ordre')) : 'Commission à reverser à MOBILEA';
   // Liste passagers du bon de commande : utilise le tableau structuré si présent,
-  // sinon fallback sur les champs simples (c.passager + c.tel + c.vol) pour qu'il
-  // y ait AU MOINS une ligne avec le nom du passager — sinon le bon de commande
-  // dit "Aucun passager renseigné" alors qu'on a bien le nom dans la course.
+  // sinon fallback sur les champs simples. Si pas de nom, on affiche "Passager N"
+  // (au lieu de "—") pour que le tableau soit lisible.
   let paxList = '';
   if (c.passagers && c.passagers.length) {
-    paxList = c.passagers.map(p => {
-      const nom = ((p.prenom||'')+(p.nom?' '+p.nom:'')).trim();
-      return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(nom)||'—'}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.tel||'—')}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.vol||c.vol||'—')}</td></tr>`;
+    paxList = c.passagers.map(function(p, i){
+      const nom = ((p.prenom||'')+(p.nom?' '+p.nom:'')).trim() || 'Passager '+(i+1);
+      return `<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(nom)}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.tel||'—')}</td><td style="padding:6px 10px;border-bottom:1px solid #eee">${E(p.vol||c.vol||'—')}</td></tr>`;
     }).join('');
   } else {
     const _pNom = nomPassagerChauffeur(c);
@@ -19567,11 +19571,12 @@ window.viewPax = function(id) {
       + '<div style="overflow-y:auto;padding:16px;flex:1">'
       + c.passagers.map((p,i) => {
           const isPresent = p.present !== false;
+          const _nomPax = ((p.prenom||'')+' '+(p.nom||'')).trim() || 'Passager '+(i+1);
           return '<div style="display:flex;align-items:center;gap:12px;padding:14px;background:#f8f9fa;border-radius:12px;margin-bottom:8px">'
             + '<div style="flex:1">'
-            + '<div style="font-size:14px;font-weight:700;color:#111">'+(p.prenom||'')+' '+(p.nom||'')+'</div>'
-            + (p.vol ? '<div style="font-size:11px;color:#777;margin-top:2px">✈️ '+p.vol+(p.terminal?' • '+p.terminal:'')+'</div>' : '')
-            + (p.tel ? '<div style="font-size:11px;color:#777">📞 '+p.tel+'</div>' : '')
+            + '<div style="font-size:14px;font-weight:700;color:#111">'+E(_nomPax)+'</div>'
+            + (p.vol ? '<div style="font-size:11px;color:#777;margin-top:2px">✈️ '+E(p.vol)+(p.terminal?' • '+E(p.terminal):'')+'</div>' : '')
+            + (p.tel ? '<div style="font-size:11px;color:#777">📞 '+E(p.tel)+'</div>' : '')
             + '</div>'
             + '<div style="display:flex;gap:8px">'
             + '<button onclick="chauffeurSetPax(\''+id+'\','+i+',true,this)" style="padding:8px 14px;border-radius:10px;border:2px solid '+(isPresent?'#22c55e':'#e0e3e8')+';background:'+(isPresent?'#22c55e':'#fff')+';color:'+(isPresent?'#fff':'#999')+';font-size:13px;font-weight:700;cursor:pointer">✓</button>'
@@ -19604,12 +19609,13 @@ window.viewPax = function(id) {
     + '<div style="color:#777;margin-top:2px">'+E(c.depart||c.lieu||'')+' → '+E(c.arrivee||'')+(c.datetime?' • '+c.datetime.slice(11,16):'')+'</div>'
     + '</div>'
     + '<div style="overflow-y:auto;padding:16px;flex:1">'
-    + c.passagers.map(p => {
+    + c.passagers.map((p,i) => {
         const isPresent = p.present !== false;
+        const _nomPaxAdmin = ((p.prenom||'')+' '+(p.nom||'')).trim() || 'Passager '+(i+1);
         return '<div style="display:flex;align-items:center;gap:12px;padding:14px;background:'+(isPresent?'#f0fdf4':'#fef2f2')+';border:1px solid '+(isPresent?'#bbf7d0':'#fecaca')+';border-radius:12px;margin-bottom:8px">'
           + '<div style="width:34px;height:34px;border-radius:50%;background:'+(isPresent?'#22c55e':'#e05c5c')+';color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex-shrink:0">'+(isPresent?'✓':'✗')+'</div>'
           + '<div style="flex:1">'
-          + '<div style="font-size:14px;font-weight:700;color:#111">'+E((p.prenom||'')+' '+(p.nom||''))+'</div>'
+          + '<div style="font-size:14px;font-weight:700;color:#111">'+E(_nomPaxAdmin)+'</div>'
           + (p.vol ? '<div style="font-size:11px;color:#777;margin-top:2px">✈️ '+E(p.vol)+(p.terminal?' • '+E(p.terminal):'')+'</div>' : '')
           + (p.tel ? '<div style="font-size:11px;color:#777">📞 '+E(p.tel)+'</div>' : '')
           + '</div>'
