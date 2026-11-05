@@ -2045,7 +2045,17 @@ async function _doChauffeurLoginInner(err) {
     if(window.__loginDone) return;   // garde : une seule fois
     window.__loginDone = true;
     if(window.__loginGeoTimer) { clearTimeout(window.__loginGeoTimer); window.__loginGeoTimer = null; }
-    SESSION = { role:'chauffeur', name:found.prenom+(found.nom?' '+found.nom:''), uid:'driver_'+found._id, chauffeurId:found._id, email, voirPrix:(found.voirPrix !== false), gerant:(found.gerant===true), gerantPro:(found.gerantPro===true), pointeuse:(found.pointeuse===true), socNom:(found.soc_nom||'') };
+    SESSION = { role:'chauffeur', name:found.prenom+(found.nom?' '+found.nom:''), uid:'driver_'+found._id, chauffeurId:found._id, email, voirPrix:(found.voirPrix !== false), gerant:(found.gerant===true), gerantPro:(found.gerantPro===true), pointeuse:(found.pointeuse===true), socNom:(found.soc_nom||''),
+      // ★ Menus accessibles (défaut true pour compat ascendante)
+      menuMesCourses: (found.menuMesCourses !== false),
+      menuMesRevenus: (found.menuMesRevenus !== false),
+      menuMessagerie: (found.menuMessagerie !== false),
+      menuTableauBord: (found.menuTableauBord !== false),
+      menuNouveauTransfert: (found.menuNouveauTransfert !== false),
+      menuMesTransferts: (found.menuMesTransferts !== false),
+      menuCarteChauffeurs: (found.menuCarteChauffeurs !== false),
+      menuMesChauffeurs: (found.menuMesChauffeurs !== false),
+      menuMesVehicules: (found.menuMesVehicules !== false) };
     window.SESSION = SESSION; // pour le pont natif OneSignal (native-bridge.js)
     localStorage.setItem(ADMIN_KEY, JSON.stringify(SESSION));
     logSecurityEvent('login_success',{role:'chauffeur',email});
@@ -2427,58 +2437,100 @@ function startApp() {
     document.querySelectorAll('.ni').forEach(n => n.style.display = 'none');
     document.querySelectorAll('.nsec').forEach(n => n.style.display = 'none');
     const nav = document.getElementById('main-nav');
-    const btn = document.createElement('button');
-    btn.className = 'ni on dyn-nav'; btn.dataset.p = 'mescourses';
-    btn.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-route"></i> Mes courses';
-    btn.onclick = () => gp('mescourses', btn);
-    const btnR = document.createElement('button');
-    btnR.className = 'ni dyn-nav'; btnR.dataset.p = 'revenus';
-    btnR.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-chart-line"></i> Mes revenus';
-    btnR.onclick = () => gp('revenus', btnR);
-    const btnM = document.createElement('button');
-    btnM.className = 'ni dyn-nav'; btnM.dataset.p = 'messagerie';
-    btnM.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-comments"></i> Messagerie';
-    btnM.onclick = () => gp('messagerie', btnM);
-    nav.prepend(btnM); nav.prepend(btnR); nav.prepend(btn);
+    // ★ Premier bouton visible — sert aussi de page par défaut au login.
+    let premierBtn = null;
+    // Mes courses
+    let btn = null;
+    if(SESSION.menuMesCourses !== false) {
+      btn = document.createElement('button');
+      btn.className = 'ni on dyn-nav'; btn.dataset.p = 'mescourses';
+      btn.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-route"></i> Mes courses';
+      btn.onclick = () => gp('mescourses', btn);
+      if(!premierBtn) premierBtn = btn;
+    }
+    // Mes revenus
+    let btnR = null;
+    if(SESSION.menuMesRevenus !== false) {
+      btnR = document.createElement('button');
+      btnR.className = 'ni dyn-nav'; btnR.dataset.p = 'revenus';
+      btnR.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-chart-line"></i> Mes revenus';
+      btnR.onclick = () => gp('revenus', btnR);
+      if(!premierBtn) premierBtn = btnR;
+    }
+    // Messagerie
+    let btnM = null;
+    if(SESSION.menuMessagerie !== false) {
+      btnM = document.createElement('button');
+      btnM.className = 'ni dyn-nav'; btnM.dataset.p = 'messagerie';
+      btnM.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-comments"></i> Messagerie';
+      btnM.onclick = () => gp('messagerie', btnM);
+      if(!premierBtn) premierBtn = btnM;
+    }
+    if(btnM) nav.prepend(btnM);
+    if(btnR) nav.prepend(btnR);
+    if(btn) nav.prepend(btn);
+    // Point d'ancrage pour insérer les menus gérant AVANT la messagerie (si visible),
+    // sinon avant tout bouton créé.
+    const anchor = btnM || null;
     // Onglets supplémentaires pour un chauffeur GÉRANT : gestion de sa société
     // Options "Transferts & tableau de bord" — case admin "ch-gerant-pro" (gerantPro).
     if(SESSION.gerantPro) {
-      const btnGD = document.createElement('button');
-      btnGD.className = 'ni dyn-nav'; btnGD.dataset.p = 'gerant-dashboard';
-      btnGD.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-chart-line"></i> Mon tableau de bord';
-      btnGD.onclick = () => gp('gerant-dashboard', btnGD);
-      const btnGN = document.createElement('button');
-      btnGN.className = 'ni dyn-nav'; btnGN.dataset.p = 'gerant-nouveau';
-      btnGN.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-plus-circle"></i> Nouveau transfert';
-      btnGN.onclick = () => gp('gerant-nouveau', btnGN);
-      const btnGT = document.createElement('button');
-      btnGT.className = 'ni dyn-nav'; btnGT.dataset.p = 'gerant-transferts';
-      btnGT.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-list-ul"></i> Mes transferts';
-      btnGT.onclick = () => gp('gerant-transferts', btnGT);
-      const btnGMap = document.createElement('button');
-      btnGMap.className = 'ni dyn-nav'; btnGMap.dataset.p = 'cartechauffeurs';
-      btnGMap.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-map-marked-alt"></i> Carte chauffeurs';
-      btnGMap.onclick = () => gp('cartechauffeurs', btnGMap);
-      nav.insertBefore(btnGMap, btnM);
-      nav.insertBefore(btnGT, btnGMap);
-      nav.insertBefore(btnGN, btnGT);
-      nav.insertBefore(btnGD, btnGN);
+      let btnGD = null;
+      if(SESSION.menuTableauBord !== false) {
+        btnGD = document.createElement('button');
+        btnGD.className = 'ni dyn-nav'; btnGD.dataset.p = 'gerant-dashboard';
+        btnGD.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-chart-line"></i> Mon tableau de bord';
+        btnGD.onclick = () => gp('gerant-dashboard', btnGD);
+      }
+      let btnGN = null;
+      if(SESSION.menuNouveauTransfert !== false) {
+        btnGN = document.createElement('button');
+        btnGN.className = 'ni dyn-nav'; btnGN.dataset.p = 'gerant-nouveau';
+        btnGN.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-plus-circle"></i> Nouveau transfert';
+        btnGN.onclick = () => gp('gerant-nouveau', btnGN);
+      }
+      let btnGT = null;
+      if(SESSION.menuMesTransferts !== false) {
+        btnGT = document.createElement('button');
+        btnGT.className = 'ni dyn-nav'; btnGT.dataset.p = 'gerant-transferts';
+        btnGT.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-list-ul"></i> Mes transferts';
+        btnGT.onclick = () => gp('gerant-transferts', btnGT);
+      }
+      let btnGMap = null;
+      if(SESSION.menuCarteChauffeurs !== false) {
+        btnGMap = document.createElement('button');
+        btnGMap.className = 'ni dyn-nav'; btnGMap.dataset.p = 'cartechauffeurs';
+        btnGMap.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-map-marked-alt"></i> Carte chauffeurs';
+        btnGMap.onclick = () => gp('cartechauffeurs', btnGMap);
+      }
+      // Insertion dans l'ordre : TableauBord, Nouveau, Transferts, Carte — avant anchor (Messagerie) ou en fin
+      [btnGD, btnGN, btnGT, btnGMap].forEach(b => { if(b) { if(anchor) nav.insertBefore(b, anchor); else nav.appendChild(b); if(!premierBtn) premierBtn = b; } });
     }
     // Base gérant (gestion société) — case admin "Gérant de la société" (gerant).
     if(SESSION.gerant) {
-      const btnGC = document.createElement('button');
-      btnGC.className = 'ni dyn-nav'; btnGC.dataset.p = 'gerant-chauffeurs';
-      btnGC.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-users"></i> Mes chauffeurs';
-      btnGC.onclick = () => gp('gerant-chauffeurs', btnGC);
-      const btnGV = document.createElement('button');
-      btnGV.className = 'ni dyn-nav'; btnGV.dataset.p = 'gerant-vehicules';
-      btnGV.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-car"></i> Mes véhicules';
-      btnGV.onclick = () => gp('gerant-vehicules', btnGV);
-      nav.insertBefore(btnGV, btnM);
-      nav.insertBefore(btnGC, btnGV);
+      let btnGC = null;
+      if(SESSION.menuMesChauffeurs !== false) {
+        btnGC = document.createElement('button');
+        btnGC.className = 'ni dyn-nav'; btnGC.dataset.p = 'gerant-chauffeurs';
+        btnGC.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-users"></i> Mes chauffeurs';
+        btnGC.onclick = () => gp('gerant-chauffeurs', btnGC);
+      }
+      let btnGV = null;
+      if(SESSION.menuMesVehicules !== false) {
+        btnGV = document.createElement('button');
+        btnGV.className = 'ni dyn-nav'; btnGV.dataset.p = 'gerant-vehicules';
+        btnGV.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-car"></i> Mes véhicules';
+        btnGV.onclick = () => gp('gerant-vehicules', btnGV);
+      }
+      [btnGC, btnGV].forEach(b => { if(b) { if(anchor) nav.insertBefore(b, anchor); else nav.appendChild(b); if(!premierBtn) premierBtn = b; } });
     }
     document.getElementById('btn-new').style.display = 'none';
-    gp('mescourses', btn);
+    // ★ Masquer la barre "Historique de déplacement" dans Carte chauffeurs (gérant uniquement :
+    // il ne doit voir que la position TEMPS RÉEL de ses chauffeurs / ceux qui réalisent SES transferts).
+    try { var _histBar = document.getElementById('cc-historique-bar'); if(_histBar) _histBar.style.display = 'none'; } catch(e){}
+    // Ouvre la première page disponible (par défaut mescourses, sinon le premier menu coché)
+    if(premierBtn) { try { premierBtn.classList.add('on'); premierBtn.click(); } catch(e){ gp('mescourses', btn); } }
+    else gp('mescourses', null);
     // GPS continu obligatoire pour le chauffeur
     setTimeout(()=>startContinuousGPS(), 1500);
     // Forcer l'affichage des courses une fois les données chargées (loadAll est
@@ -3643,6 +3695,28 @@ function getClientColor(clientName, course) {
   return isArrival(course) ? info.arr : info.dep;
 }
 
+// ★ Calcule la couleur de texte lisible (noir ou blanc) selon la couleur de fond.
+// Formule standard W3C de luminosité perçue (0 = noir, 1 = blanc).
+// Seuil ~0.55 : au-dessus = fond clair → texte noir ; au-dessous = fond sombre → texte blanc.
+function texteLisible(bgColor) {
+  if(!bgColor) return '#111';
+  var hex = String(bgColor).trim();
+  if(hex.charAt(0) === '#') hex = hex.slice(1);
+  if(hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+  if(hex.length !== 6) return '#111';
+  var r = parseInt(hex.slice(0,2),16)/255;
+  var g = parseInt(hex.slice(2,4),16)/255;
+  var b = parseInt(hex.slice(4,6),16)/255;
+  // Pondération perceptuelle (yeux humains plus sensibles au vert)
+  var luminance = 0.299*r + 0.587*g + 0.114*b;
+  return luminance > 0.55 ? '#111' : '#fff';
+}
+
+// ★ Couleur de badge/accent translucide, teinte opposée au texte pour contraste.
+function badgeContraste(bgColor) {
+  return texteLisible(bgColor) === '#111' ? 'rgba(0,0,0,0.14)' : 'rgba(255,255,255,0.28)';
+}
+
 function getDirectionIcon(course) {
   return isArrival(course) ? '🛬' : '🛫';
 }
@@ -3773,22 +3847,25 @@ function renderAgenda() {
     // Libelle vehicule lisible : facilite l'affectation d'un chauffeur au bon
     // type de vehicule sans avoir a ouvrir la course.
     const vehNom = {berline:'Berline',van:'Van',sprinter:'Sprinter',bus:'Bus',pmr:'PMR',limousine:'Limousine',classes:'Classe S'}[c.vehicule]||'Berline';
-    const vehBadge = '<span style="display:inline-block;background:rgba(255,255,255,0.28);border-radius:5px;padding:2px 8px;font-weight:800;margin-right:6px;font-size:11.5px">'+vehNom+' \u00b7 '+pax+' pax</span>';
-    const codeFactPart = codeFact ? '<span style="opacity:0.95">'+E(codeFact)+'</span> \u00b7 ' : '';
+    // \u2605 D\u00e9tection auto couleur de texte (noir ou blanc) selon la luminosit\u00e9 du fond client.
+    const txtColor = texteLisible(color);
+    const bgContrast = badgeContraste(color);
+    const vehBadge = '<span style="display:inline-block;background:'+bgContrast+';border-radius:5px;padding:2px 8px;font-weight:800;margin-right:6px;font-size:11.5px;color:'+txtColor+'">'+vehNom+' \u00b7 '+pax+' pax</span>';
+    const codeFactPart = codeFact ? '<span style="opacity:0.85;color:'+txtColor+'">'+E(codeFact)+'</span> \u00b7 ' : '';
     return `<div style="position:relative;margin-bottom:8px">
       <input type="checkbox" class="agenda-chk" data-id="${c._id}" onchange="onAgendaChkChange()" onclick="event.stopPropagation()"
-        style="position:absolute;left:12px;top:14px;width:22px;height:22px;cursor:pointer;z-index:2;accent-color:#fff">
-      <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:12px;padding:12px 14px 12px 44px;cursor:pointer;color:#fff;position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
+        style="position:absolute;left:12px;top:14px;width:22px;height:22px;cursor:pointer;z-index:2;accent-color:${txtColor}">
+      <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:12px;padding:12px 14px 12px 44px;cursor:pointer;color:${txtColor};position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
         <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;padding-right:70px">
-          <span style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.5px;line-height:1;flex-shrink:0">${time}</span>
-          <span style="font-size:14.5px;font-weight:700;line-height:1.25;flex:1;min-width:0;word-break:break-word">${dirIcon} ${ligne1}</span>
+          <span style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.5px;line-height:1;flex-shrink:0;color:${txtColor}">${time}</span>
+          <span style="font-size:14.5px;font-weight:700;line-height:1.25;flex:1;min-width:0;word-break:break-word;color:${txtColor}">${dirIcon} ${ligne1}</span>
         </div>
-        <div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px">${vehBadge}${codeFactPart}${c.chauffeur||'<em style="opacity:0.85">À assigner</em>'}</div>
+        <div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px;color:${txtColor}">${vehBadge}${codeFactPart}${c.chauffeur||'<em style="opacity:0.75;color:'+txtColor+'">À assigner</em>'}</div>
         <div style="position:absolute;right:8px;top:8px;display:flex;gap:4px">
           <button onclick="event.stopPropagation();genererLienExterne('${c._id}')" title="Lien chauffeur externe"
-            style="background:rgba(255,255,255,0.25);border:none;border-radius:8px;padding:5px 8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer">🔗</button>
+            style="background:${bgContrast};border:none;border-radius:8px;padding:5px 8px;color:${txtColor};font-size:12px;font-weight:700;cursor:pointer">🔗</button>
           ${!c.chauffeur?`<button onclick="event.stopPropagation();autoDispatch('${c._id}')" title="Auto-dispatch"
-            style="background:rgba(255,255,255,0.25);border:none;border-radius:8px;padding:5px 8px;color:#fff;font-size:12px;font-weight:700;cursor:pointer">⚡</button>`:''}
+            style="background:${bgContrast};border:none;border-radius:8px;padding:5px 8px;color:${txtColor};font-size:12px;font-weight:700;cursor:pointer">⚡</button>`:''}
         </div>
       </div>
     </div>`;
@@ -6014,6 +6091,17 @@ window.openChauffeurModal = function(id) {
     setv('ch-soc-nom',c.soc_nom); setv('ch-soc-siret',c.soc_siret); setv('ch-soc-tva',c.soc_tva);
     setv('ch-soc-adresse',c.soc_adresse); setv('ch-soc-iban',c.soc_iban);
     setv('ch-soc-tvaapp',c.soc_tvaapp||'non');
+    // ★ Menus accessibles (défaut true si jamais défini — compat ascendante)
+    const setMenu = (id, val) => { const el = document.getElementById(id); if(el) el.checked = (val !== false); };
+    setMenu('ch-menu-mescourses', c.menuMesCourses);
+    setMenu('ch-menu-mesrevenus', c.menuMesRevenus);
+    setMenu('ch-menu-messagerie', c.menuMessagerie);
+    setMenu('ch-menu-tableaubord', c.menuTableauBord);
+    setMenu('ch-menu-nouveautransfert', c.menuNouveauTransfert);
+    setMenu('ch-menu-mestransferts', c.menuMesTransferts);
+    setMenu('ch-menu-cartechauffeurs', c.menuCarteChauffeurs);
+    setMenu('ch-menu-meschauffeurs', c.menuMesChauffeurs);
+    setMenu('ch-menu-mesvehicules', c.menuMesVehicules);
     document.getElementById('mo-ch-title').textContent = 'Modifier chauffeur';
     document.getElementById('ch-save-lbl').textContent = 'Enregistrer';
   } else {
@@ -6031,6 +6119,9 @@ window.openChauffeurModal = function(id) {
     const gpEl2 = document.getElementById('ch-gerant-pro'); if(gpEl2) gpEl2.checked = false;
     const ptEl2 = document.getElementById('ch-pointeuse'); if(ptEl2) ptEl2.checked = false;
     const prEl2 = document.getElementById('ch-prioritaire'); if(prEl2) prEl2.checked = false;
+    // ★ Nouveau chauffeur : tous les menus cochés par défaut
+    ['ch-menu-mescourses','ch-menu-mesrevenus','ch-menu-messagerie','ch-menu-tableaubord','ch-menu-nouveautransfert','ch-menu-mestransferts','ch-menu-cartechauffeurs','ch-menu-meschauffeurs','ch-menu-mesvehicules']
+      .forEach(id => { const el = document.getElementById(id); if(el) el.checked = true; });
     document.getElementById('mo-ch-title').textContent = 'Ajouter chauffeur';
     document.getElementById('ch-save-lbl').textContent = 'Ajouter';
   }
@@ -6110,6 +6201,16 @@ window.saveChauffeur = async function() {
     gerantPro: document.getElementById('ch-gerant-pro')?.checked || false,
     pointeuse: document.getElementById('ch-pointeuse')?.checked || false,
     prioritaire: document.getElementById('ch-prioritaire')?.checked || false,
+    // ★ Menus accessibles (chauffeur side)
+    menuMesCourses: document.getElementById('ch-menu-mescourses')?.checked !== false,
+    menuMesRevenus: document.getElementById('ch-menu-mesrevenus')?.checked !== false,
+    menuMessagerie: document.getElementById('ch-menu-messagerie')?.checked !== false,
+    menuTableauBord: document.getElementById('ch-menu-tableaubord')?.checked !== false,
+    menuNouveauTransfert: document.getElementById('ch-menu-nouveautransfert')?.checked !== false,
+    menuMesTransferts: document.getElementById('ch-menu-mestransferts')?.checked !== false,
+    menuCarteChauffeurs: document.getElementById('ch-menu-cartechauffeurs')?.checked !== false,
+    menuMesChauffeurs: document.getElementById('ch-menu-meschauffeurs')?.checked !== false,
+    menuMesVehicules: document.getElementById('ch-menu-mesvehicules')?.checked !== false,
     soc_nom: document.getElementById('ch-soc-nom')?.value||'',
     soc_siret: document.getElementById('ch-soc-siret')?.value||'',
     soc_tva: document.getElementById('ch-soc-tva')?.value||'',
@@ -7201,6 +7302,12 @@ window.saveClient = async function() {  if(SESSION.role!=='admin'&&SESSION.role!
   const nom = document.getElementById('cl-nom').value.trim();
   if(!nom){showToast('Raison sociale obligatoire',true);return;}
   const editId = document.getElementById('cl-edit-id').value;
+  // ★ Détecter si c'est un RENOMMAGE pour propager partout
+  let ancienNom = null;
+  if(editId) {
+    const avant = (D.clients||[]).find(x => x._id === editId);
+    if(avant && avant.nom && avant.nom !== nom) ancienNom = avant.nom;
+  }
   const data = {
     nom,
     commercial: document.getElementById('cl-commercial').value,
@@ -7228,7 +7335,13 @@ window.saveClient = async function() {  if(SESSION.role!=='admin'&&SESSION.role!
   closeMo('client');
   if(editId) {
     await fbUpdate('clients', editId, data);
-    showToast('Client mis à jour ✓');
+    // ★ RENOMMAGE : propager partout (courses, couleurs, grille tarifaire)
+    if(ancienNom) {
+      await propagerRenommageClient(ancienNom, nom);
+      showToast('Client renommé & propagé partout ✓');
+    } else {
+      showToast('Client mis à jour ✓');
+    }
   } else {
     data.createdAt = new Date().toISOString();
     await fbPush('clients', data);
@@ -7236,6 +7349,61 @@ window.saveClient = async function() {  if(SESSION.role!=='admin'&&SESSION.role!
   }
   await loadAll();
 };
+
+// ★ RENOMMAGE EN CASCADE — propage un changement de nom client partout :
+//  • /courses : met à jour `client` dans toutes les courses (passées et futures)
+//  • /settings/clientColors : renomme la clé des couleurs
+//  • /settings/clientGrids : renomme la clé de la grille tarifaire
+async function propagerRenommageClient(ancienNom, nouveauNom) {
+  const an = String(ancienNom||'').trim();
+  const nn = String(nouveauNom||'').trim();
+  if(!an || !nn || an === nn) return;
+  const anUpper = an.toUpperCase();
+  const nnUpper = nn.toUpperCase();
+
+  // 1) COURSES : rename client dans toutes les courses (match case-insensitive)
+  try {
+    const toutes = (D.courses || []).filter(function(c){
+      return c && c.client && String(c.client).trim().toUpperCase() === anUpper;
+    });
+    let nb = 0, ko = 0;
+    for(const c of toutes) {
+      try {
+        const ok = await fbUpdate('courses', c._id, { client: nn, updatedAt: new Date().toISOString() });
+        if(ok !== false) nb++; else ko++;
+      } catch(e){ ko++; }
+    }
+    if(nb > 0) {
+      try { await addLog('🔖 Renommage client ' + an + ' → ' + nn + ' propagé sur ' + nb + ' course(s)' + (ko?' ('+ko+' échec(s))':'')); } catch(e){}
+    }
+  } catch(e) { console.warn('propagerRenommageClient courses:', e); }
+
+  // 2) CLIENT COLORS : renommer la clé dans CUSTOM_CLIENT_COLORS + Firebase
+  try {
+    if(CUSTOM_CLIENT_COLORS && CUSTOM_CLIENT_COLORS[anUpper]) {
+      const col = CUSTOM_CLIENT_COLORS[anUpper];
+      CUSTOM_CLIENT_COLORS[nnUpper] = { ...col, label: nn };
+      delete CUSTOM_CLIENT_COLORS[anUpper];
+      await fbUpdate('settings', 'clientColors', { data: CUSTOM_CLIENT_COLORS });
+    }
+  } catch(e) { console.warn('propagerRenommageClient colors:', e); }
+
+  // 3) CLIENT GRIDS : renommer la clé de la grille tarifaire
+  try {
+    if(typeof clientGrids !== 'undefined' && clientGrids && clientGrids[an]) {
+      clientGrids[nn] = clientGrids[an];
+      delete clientGrids[an];
+      await fbUpdate('settings', 'clientGrids', clientGrids);
+    } else if(typeof clientGrids !== 'undefined' && clientGrids && clientGrids[anUpper]) {
+      clientGrids[nnUpper] = clientGrids[anUpper];
+      delete clientGrids[anUpper];
+      await fbUpdate('settings', 'clientGrids', clientGrids);
+    }
+  } catch(e) { console.warn('propagerRenommageClient grids:', e); }
+
+  // 4) Rafraîchir l'affichage des couleurs si l'éditeur est ouvert
+  try { if(typeof renderClientColors === 'function') renderClientColors(); } catch(e){}
+}
 
 async function delClient(id){showConfirm('Supprimer ?','',async()=>{await fbDelete('clients',id);await loadAll();showToast('Client supprimé');});}
 
@@ -9420,8 +9588,94 @@ window.renderGerantNouveau = async function(){
       sel.innerHTML = opts;
     }
   } catch(e){}
+  // ★ S'assurer que la liste globale des chauffeurs MOBILEA est chargée pour la recherche.
+  try {
+    if(!D.chauffeurs || !D.chauffeurs.length) {
+      var chObj = await fbGet('chauffeurs');
+      D.chauffeurs = Object.keys(chObj||{}).map(function(k){ var v=chObj[k]; v._id=k; return v; });
+    }
+  } catch(e){}
   gerantMajMarge();
 };
+
+// ★ RECHERCHE CHAUFFEUR RÉSEAU MOBILEA (dans le bloc "Nouveau transfert" du gérant)
+// Filtre tous les chauffeurs MOBILEA par nom, prénom ou téléphone.
+window.gnAutreChSearch = function(q) {
+  var drop = document.getElementById('gn-autre-ch-drop');
+  if(!drop) return;
+  var queryRaw = String(q||'').trim();
+  var query = queryRaw.toLowerCase();
+  // Si vide → cacher le dropdown
+  if(!query) { drop.style.display = 'none'; drop.innerHTML = ''; return; }
+  // Récupérer tous les chauffeurs MOBILEA (actifs, non bloqués, non archivés)
+  var tous = (D.chauffeurs||[]).filter(function(ch){
+    return !ch.archived && !ch.blocked;
+  });
+  // Filtrer par nom / prenom / tel (on nettoie les espaces, +, tirets du tel)
+  var cleanTel = function(t){ return String(t||'').replace(/[\s+\-().]/g,''); };
+  var queryTel = cleanTel(queryRaw);
+  var res = tous.filter(function(ch){
+    var nom = ((ch.prenom||'') + ' ' + (ch.nom||'')).toLowerCase().trim();
+    var nomInv = ((ch.nom||'') + ' ' + (ch.prenom||'')).toLowerCase().trim();
+    var tel = cleanTel(ch.tel);
+    if(nom.indexOf(query) !== -1) return true;
+    if(nomInv.indexOf(query) !== -1) return true;
+    if(queryTel.length >= 3 && tel.indexOf(queryTel) !== -1) return true;
+    return false;
+  }).slice(0, 30);
+  if(!res.length) {
+    drop.innerHTML = '<div style="padding:12px 14px;font-size:13px;color:var(--muted)">Aucun chauffeur trouvé pour « ' + E(queryRaw) + ' »</div>';
+    drop.style.display = 'block';
+    return;
+  }
+  drop.innerHTML = res.map(function(ch){
+    var nom = (ch.prenom||'') + ((ch.nom)?' '+ch.nom:'');
+    var tel = ch.tel || '';
+    var soc = ch.soc_nom ? ' · ' + E(ch.soc_nom) : '';
+    var veh = ch.vehicule ? ' · ' + E(ch.vehicule) : '';
+    var statut = ch.statut === 'disponible' ? '<span style="color:#16a34a">● disponible</span>' : (ch.statut === 'indisponible' ? '<span style="color:#dc2626">● indisponible</span>' : '');
+    return '<div onclick="gnAutreChPick(\''+ch._id+'\')" style="padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);color:var(--white);font-size:13px" onmouseover="this.style.background=\'var(--card)\'" onmouseout="this.style.background=\'transparent\'">'
+      + '<div style="font-weight:700">' + E(nom) + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + (tel?E(tel):'(pas de tel)') + veh + soc + '</div>'
+      + (statut?'<div style="font-size:11px;margin-top:2px">' + statut + '</div>':'')
+      + '</div>';
+  }).join('');
+  drop.style.display = 'block';
+};
+
+window.gnAutreChPick = function(id) {
+  var ch = (D.chauffeurs||[]).find(function(x){ return x._id === id; });
+  if(!ch) return;
+  var nom = (ch.prenom||'') + ((ch.nom)?' '+ch.nom:'');
+  var hidden = document.getElementById('gn-autre-ch');
+  var search = document.getElementById('gn-autre-ch-search');
+  var sel = document.getElementById('gn-autre-ch-selected');
+  var drop = document.getElementById('gn-autre-ch-drop');
+  if(hidden) hidden.value = id;
+  if(search) search.value = nom;
+  if(sel) { sel.style.display = 'block'; sel.innerHTML = '✓ ' + E(nom) + (ch.tel?' · ' + E(ch.tel):'') + ' <span onclick="gnAutreChClear()" style="float:right;cursor:pointer;opacity:0.8">✕</span>'; }
+  if(drop) { drop.style.display = 'none'; drop.innerHTML = ''; }
+};
+
+window.gnAutreChClear = function() {
+  var hidden = document.getElementById('gn-autre-ch');
+  var search = document.getElementById('gn-autre-ch-search');
+  var sel = document.getElementById('gn-autre-ch-selected');
+  var drop = document.getElementById('gn-autre-ch-drop');
+  if(hidden) hidden.value = '';
+  if(search) search.value = '';
+  if(sel) { sel.style.display = 'none'; sel.innerHTML = ''; }
+  if(drop) { drop.style.display = 'none'; drop.innerHTML = ''; }
+};
+
+// Fermer le dropdown si on clique ailleurs
+document.addEventListener('click', function(e){
+  var drop = document.getElementById('gn-autre-ch-drop');
+  var search = document.getElementById('gn-autre-ch-search');
+  if(!drop || drop.style.display === 'none') return;
+  if(e.target === search || drop.contains(e.target)) return;
+  drop.style.display = 'none';
+});
 window.gerantResetTransfert = function(){
   ['gn-client','gn-dep','gn-arr','gn-notes','gn-prix','gn-prix-ch'].forEach(function(idf){ var e=document.getElementById(idf); if(e) e.value=''; });
   var p=document.getElementById('gn-pax'); if(p) p.value='1';
@@ -9495,25 +9749,37 @@ window.gerantCreerTransfert = async function(mode){
     createdAt:new Date().toISOString()
   };
 
-  if(mode==='mon_chauffeur'){
-    var chId = document.getElementById('gn-mon-ch').value;
-    if(!chId){ showToast('Choisissez un de vos chauffeurs', true); return; }
+  if(mode==='mon_chauffeur' || mode==='autre_chauffeur'){
+    // Pour "mon_chauffeur" : <select> gn-mon-ch
+    // Pour "autre_chauffeur" : <input hidden> gn-autre-ch (rempli par gnAutreChPick)
+    var chId = (mode==='autre_chauffeur')
+      ? (document.getElementById('gn-autre-ch')?.value || '')
+      : document.getElementById('gn-mon-ch').value;
+    if(!chId){
+      showToast(mode==='autre_chauffeur'
+        ? 'Choisissez un chauffeur du réseau MOBILEA'
+        : 'Choisissez un de vos chauffeurs', true);
+      return;
+    }
     var mes = (window._gerantCache && window._gerantCache.mesChauffeurs) || [];
     var ch = mes.find(function(x){return x._id===chId;}) || (D.chauffeurs||[]).find(function(x){return x._id===chId;});
     if(!ch){ showToast('Chauffeur introuvable', true); return; }
     var nomCh = ch.prenom + (ch.nom?' '+ch.nom:'');
     base.chauffeur = nomCh;
     base.chauffeurId = ch._id;
+    base.chauffeurTel = ch.tel || '';
     base.statut = 'attribuee';
     showToast('Création…');
     try {
       var id1 = await fbPush('courses', base);
       if(!id1){ showToast('⚠️ Échec : le transfert n\'a pas été enregistré (permissions ?)', true); return; }
       fbInvalidate('courses'); // purge APRÈS l'écriture → « Mes transferts » lira frais
-      try { await addLog('➕ Transfert gérant ('+SESSION.name+') attribué à '+nomCh+' : '+dep+' → '+arr); } catch(e){}
+      var _label = (mode==='autre_chauffeur') ? 'attribué (réseau MOBILEA) à ' : 'attribué à ';
+      try { await addLog('➕ Transfert gérant ('+SESSION.name+') '+_label+nomCh+' : '+dep+' → '+arr); } catch(e){}
       try { await sendPushNotification('🚗 Nouveau transfert', client+' — '+dep+' → '+arr, null, ch._id?[ch._id]:null); } catch(e){}
       showToast('✅ Transfert attribué à '+nomCh);
       gerantResetTransfert();
+      try { gnAutreChClear(); } catch(e){}
       try { gp('gerant-transferts'); } catch(e){} // ouvrir Mes transferts → confirmation visuelle
     } catch(e){ showToast('Erreur lors de la création', true); }
   } else {
@@ -9979,8 +10245,32 @@ function renderMesCourses() {
   const earnBtn = document.getElementById('mc-earnings-btn');
   if(earnBtn) earnBtn.style.display = canSeePrix ? '' : 'none';
 
-  // loadAll filtre déjà les courses du chauffeur (y compris les offres partagées)
-  const mine = D.courses;
+  // ★ Filtre strict mais tolérant : courses VRAIMENT à ce chauffeur.
+  // Avant on faisait `const mine = D.courses;` en se reposant sur loadAll(), mais
+  // dans certains cas (chauffeur-gérant, offres partagées) toutes les courses du
+  // planning fuyaient dans sa liste.
+  const monNom = String(name||'').trim().toLowerCase();
+  const monUid = SESSION && SESSION.uid;
+  const monCid = SESSION && SESSION.chauffeurId;
+  const mine = (D.courses||[]).filter(function(c){
+    // Les offres ouvertes au réseau sont affichées DANS UNE SECTION SÉPARÉE
+    // (offresOuvertes plus bas), on ne les met pas dans "mes courses"
+    // SAUF si elles me sont spécifiquement ciblées.
+    if(c.statut === 'offre_ouverte' || c.statut === 'offre_prioritaire') {
+      if(c.offerChauffeurId && monCid && c.offerChauffeurId === monCid) return true;
+      return false;
+    }
+    // Attribuée à moi par nom (tolérant à la casse / espaces)
+    var nomC = String(c.chauffeur||'').trim().toLowerCase();
+    if(nomC && nomC === monNom) return true;
+    // Attribuée à moi par UID Firebase
+    if(c.chauffeurUid && monUid && c.chauffeurUid === monUid) return true;
+    // Attribuée à moi par chauffeurId (fiche)
+    if(c.chauffeurId && monCid && c.chauffeurId === monCid) return true;
+    // Offre urgente ciblée sur moi
+    if(c.offerChauffeurId && monCid && c.offerChauffeurId === monCid) return true;
+    return false;
+  });
   const today = new Date().toDateString();
 
   const mois = new Date().getMonth();
@@ -16235,6 +16525,16 @@ window.refreshCarteChauffeurs = async function() {
   Object.keys(ccMarkers).forEach(id=>{
     if(!activeIds.includes(id)){ccMap.removeLayer(ccMarkers[id]);delete ccMarkers[id];}
   });
+  // ★ Nettoyer les traces live des chauffeurs qui ne sont plus actifs
+  if(window._ccLiveLines) {
+    Object.keys(window._ccLiveLines).forEach(id=>{
+      if(!activeIds.includes(id)) {
+        try { ccMap.removeLayer(window._ccLiveLines[id]); } catch(e){}
+        delete window._ccLiveLines[id];
+        if(window._ccLiveTraces) delete window._ccLiveTraces[id];
+      }
+    });
+  }
 
   const bounds = [];
   // Anti-superposition : quand plusieurs chauffeurs sont quasi au même endroit
@@ -16252,11 +16552,42 @@ window.refreshCarteChauffeurs = async function() {
     const r = 0.00035 + Math.floor(n/6)*0.00035; // ~35 m par anneau
     return [lat + r*Math.cos(angle), lng + r*Math.sin(angle)];
   };
+  // ★ TRACÉ GPS EN DIRECT (client-side uniquement, zéro coût Firebase)
+  // On garde en mémoire les N dernières positions de chaque chauffeur et on
+  // dessine un trait coloré de leur déplacement. Max 200 points/chauffeur = ~50 min.
+  if(!window._ccLiveTraces) window._ccLiveTraces = {};
+  if(!window._ccLiveLines) window._ccLiveLines = {};
+  const MAX_TRACE_PTS = 200;
+
   active.forEach(c=>{
     const name = c.prenom+(c.nom?' '+c.nom:'');
     const vehIcon = {berline:'🚗',van:'🚐',sprinter:'🚌',bus:'🚍',pmr:'♿',limousine:'🥂',classes:'🖤'}[c.vehicule]||'🚗';
     const course = D.courses.find(x=>x.chauffeur===name&&['en_route','sur_place','onboard','acceptee'].includes(x.statut));
     const perime = estPerimee(c);
+
+    // ★ Accumulation des points pour le tracé en direct
+    if(!perime && c.gps && c.gps.lat && c.gps.lng) {
+      if(!window._ccLiveTraces[c._id]) window._ccLiveTraces[c._id] = [];
+      const traceArr = window._ccLiveTraces[c._id];
+      const last = traceArr[traceArr.length - 1];
+      // N'ajouter que si la position a changé (évite les doublons)
+      if(!last || Math.abs(last[0] - c.gps.lat) > 0.00005 || Math.abs(last[1] - c.gps.lng) > 0.00005) {
+        traceArr.push([c.gps.lat, c.gps.lng]);
+        if(traceArr.length > MAX_TRACE_PTS) traceArr.shift();
+      }
+      // Dessiner / mettre à jour la polyline (uniquement si >= 2 points)
+      if(traceArr.length >= 2 && window._ccShowLiveTraces !== false) {
+        // Couleur selon statut : orange en course, vert dispo, gris sinon
+        const traceColor = course ? '#f0934a' : (c.statut==='indisponible'?'#e74c3c':'#2ecc8a');
+        if(window._ccLiveLines[c._id]) {
+          window._ccLiveLines[c._id].setLatLngs(traceArr).setStyle({ color: traceColor });
+        } else {
+          window._ccLiveLines[c._id] = window.L.polyline(traceArr, {
+            color: traceColor, weight: 3, opacity: 0.75, dashArray: '6,6'
+          }).addTo(ccMap);
+        }
+      }
+    }
     // Périmé → gris. Sinon couleur normale (orange si en course, rouge si
     // indisponible, vert si dispo).
     const statusColor = perime ? '#9ca3af' : (course ? '#f0934a' : (c.statut==='indisponible'?'#e74c3c':'#2ecc8a'));
@@ -16298,6 +16629,36 @@ window.refreshCarteChauffeurs = async function() {
     else ccMap.fitBounds(bounds, {padding:[50,50], maxZoom:14});
   }
   try { populateCcHistDrivers(); } catch(e){}
+};
+
+// ★ TRACÉ GPS EN DIRECT — toggle on/off et clear ──────────────────────────
+window.toggleLiveTraces = function() {
+  window._ccShowLiveTraces = (window._ccShowLiveTraces === false);
+  if(window._ccLiveLines && ccMap) {
+    Object.keys(window._ccLiveLines).forEach(function(id){
+      try {
+        if(window._ccShowLiveTraces) ccMap.addLayer(window._ccLiveLines[id]);
+        else ccMap.removeLayer(window._ccLiveLines[id]);
+      } catch(e){}
+    });
+  }
+  var btn = document.getElementById('cc-live-trace-btn');
+  if(btn) {
+    btn.innerHTML = window._ccShowLiveTraces !== false
+      ? '<i class="fas fa-route"></i> Masquer les tracés'
+      : '<i class="fas fa-route"></i> Afficher les tracés';
+  }
+  showToast(window._ccShowLiveTraces !== false ? '🟢 Tracés affichés' : '⚪ Tracés masqués');
+};
+window.clearLiveTraces = function() {
+  if(window._ccLiveLines && ccMap) {
+    Object.keys(window._ccLiveLines).forEach(function(id){
+      try { ccMap.removeLayer(window._ccLiveLines[id]); } catch(e){}
+    });
+  }
+  window._ccLiveLines = {};
+  window._ccLiveTraces = {};
+  showToast('🧹 Tracés effacés');
 };
 
 // ── HISTORIQUE DE DÉPLACEMENT (relecture du trajet d'un chauffeur) ──────────
