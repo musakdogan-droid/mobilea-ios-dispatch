@@ -7382,10 +7382,16 @@ window.saveClient = async function() {  if(SESSION.role!=='admin'&&SESSION.role!
   closeMo('client');
   if(editId) {
     await fbUpdate('clients', editId, data);
-    // ★ RENOMMAGE : propager partout (courses, couleurs, grille tarifaire)
+    // ★ RENOMMAGE : propager partout (courses, couleurs, grille tarifaire, comptes)
     if(ancienNom) {
-      await propagerRenommageClient(ancienNom, nom);
-      showToast('Client renommé & propagé partout ✓');
+      const r = await propagerRenommageClient(ancienNom, nom) || {};
+      const parts = [];
+      if(r.courses) parts.push(r.courses+' course(s)');
+      if(r.colors) parts.push('couleurs');
+      if(r.grids) parts.push('prix');
+      if(r.accounts) parts.push(r.accounts+' compte(s)');
+      const detail = parts.length ? ' — '+parts.join(', ') : '';
+      showToast('Client renommé "'+ancienNom+'" → "'+nom+'"'+detail+' ✓');
     } else {
       showToast('Client mis à jour ✓');
     }
@@ -7400,7 +7406,8 @@ window.saveClient = async function() {  if(SESSION.role!=='admin'&&SESSION.role!
 // ★ RENOMMAGE EN CASCADE — propage un changement de nom client partout :
 //  • /courses : met à jour `client` dans toutes les courses (passées et futures)
 //  • /settings/clientColors : renomme la clé des couleurs
-//  • /settings/clientGrids : renomme la clé de la grille tarifaire
+//  • /client_grids/<nom> : copie la grille tarifaire vers le nouveau nom + supprime l'ancien
+//  • /client_accounts/<id>.societe : met à jour les comptes clients liés à cette société
 async function propagerRenommageClient(ancienNom, nouveauNom) {
   const an = String(ancienNom||'').trim();
   const nn = String(nouveauNom||'').trim();
@@ -7408,48 +7415,107 @@ async function propagerRenommageClient(ancienNom, nouveauNom) {
   const anUpper = an.toUpperCase();
   const nnUpper = nn.toUpperCase();
 
-  // 1) COURSES : rename client dans toutes les courses (match case-insensitive)
+  let totalCourses = 0, totalColors = 0, totalGrids = 0, totalAccounts = 0;
+
+  // 1) COURSES — renomme c.client dans toutes les courses (passées + futures)
   try {
     const toutes = (D.courses || []).filter(function(c){
       return c && c.client && String(c.client).trim().toUpperCase() === anUpper;
     });
-    let nb = 0, ko = 0;
     for(const c of toutes) {
       try {
         const ok = await fbUpdate('courses', c._id, { client: nn, updatedAt: new Date().toISOString() });
-        if(ok !== false) nb++; else ko++;
-      } catch(e){ ko++; }
+        if(ok !== false) totalCourses++;
+      } catch(e){}
     }
-    if(nb > 0) {
-      try { await addLog('🔖 Renommage client ' + an + ' → ' + nn + ' propagé sur ' + nb + ' course(s)' + (ko?' ('+ko+' échec(s))':'')); } catch(e){}
-    }
-  } catch(e) { console.warn('propagerRenommageClient courses:', e); }
+  } catch(e) { console.warn('[rename] courses:', e); }
 
-  // 2) CLIENT COLORS : renommer la clé dans CUSTOM_CLIENT_COLORS + Firebase
+  // 2) COULEURS CLIENT — renomme la clé dans CUSTOM_CLIENT_COLORS + Firebase
   try {
     if(CUSTOM_CLIENT_COLORS && CUSTOM_CLIENT_COLORS[anUpper]) {
       const col = CUSTOM_CLIENT_COLORS[anUpper];
-      CUSTOM_CLIENT_COLORS[nnUpper] = { ...col, label: nn };
+      CUSTOM_CLIENT_COLORS[nnUpper] = Object.assign({}, col, { label: nn });
       delete CUSTOM_CLIENT_COLORS[anUpper];
       await fbUpdate('settings', 'clientColors', { data: CUSTOM_CLIENT_COLORS });
+      totalColors = 1;
     }
-  } catch(e) { console.warn('propagerRenommageClient colors:', e); }
+  } catch(e) { console.warn('[rename] colors:', e); }
 
-  // 3) CLIENT GRIDS : renommer la clé de la grille tarifaire
+  // 3) GRILLE TARIFAIRE — copie /client_grids/<ancienSafeKey> vers /client_grids/<nouveauSafeKey>
+  //    puis supprime l'ancien. Les grilles sont stockées à la racine (/client_grids),
+  //    PAS sous /settings. On utilise fetch directement car ces nœuds n'ont pas
+  //    de shape "liste d'objets" comme les autres (fbGet ne convient pas).
   try {
-    if(typeof clientGrids !== 'undefined' && clientGrids && clientGrids[an]) {
-      clientGrids[nn] = clientGrids[an];
-      delete clientGrids[an];
-      await fbUpdate('settings', 'clientGrids', clientGrids);
-    } else if(typeof clientGrids !== 'undefined' && clientGrids && clientGrids[anUpper]) {
-      clientGrids[nnUpper] = clientGrids[anUpper];
-      delete clientGrids[anUpper];
-      await fbUpdate('settings', 'clientGrids', clientGrids);
-    }
-  } catch(e) { console.warn('propagerRenommageClient grids:', e); }
+    const safeAn = an.replace(/[.#$/\[\]]/g, '_');
+    const safeNn = nn.replace(/[.#$/\[\]]/g, '_');
+    const safeAnUp = anUpper.replace(/[.#$/\[\]]/g, '_');
+    const safeNnUp = nnUpper.replace(/[.#$/\[\]]/g, '_');
+    const token = await getAuthToken();
 
-  // 4) Rafraîchir l'affichage des couleurs si l'éditeur est ouvert
+    // Essaie d'abord le nom exact, puis la variante UPPERCASE
+    for (const [src, dst] of [[safeAn, safeNn], [safeAnUp, safeNnUp]]) {
+      if (src === dst) continue;
+      try {
+        const r = await fetch(`${FB_URL}/client_grids/${src}.json${authParam(token)}`);
+        if (!r.ok) continue;
+        const data = await r.json();
+        if (!data || typeof data !== 'object') continue;
+        // Copie vers nouveau nom
+        const r2 = await fetch(`${FB_URL}/client_grids/${dst}.json${authParam(token)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        if (!r2.ok) continue;
+        // Supprime l'ancien
+        await fetch(`${FB_URL}/client_grids/${src}.json${authParam(token)}`, { method: 'DELETE' });
+        // Met à jour le cache mémoire
+        if (typeof clientGrids !== 'undefined') {
+          clientGrids[nn] = data;
+          delete clientGrids[an];
+          delete clientGrids[anUpper];
+        }
+        totalGrids++;
+      } catch(e) { console.warn('[rename] grid '+src+':', e); }
+    }
+  } catch(e) { console.warn('[rename] grids:', e); }
+
+  // 4) COMPTES CLIENTS (B2B) — met à jour `societe` dans /client_accounts
+  try {
+    const accounts = (D.client_accounts || []);
+    for(const a of accounts) {
+      if(a && a.societe && String(a.societe).trim().toUpperCase() === anUpper) {
+        try {
+          const ok = await fbUpdate('client_accounts', a._id, { societe: nn, updatedAt: new Date().toISOString() });
+          if(ok !== false) totalAccounts++;
+        } catch(e){}
+      }
+    }
+  } catch(e) { console.warn('[rename] client_accounts:', e); }
+
+  // 5) INVALIDATION DES CACHES — force un rechargement propre
+  try {
+    if (typeof fbInvalidate === 'function') {
+      fbInvalidate('courses');
+      fbInvalidate('client_accounts');
+      fbInvalidate('settings');
+    }
+  } catch(e){}
+
+  // 6) LOG + RAFRAÎCHISSEMENT UI
+  try {
+    await addLog('🔖 Renommage client "'+an+'" → "'+nn+'" : '
+      + totalCourses + ' course(s), '
+      + totalColors + ' couleur, '
+      + totalGrids + ' grille tarifaire, '
+      + totalAccounts + ' compte(s) client');
+  } catch(e){}
+
+  // Affichage dans l'UI si l'éditeur de couleurs / grilles est ouvert
   try { if(typeof renderClientColors === 'function') renderClientColors(); } catch(e){}
+  try { if(typeof renderClients === 'function') renderClients(); } catch(e){}
+
+  return { courses: totalCourses, colors: totalColors, grids: totalGrids, accounts: totalAccounts };
 }
 
 async function delClient(id){showConfirm('Supprimer ?','',async()=>{await fbDelete('clients',id);await loadAll();showToast('Client supprimé');});}
