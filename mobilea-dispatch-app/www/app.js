@@ -20241,6 +20241,7 @@ const SR = {
 };
 
 function _srEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+function _srSet(html){ var c = document.getElementById('sr-content'); if (c) c.innerHTML = html; else console.warn('[SR] sr-content absent — page ouverte ?'); }
 
 async function openSecuriteRgpd() {
   if (!SESSION || SESSION.role !== 'admin') {
@@ -20348,7 +20349,7 @@ async function srLoadCsp() {
     SR.cspData = entries;
     srRenderCsp();
   } catch (e) {
-    document.getElementById('sr-content').innerHTML = '<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>';
+    _srSet('<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>');
   }
 }
 
@@ -20372,7 +20373,7 @@ function srRenderCsp() {
 
   if (entries.length === 0) {
     html += '<div class="sr-empty">✅ Aucune violation CSP enregistrée.<br><br><small>Si tu es sûr qu\'il devrait y en avoir, vérifie :<br>1. Le Worker CSP reçoit bien des rapports (Cloudflare Metrics)<br>2. Les règles Firebase RGPD sont publiées</small></div>';
-    document.getElementById('sr-content').innerHTML = html;
+    _srSet(html);
     return;
   }
 
@@ -20404,7 +20405,7 @@ function srRenderCsp() {
   });
   html += '</tbody></table>';
 
-  document.getElementById('sr-content').innerHTML = html;
+  _srSet(html);
 }
 
 function srExportCspCsv() {
@@ -20442,7 +20443,7 @@ async function srLoadAudit() {
     SR.auditData = entries;
     srRenderAudit();
   } catch (e) {
-    document.getElementById('sr-content').innerHTML = '<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>';
+    _srSet('<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>');
   }
 }
 
@@ -20463,7 +20464,7 @@ function srRenderAudit() {
 
   if (entries.length === 0) {
     html += '<div class="sr-empty"><p>📭 Aucun événement d\'audit enregistré.</p><p style="font-size:12px;margin-top:8px">Le journal se remplira dès que du code appellera <code>logAuditAccess({action:\'...\', target:\'...\'})</code>.</p></div>';
-    document.getElementById('sr-content').innerHTML = html;
+    _srSet(html);
     return;
   }
 
@@ -20480,7 +20481,7 @@ function srRenderAudit() {
   });
   html += '</tbody></table>';
 
-  document.getElementById('sr-content').innerHTML = html;
+  _srSet(html);
 }
 
 function srExportAuditCsv() {
@@ -20502,7 +20503,7 @@ async function srLoadRgpd() {
     SR.rgpdData = entries;
     srRenderRgpd();
   } catch (e) {
-    document.getElementById('sr-content').innerHTML = '<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>';
+    _srSet('<div class="sr-empty">❌ Erreur : ' + _srEsc(e.message) + '</div>');
   }
 }
 
@@ -20528,7 +20529,7 @@ function srRenderRgpd() {
 
   if (entries.length === 0) {
     html += '<div class="sr-empty"><p>📭 Aucune demande de suppression RGPD.</p><p style="font-size:12px;margin-top:8px">Les demandes arrivent via le profil client (bouton "Supprimer mon compte").</p></div>';
-    document.getElementById('sr-content').innerHTML = html;
+    _srSet(html);
     return;
   }
 
@@ -20552,7 +20553,7 @@ function srRenderRgpd() {
   });
   html += '</tbody></table>';
 
-  document.getElementById('sr-content').innerHTML = html;
+  _srSet(html);
 }
 
 async function srApproveRgpd(id) {
