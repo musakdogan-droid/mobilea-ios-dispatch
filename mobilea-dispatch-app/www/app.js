@@ -2608,6 +2608,17 @@ function startApp() {
   if(SESSION.role === 'chauffeur') {
     _driverOnService = true; resetDriverInactivity();
     try { document.body.setAttribute('data-driver-skin','premium'); } catch(e){}
+    // ★ DÉMARRAGE AUTOMATIQUE DU GPS DÈS LA CONNEXION
+    // Le chauffeur est traçable dès qu'il ouvre l'app (même sans course active).
+    // Permet au dispatch de voir TOUS les chauffeurs connectés en temps réel.
+    // Délai 2s pour laisser la session s'initialiser avant de demander la permission.
+    setTimeout(() => {
+      try {
+        if(SESSION && SESSION.role === 'chauffeur' && _driverOnService && !gpsActive) {
+          demarrerSuiviGPS();
+        }
+      } catch(e) { console.warn('auto GPS start:', e); }
+    }, 2000);
   } else {
     try { document.body.removeAttribute('data-driver-skin'); } catch(e){}
   }
