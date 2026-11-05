@@ -20247,7 +20247,8 @@ async function openSecuriteRgpd() {
     alert('⛔ Accès refusé — administrateurs uniquement.');
     return;
   }
-  try { if (location.hash !== '#securite-rgpd') location.hash = 'securite-rgpd'; } catch(e){}
+  // NOTE: on ne change PAS location.hash, car ça déclenche applyLoginMode (ligne 19089)
+  // qui perturbe le rendu. On reste sur un affichage pur DOM.
 
   // Cache toutes les pages existantes
   document.querySelectorAll('.page, [id^="page-"], .section').forEach(function(s){
@@ -20267,7 +20268,8 @@ async function openSecuriteRgpd() {
   host.classList.add('on');
   host.innerHTML = _srShell();
   _srInjectStyle();
-  srOpenTab(SR.currentTab);
+  // Petit délai pour laisser le DOM se stabiliser avant de charger les données
+  setTimeout(function(){ srOpenTab(SR.currentTab); }, 100);
 }
 
 function _srShell(){
@@ -20649,7 +20651,4 @@ async function logAuditAccess(opts) {
   } catch (e) { console.warn('audit log failed:', e.message); }
 }
 
-// Re-ouvre la page si l'URL contient notre hash au chargement
-window.addEventListener('load', function(){
-  if (location.hash === '#securite-rgpd') { setTimeout(openSecuriteRgpd, 500); }
-});
+// Note: pas de ré-ouverture automatique au load — ça causait un conflit avec le router existant
