@@ -12102,13 +12102,15 @@ window.openConv = async function(convId, name, role) {
   }
 
   await loadMessages(convId);
-  // Marquer comme lu
-  const msgs = (D.messages||[]).filter(m=>m.conv===convId&&!m.read&&m.from!==SESSION.uid);
-  for(const m of msgs) await fbUpdate('messages', m._id, {read:true});
+  // Démarrage du rafraîchissement temps réel (type WhatsApp) : toutes les 3 s
+  // tant que la conversation est ouverte — récupère nouveaux messages et accusés de lecture.
+  startConvPolling(convId);
 };
 
 // Sur mobile : revenir à la liste des conversations depuis le chat
 window.backToConvList = function() {
+  // Arrêter le polling du fil ouvert (évite les requêtes Firebase pour rien)
+  try { stopConvPolling(); } catch(e){}
   const msgWrap = document.getElementById('msg-wrap');
   if(msgWrap) {
     msgWrap.classList.remove('msg-chat-active');
@@ -12125,25 +12127,99 @@ window.backToConvList = function() {
   }
 };
 
+// Suivi du polling + état du scroll pour un rendu fluide type WhatsApp
+let _convPollInterval = null;
+let _convLastMsgIds = '';
+
 async function loadMessages(convId) {
   const allMsgs = await fbGet('messages');
   D.messages = allMsgs;
   const msgs = allMsgs.filter(m=>m.conv===convId).sort((a,b)=>new Date(a.at)-new Date(b.at));
   const box = document.getElementById('chat-messages');
   if(!box) return;
-  if(!msgs.length){box.innerHTML='<div style="text-align:center;color:var(--muted);font-size:12px;margin-top:40px"><i class="fas fa-comments" style="font-size:32px;display:block;margin-bottom:10px;opacity:0.3"></i>Début de la conversation</div>';return;}
-  box.innerHTML = msgs.map(m=>{
-    // Un message est "de moi" uniquement si son expéditeur (from) correspond à
-    // mon identité — jamais par simple coïncidence de nom d'affichage.
+  if(!msgs.length){
+    box.innerHTML='<div style="text-align:center;color:var(--muted);font-size:12px;margin-top:40px"><i class="fas fa-comments" style="font-size:32px;display:block;margin-bottom:10px;opacity:0.3"></i>Début de la conversation</div>';
+    _convLastMsgIds = '';
+    return;
+  }
+
+  // Signature pour savoir s'il y a réellement du nouveau (évite les re-render inutiles)
+  const sig = msgs.map(m => m._id + ':' + (m.read?1:0)).join('|');
+  if (sig === _convLastMsgIds) return; // rien de nouveau, évite le flicker
+
+  // L'utilisateur était-il scrollé tout en bas avant le re-render ?
+  const atBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 80;
+  const premierRendu = _convLastMsgIds === '';
+  _convLastMsgIds = sig;
+
+  // Grouper les messages par jour pour afficher un séparateur "Aujourd'hui / Hier / 06/11/2026"
+  const _dayLabel = (d) => {
+    const dt = new Date(d), now = new Date();
+    const memeJour = dt.toDateString() === now.toDateString();
+    if (memeJour) return "Aujourd'hui";
+    const hier = new Date(now); hier.setDate(hier.getDate()-1);
+    if (dt.toDateString() === hier.toDateString()) return 'Hier';
+    return dt.toLocaleDateString('fr-FR', {weekday:'long', day:'numeric', month:'long'});
+  };
+
+  let html = '';
+  let currentDay = '';
+  msgs.forEach(m => {
     const isMe = !!m.from && (m.from === SESSION.uid || m.from === SESSION.name);
-    return `<div style="display:flex;${isMe?'justify-content:flex-end':'justify-content:flex-start'}">
-      <div style="max-width:70%;padding:10px 14px;border-radius:${isMe?'18px 18px 4px 18px':'18px 18px 18px 4px'};background:${isMe?'linear-gradient(135deg,var(--gold),var(--gold2))':'var(--card2)'};color:${isMe?'var(--black)':'var(--white)'};font-size:13px;box-shadow:var(--shadow-sm)">
-        <div>${E(m.text)}</div>
-        <div style="font-size:9px;opacity:0.6;margin-top:4px;text-align:right">${m.at?new Date(m.at).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}</div>
-      </div>
-    </div>`;
-  }).join('');
-  box.scrollTop = box.scrollHeight;
+    const timeStr = m.at ? new Date(m.at).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}) : '';
+    const dayLbl = m.at ? _dayLabel(m.at) : '';
+    if (dayLbl && dayLbl !== currentDay) {
+      currentDay = dayLbl;
+      html += '<div style="text-align:center;margin:18px 0 10px"><span style="background:rgba(255,255,255,0.08);color:var(--muted);font-size:10px;padding:4px 10px;border-radius:10px;font-weight:600;letter-spacing:0.3px">'+_capitalizeFirst(dayLbl)+'</span></div>';
+    }
+    // Accusé de réception style WhatsApp pour MES messages uniquement
+    //   ✓ (gris) : envoyé
+    //   ✓✓ (bleu): lu par le destinataire (m.read === true)
+    let tick = '';
+    if (isMe) {
+      if (m.read) {
+        tick = '<span title="Lu" style="color:#4fc3f7;font-size:11px;font-weight:800;margin-left:5px;letter-spacing:-3px">✓✓</span>';
+      } else {
+        tick = '<span title="Envoyé" style="color:rgba(0,0,0,0.42);font-size:11px;font-weight:700;margin-left:5px">✓</span>';
+      }
+    }
+    html += '<div style="display:flex;'+(isMe?'justify-content:flex-end':'justify-content:flex-start')+';margin-bottom:4px">'
+      + '<div style="max-width:72%;padding:9px 13px;border-radius:'+(isMe?'16px 16px 4px 16px':'16px 16px 16px 4px')+';background:'+(isMe?'linear-gradient(135deg,var(--gold),var(--gold2))':'var(--card2)')+';color:'+(isMe?'var(--black)':'var(--white)')+';font-size:13.5px;line-height:1.4;box-shadow:var(--shadow-sm);word-wrap:break-word;overflow-wrap:break-word">'
+      + '<div>'+E(m.text).replace(/\n/g,'<br>')+'</div>'
+      + '<div style="font-size:9.5px;opacity:0.68;margin-top:3px;text-align:right;white-space:nowrap">'+timeStr+tick+'</div>'
+      + '</div></div>';
+  });
+  box.innerHTML = html;
+
+  // Scroll : toujours en bas au 1er rendu, sinon seulement si l'utilisateur y était déjà
+  if (premierRendu || atBottom) {
+    box.scrollTop = box.scrollHeight;
+  }
+
+  // Marquer comme lus les messages reçus (le destinataire verra tes ✓✓ bleu)
+  const nonLus = msgs.filter(m => !m.read && m.from && m.from !== SESSION.uid && m.from !== SESSION.name);
+  if (nonLus.length) {
+    for (const m of nonLus) {
+      try { await fbUpdate('messages', m._id, { read: true, readAt: new Date().toISOString() }); } catch(e){}
+    }
+  }
+}
+
+function _capitalizeFirst(s){ return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+// Rafraîchissement automatique du fil ouvert (type WhatsApp) : toutes les 3 s on
+// vérifie s'il y a de nouveaux messages ou des accusés de lecture à afficher.
+// S'arrête dès qu'on quitte la conversation (backToConvList) ou qu'on en ouvre une autre.
+function startConvPolling(convId) {
+  stopConvPolling();
+  _convPollInterval = setInterval(async () => {
+    if (!currentConv || currentConv !== convId) { stopConvPolling(); return; }
+    try { await loadMessages(convId); } catch(e){}
+  }, 3000);
+}
+function stopConvPolling() {
+  if (_convPollInterval) { clearInterval(_convPollInterval); _convPollInterval = null; }
+  _convLastMsgIds = '';
 }
 
 window.sendMsg = async function() {
@@ -16822,14 +16898,79 @@ window._ccTrace = null;
 window.populateCcHistDrivers = function(){
   const sel = document.getElementById('cc-hist-driver');
   if(!sel) return;
-  if(sel.options.length > 1) return; // déjà rempli
-  const list = (D.chauffeurs||[]).slice().sort(function(a,b){ return (a.prenom||'').localeCompare(b.prenom||''); });
-  if(!list.length) return;
-  sel.innerHTML = '<option value="">Choisir un chauffeur…</option>' + list.map(function(c){
-    return '<option value="'+c._id+'">'+E((c.prenom||'')+(c.nom?' '+c.nom:''))+'</option>';
-  }).join('');
+
+  // Alimenter le select caché (pour compat avec voirTraceChauffeur qui lit sel.value)
+  if(sel.options.length <= 1) {
+    const list = (D.chauffeurs||[]).slice().sort(function(a,b){ return (a.prenom||'').localeCompare(b.prenom||''); });
+    if(list.length) {
+      sel.innerHTML = '<option value="">Choisir un chauffeur…</option>' + list.map(function(c){
+        return '<option value="'+c._id+'">'+E((c.prenom||'')+(c.nom?' '+c.nom:''))+'</option>';
+      }).join('');
+    }
+  }
+
+  // Remplacer visuellement le select par une barre de recherche + dropdown filtrée
+  if(!document.getElementById('cc-hist-search')) {
+    sel.style.display = 'none';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:relative;min-width:200px;flex:1;max-width:280px';
+    wrap.innerHTML =
+      '<input type="text" id="cc-hist-search" placeholder="🔎 Rechercher un chauffeur…" autocomplete="off" '
+      + 'style="padding:6px 10px;width:100%;border:1px solid var(--border);border-radius:6px;background:var(--dark);color:var(--white);font-size:12px;box-sizing:border-box" '
+      + 'oninput="ccHistFilter(this.value)" onfocus="ccHistFilter(this.value)" onblur="setTimeout(ccHistCloseDrop,200)">'
+      + '<div id="cc-hist-drop" style="display:none;position:absolute;top:100%;left:0;right:0;max-height:260px;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:6px;margin-top:2px;z-index:1000;box-shadow:0 4px 16px rgba(0,0,0,0.35)"></div>';
+    sel.parentNode.insertBefore(wrap, sel);
+  }
+
   const dt = document.getElementById('cc-hist-date');
   if(dt && !dt.value) dt.value = new Date().toISOString().slice(0,10);
+};
+
+// Filtre la dropdown d'historique au fur et à mesure que l'utilisateur tape
+window.ccHistFilter = function(query){
+  const drop = document.getElementById('cc-hist-drop');
+  if(!drop) return;
+  const q = String(query||'').trim().toLowerCase();
+  const list = (D.chauffeurs||[]).slice().sort(function(a,b){ return (a.prenom||'').localeCompare(b.prenom||''); });
+  const filtered = q ? list.filter(function(c){
+    const nom = ((c.prenom||'')+' '+(c.nom||'')).toLowerCase();
+    const tel = String(c.tel||'').toLowerCase();
+    const email = String(c.email||'').toLowerCase();
+    return nom.includes(q) || tel.includes(q) || email.includes(q);
+  }) : list;
+
+  if(!filtered.length) {
+    drop.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12px;text-align:center">Aucun chauffeur trouvé</div>';
+  } else {
+    drop.innerHTML = filtered.slice(0, 50).map(function(c){
+      const nom = ((c.prenom||'')+(c.nom?' '+c.nom:'')).trim() || 'Sans nom';
+      const tel = c.tel ? ' · ' + E(String(c.tel)) : '';
+      const nomEsc = nom.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return '<div onclick="ccHistSelect(\''+c._id+'\',\''+nomEsc+'\')" '
+        + 'style="padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:12px;color:var(--white)" '
+        + 'onmouseover="this.style.background=\'var(--card2)\'" onmouseout="this.style.background=\'\'">'
+        + '👤 <strong>' + E(nom) + '</strong>'
+        + '<span style="color:var(--muted);font-size:10px">' + tel + '</span>'
+        + '</div>';
+    }).join('');
+  }
+  drop.style.display = 'block';
+};
+
+// Sélection d'un chauffeur depuis la dropdown : remplit le select caché
+// (voirTraceChauffeur continuera de le lire pour récupérer l'ID et le nom)
+window.ccHistSelect = function(id, nom){
+  const sel = document.getElementById('cc-hist-driver');
+  const inp = document.getElementById('cc-hist-search');
+  const drop = document.getElementById('cc-hist-drop');
+  if(sel) sel.value = id;
+  if(inp) inp.value = nom;
+  if(drop) drop.style.display = 'none';
+};
+
+window.ccHistCloseDrop = function(){
+  const drop = document.getElementById('cc-hist-drop');
+  if(drop) drop.style.display = 'none';
 };
 window.effacerTraceChauffeur = function(){
   try { if(window._ccTrace && ccMap){ window._ccTrace.forEach(function(l){ ccMap.removeLayer(l); }); } } catch(e){}
