@@ -3652,12 +3652,24 @@ function raccourcirLieu(texte) {
 
 function getClientInfo(clientName) {
   const name = (clientName||'').toUpperCase();
-  // 1) Priorité aux couleurs personnalisées (correspondance exacte puis partielle)
+  // 1) Correspondance exacte (clé UPPER)
   if(CUSTOM_CLIENT_COLORS[name]) return CUSTOM_CLIENT_COLORS[name];
+  // 2) Correspondance NORMALISÉE (accents/pluriel/espaces ignorés) — attrape
+  //    le cas d'une course saisie "B&B Hotels" alors que la couleur est stockée
+  //    sous "B&B HÔTEL".
+  if(typeof _ccNormKey === 'function') {
+    const norm = _ccNormKey(name);
+    if(norm) {
+      for(const [key, val] of Object.entries(CUSTOM_CLIENT_COLORS)) {
+        if(_ccNormKey(key) === norm) return val;
+      }
+    }
+  }
+  // 3) Correspondance partielle (contient) sur les clés personnalisées
   for(const [key, val] of Object.entries(CUSTOM_CLIENT_COLORS)) {
     if(key && name.includes(key)) return val;
   }
-  // 2) Sinon, palette par défaut
+  // 4) Sinon, palette par défaut
   for(const [key, val] of Object.entries(CLIENT_PALETTE)) {
     if(name.includes(key)) return val;
   }
@@ -3674,34 +3686,59 @@ async function loadClientColors() {
   } catch(e) { CUSTOM_CLIENT_COLORS = {}; }
 }
 
-// Construit la liste fusionnée des clients à colorer :
-//  - clients de la palette par défaut (hardcodés)
-//  - clients ayant déjà une couleur personnalisée (CUSTOM_CLIENT_COLORS)
-//  - ★ clients de la table Gestion client (D.clients) — pour que tout nouveau
-//    client ajouté apparaisse automatiquement ici.
-// Dédupliqué CASE-INSENSITIVE par la clé UPPERCASE, pour qu'il n'y ait plus de
-// "B&B Hotels" affiché en double (une fois depuis CLIENT_PALETTE, une fois
-// depuis CUSTOM_CLIENT_COLORS en MAJ).
+// CLÉ DE NORMALISATION pour la dédup (accents, casse, espaces, tirets, pluriels).
+// Résout "B&B Hôtel" / "B&B Hotels" / "B&B HOTELS" → tous "BBHOTEL"
+//        "Dream Castle" / "DreamCastle" → tous "DREAMCASTLE"
+//        "Hôtel Deloitte" / "Hotel Deloitte" → tous "HOTELDELOITTE"
+function _ccNormKey(name) {
+  if (!name) return '';
+  let s = String(name).trim().toLowerCase();
+  // Retirer les accents (NFD + diacritiques)
+  s = s.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  // Retirer tout ce qui n'est pas alphanumérique
+  s = s.replace(/[^a-z0-9]+/g, '');
+  // Retirer un éventuel "s" final (pluriel) si le mot fait > 3 lettres
+  if (s.length > 3 && s.endsWith('s')) s = s.slice(0, -1);
+  return s.toUpperCase();
+}
+window._ccNormKey = _ccNormKey;
+
+// Construit la liste fusionnée des clients à colorer, dédupliquée via
+// _ccNormKey. Priorité d'affichage pour le libellé :
+//   1. Gestion client (D.clients) — nom propre saisi par l'admin
+//   2. Palette par défaut (hardcodée)
+//   3. Couleur personnalisée saisie manuellement dans cet écran
 function ccMergedList() {
-  const byUpper = new Map(); // UPPER → { label, source }
+  const byKey = new Map(); // normKey → { label, source, upper (clé d'origine) }
+
+  // Palette par défaut d'abord (source la plus faible)
   Object.entries(CLIENT_PALETTE).forEach(([key, v]) => {
-    const upper = String(key).toUpperCase();
-    byUpper.set(upper, { label: v.label || key, source: 'palette' });
+    const k = _ccNormKey(key);
+    if (!k) return;
+    byKey.set(k, { label: v.label || key, source: 'palette', upper: String(key).toUpperCase() });
   });
+
+  // Couleurs personnalisées (écrase la palette, mais pas D.clients)
   Object.entries(CUSTOM_CLIENT_COLORS).forEach(([key, v]) => {
-    const upper = String(key).toUpperCase();
-    byUpper.set(upper, { label: v.label || key, source: 'custom' });
+    const k = _ccNormKey(key);
+    if (!k) return;
+    const prev = byKey.get(k);
+    // Garde le label du plus "humain" (avec espaces/accents) si on a mieux
+    const label = v.label || key;
+    byKey.set(k, { label: (prev && prev.source === 'palette') ? label : (label || prev?.label), source: 'custom', upper: String(key).toUpperCase() });
   });
-  // ★ Vrais clients : overwrite avec le nom propre (bonne casse) de la fiche
+
+  // ★ Vrais clients de Gestion client — priorité absolue sur le libellé
   (D.clients || []).forEach(c => {
     if (c && c.nom) {
-      const upper = c.nom.toUpperCase();
-      const prev = byUpper.get(upper);
-      byUpper.set(upper, { label: c.nom, source: prev?.source || 'client' });
+      const k = _ccNormKey(c.nom);
+      if (!k) return;
+      byKey.set(k, { label: c.nom, source: 'client', upper: c.nom.toUpperCase() });
     }
   });
-  return [...byUpper.entries()]
-    .map(([upper, v]) => ({ upper, label: v.label, source: v.source }))
+
+  return [...byKey.entries()]
+    .map(([normKey, v]) => ({ normKey, upper: v.upper, label: v.label, source: v.source }))
     .sort((a, b) => a.label.localeCompare(b.label, 'fr', { sensitivity: 'base' }));
 }
 
@@ -3710,9 +3747,29 @@ function renderClientColors() {
   const wrap = document.getElementById('cc-list');
   if(!wrap) return;
   const list = ccMergedList();
-  wrap.innerHTML = list.map(({ upper, label, source }) => {
+
+  // Compte les doublons DÉTECTÉS en base (CUSTOM_CLIENT_COLORS) pour
+  // décider si on affiche un bandeau "Nettoyer les doublons".
+  const doublonsCount = _ccCountDuplicates();
+
+  // Datalist des vrais clients pour l'auto-complétion du champ "+ Ajouter"
+  _ccUpdateClientsDatalist();
+
+  // Bandeau "Nettoyer les doublons" en tête si on en détecte
+  const cleanupBanner = doublonsCount > 0
+    ? `<div id="cc-cleanup-banner" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;margin-bottom:10px">
+         <div style="flex:1;font-size:12px;color:#9a3412"><b>${doublonsCount}</b> doublon${doublonsCount>1?'s':''} détecté${doublonsCount>1?'s':''} (ex : "B&amp;B Hôtel" / "B&amp;B Hotels"). Les fusionner garde le nom de la fiche Gestion client.</div>
+         <button class="btn btn-sm" onclick="ccNettoyerDoublons()" style="background:#f97316;color:#fff;border:none;padding:6px 10px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">🧹 Nettoyer</button>
+       </div>`
+    : '';
+
+  wrap.innerHTML = cleanupBanner + list.map(({ normKey, upper, label, source }) => {
     const info = getClientInfo(label);
-    const custom = CUSTOM_CLIENT_COLORS[upper] || CUSTOM_CLIENT_COLORS[label];
+    // Essaie plusieurs clés de recherche pour la couleur personnalisée
+    // (compatibilité avec les anciennes entrées)
+    const custom = CUSTOM_CLIENT_COLORS[upper]
+                || CUSTOM_CLIENT_COLORS[label.toUpperCase()]
+                || _ccFindCustomByNorm(normKey);
     const arr = (custom && custom.arr) || info.arr;
     const dep = (custom && custom.dep) || info.dep;
     const isCustom = !!custom;
@@ -3720,7 +3777,13 @@ function renderClientColors() {
     const srcBadge = source === 'client'
       ? ' <span title="Depuis Gestion client" style="color:#4a9eff;font-size:10px">●</span>'
       : (isCustom ? ' <span title="Couleur personnalisée" style="color:var(--green);font-size:10px">●</span>' : '');
-    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)" data-cc-name="${upper.replace(/"/g,'&quot;')}">
+    // Bouton "supprimer" seulement pour les entrées qui NE viennent PAS de Gestion client
+    // (sinon on supprimerait l'équivalent de la fiche client)
+    const canDelete = (source !== 'client');
+    const delBtn = canDelete
+      ? `<button title="Retirer cette entrée" onclick="ccRemoveEntry('${normKey}')" style="background:transparent;border:none;color:#e05c5c;cursor:pointer;padding:4px 6px;font-size:14px">🗑️</button>`
+      : '';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)" data-cc-norm="${normKey}" data-cc-name="${label.replace(/"/g,'&quot;').toUpperCase()}" data-cc-label="${label.replace(/"/g,'&quot;')}">
       <div style="flex:1;font-size:13px;font-weight:600">${E(label)}${srcBadge}</div>
       <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)">🛬 Arrivée
         <input type="color" class="cc-arr" value="${arr}" style="width:34px;height:28px;border:none;background:none;cursor:pointer;padding:0">
@@ -3728,36 +3791,198 @@ function renderClientColors() {
       <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)">🛫 Départ
         <input type="color" class="cc-dep" value="${dep}" style="width:34px;height:28px;border:none;background:none;cursor:pointer;padding:0">
       </label>
+      ${delBtn}
     </div>`;
   }).join('');
 }
 
-// Ajoute un nouveau client dans la liste (non enregistré tant qu'on ne clique pas Enregistrer).
+// Cherche une couleur personnalisée par sa clé NORMALISÉE (accents/plurals/
+// espaces ignorés). Utile pour retrouver "B&B HOTELS" quand on cherche
+// "B&B HÔTEL".
+function _ccFindCustomByNorm(normKey) {
+  if(!normKey) return null;
+  for(const [key, val] of Object.entries(CUSTOM_CLIENT_COLORS)) {
+    if(_ccNormKey(key) === normKey) return val;
+  }
+  return null;
+}
+
+// Compte le nombre d'entrées EN TROP dans CUSTOM_CLIENT_COLORS (doublons
+// qui se regroupent sur la même clé normalisée).
+function _ccCountDuplicates() {
+  const groups = {};
+  for(const key of Object.keys(CUSTOM_CLIENT_COLORS)) {
+    const k = _ccNormKey(key);
+    if(!k) continue;
+    groups[k] = (groups[k]||0) + 1;
+  }
+  let dupes = 0;
+  for(const n of Object.values(groups)) if(n > 1) dupes += (n - 1);
+  return dupes;
+}
+
+// Alimente / met à jour la datalist attachée au champ "cc-new-name".
+function _ccUpdateClientsDatalist() {
+  const inp = document.getElementById('cc-new-name');
+  if(!inp) return;
+  let dl = document.getElementById('cc-clients-datalist');
+  if(!dl) {
+    dl = document.createElement('datalist');
+    dl.id = 'cc-clients-datalist';
+    inp.setAttribute('list', 'cc-clients-datalist');
+    inp.parentNode.appendChild(dl);
+  }
+  // Suggestions = tous les clients de Gestion client qui n'ont PAS déjà
+  // une entrée couleur (via la clé normalisée).
+  const existingNorms = new Set();
+  Object.keys(CUSTOM_CLIENT_COLORS).forEach(k => existingNorms.add(_ccNormKey(k)));
+  Object.keys(CLIENT_PALETTE).forEach(k => existingNorms.add(_ccNormKey(k)));
+  const suggestions = (D.clients||[])
+    .filter(c => c && c.nom && !existingNorms.has(_ccNormKey(c.nom)))
+    .map(c => c.nom)
+    .sort((a,b)=>a.localeCompare(b,'fr',{sensitivity:'base'}));
+  dl.innerHTML = suggestions.map(n => `<option value="${E(n)}">`).join('');
+}
+
+// Retire une entrée (par clé normalisée) de CUSTOM_CLIENT_COLORS et
+// sauvegarde. Les entrées venant de Gestion client ne peuvent pas être
+// retirées depuis ici (utiliser Gestion client).
+window.ccRemoveEntry = async function(normKey) {
+  if(!normKey) return;
+  if(!confirm('Retirer cette couleur personnalisée ? (La fiche client reste)')) return;
+  let changed = false;
+  for(const key of Object.keys(CUSTOM_CLIENT_COLORS)) {
+    if(_ccNormKey(key) === normKey) {
+      delete CUSTOM_CLIENT_COLORS[key];
+      changed = true;
+    }
+  }
+  if(!changed) { showToast('Rien à retirer', true); renderClientColors(); return; }
+  try {
+    await fbUpdate('settings', 'clientColors', { data: CUSTOM_CLIENT_COLORS });
+    showToast('Entrée retirée ✓');
+  } catch(e) { showToast('Erreur enregistrement', true); }
+  renderClientColors();
+};
+
+// Nettoie TOUS les doublons de CUSTOM_CLIENT_COLORS :
+//   - Groupe les clés par leur forme normalisée (_ccNormKey)
+//   - Pour chaque groupe à plusieurs entrées :
+//     • Choisit la "meilleure" clé (celle qui matche un client de D.clients
+//       en priorité, sinon la plus récente / avec le label le plus riche)
+//     • Fusionne les couleurs (garde la 1re arr/dep non vide dans l'ordre
+//       de priorité ci-dessus)
+//     • Supprime les autres
+//   - Sauvegarde dans Firebase
+window.ccNettoyerDoublons = async function() {
+  const dupes = _ccCountDuplicates();
+  if(!dupes) { showToast('Aucun doublon à nettoyer'); return; }
+  if(!confirm(`Fusionner les ${dupes} doublon${dupes>1?'s':''} ? Les couleurs du client enregistré en Gestion client sont gardées en priorité.`)) return;
+
+  // Index des clients de Gestion client par clé normalisée
+  const clientsByNorm = {};
+  (D.clients||[]).forEach(c => {
+    if(c && c.nom) clientsByNorm[_ccNormKey(c.nom)] = c.nom;
+  });
+
+  // Regroupe les entrées CUSTOM_CLIENT_COLORS par clé normalisée
+  const groups = {};
+  for(const [key, val] of Object.entries(CUSTOM_CLIENT_COLORS)) {
+    const k = _ccNormKey(key);
+    if(!k) continue;
+    (groups[k] = groups[k] || []).push({ key, val });
+  }
+
+  const nouveau = {};
+  let fusions = 0;
+  for(const [normKey, entries] of Object.entries(groups)) {
+    // Détermine le "label" final : priorité à Gestion client
+    const labelClient = clientsByNorm[normKey];
+    // Entrée fusionnée : prend arr/dep de la 1re entrée (toutes présentes), label intelligent
+    const merged = { arr: '', dep: '', label: '' };
+    for(const e of entries) {
+      if(!merged.arr && e.val && e.val.arr) merged.arr = e.val.arr;
+      if(!merged.dep && e.val && e.val.dep) merged.dep = e.val.dep;
+    }
+    // Label : nom de Gestion client sinon celui qui a le plus de caractères "humains"
+    //   (espaces/accents/majuscules signalent un vrai libellé par rapport à "BBHOTELS")
+    if(labelClient) {
+      merged.label = labelClient;
+    } else {
+      merged.label = entries
+        .map(e => (e.val && e.val.label) || e.key)
+        .sort((a,b) => {
+          const aHuman = /[\sÀ-ÿ&-]/.test(a) ? 1 : 0;
+          const bHuman = /[\sÀ-ÿ&-]/.test(b) ? 1 : 0;
+          if(aHuman !== bHuman) return bHuman - aHuman;
+          return b.length - a.length;
+        })[0] || entries[0].key;
+    }
+    // Clé finale = label en majuscules (compatibilité avec les accès UPPER existants)
+    const finalKey = merged.label.toUpperCase();
+    // Si plusieurs entrées pointaient vers la même clé normalisée, c'est une fusion
+    if(entries.length > 1) fusions += (entries.length - 1);
+    nouveau[finalKey] = merged;
+  }
+
+  CUSTOM_CLIENT_COLORS = nouveau;
+  try {
+    await fbUpdate('settings', 'clientColors', { data: CUSTOM_CLIENT_COLORS });
+    showToast(`✓ ${fusions} doublon${fusions>1?'s':''} fusionné${fusions>1?'s':''}`);
+  } catch(e) { showToast('Erreur enregistrement', true); }
+  renderClientColors();
+  // Rafraîchir aussi les cartes/listes de courses qui utilisent getClientInfo
+  if(typeof loadAll === 'function') try { await loadAll(); } catch(e){}
+};
+
+// Ajoute un nouveau client dans la liste (non enregistré tant qu'on ne clique
+// pas Enregistrer). Si un client avec la MÊME clé normalisée existe déjà
+// (accents/majuscules/pluriel ignorés), on n'en recrée pas un en plus.
 function ccAddClient() {
   const inp = document.getElementById('cc-new-name');
-  const name = (inp.value||'').trim().toUpperCase();
-  if(!name) { showToast('Entrez un nom de client', true); return; }
-  if(!CUSTOM_CLIENT_COLORS[name]) {
-    const info = getClientInfo(name);
-    CUSTOM_CLIENT_COLORS[name] = { arr: info.arr, dep: info.dep, label: inp.value.trim() };
+  const rawName = (inp.value||'').trim();
+  if(!rawName) { showToast('Entrez un nom de client', true); return; }
+  const normKey = _ccNormKey(rawName);
+  // Déjà présent (quelle que soit la source) ?
+  const dejaPresent = ccMergedList().some(e => e.normKey === normKey);
+  if(dejaPresent) {
+    showToast('Ce client existe déjà dans la liste', true);
+    inp.value = '';
+    return;
   }
+  const upperName = rawName.toUpperCase();
+  const info = getClientInfo(rawName);
+  CUSTOM_CLIENT_COLORS[upperName] = { arr: info.arr, dep: info.dep, label: rawName };
   inp.value = '';
   renderClientColors();
 }
 
 // Enregistre toutes les couleurs de l'éditeur dans Firebase.
+// Utilise le libellé (data-cc-label) comme clé UPPER pour éviter de ré-introduire
+// des doublons entre "B&B HOTEL" et "B&B HOTELS" si deux lignes avaient le même
+// nom normalisé — la dernière ligne lue gagne.
 async function saveClientColors() {
-  const rows = document.querySelectorAll('#cc-list [data-cc-name]');
+  const rows = document.querySelectorAll('#cc-list [data-cc-norm]');
+  // D'abord, on ne garde que les clients de D.clients déjà indexés par leur nom propre
+  const clientsByNorm = {};
+  (D.clients||[]).forEach(c => {
+    if(c && c.nom) clientsByNorm[_ccNormKey(c.nom)] = c.nom;
+  });
   const data = {};
+  const vus = new Set();
   rows.forEach(row => {
-    const name = row.getAttribute('data-cc-name').toUpperCase();
+    const norm  = row.getAttribute('data-cc-norm') || '';
+    const label = row.getAttribute('data-cc-label') || '';
+    // Si déjà un client officiel pour cette clé, on utilise SON nom (bonne casse)
+    const finalLabel = clientsByNorm[norm] || label;
+    const finalKey = finalLabel.toUpperCase();
+    if(vus.has(norm)) return; // dédup au cas où
+    vus.add(norm);
     const arr = row.querySelector('.cc-arr')?.value;
     const dep = row.querySelector('.cc-dep')?.value;
-    const label = row.querySelector('div')?.textContent.replace('●','').trim() || name;
-    if(arr && dep) data[name] = { arr, dep, label };
+    if(arr && dep) data[finalKey] = { arr, dep, label: finalLabel };
   });
   try {
-    // PATCH sur settings/clientColors : crée la clé si absente, la met à jour sinon.
     await fbUpdate('settings', 'clientColors', { data });
     CUSTOM_CLIENT_COLORS = data;
     showToast('Couleurs enregistrées ✓');
@@ -5117,21 +5342,164 @@ function autoSelectVehicle(count) {
   }
 }
 
-function parsePaxLine(line) {
-  // Format: H.Arrivée/Vol/Terminal/Réf/Nom Prénom/Téléphone
-  // Flexible — tolère les variantes
-  const parts = line.split('/').map(s=>s.trim());
-  return {
-    harrivee: parts[0]||'',
-    vol:      parts[1]||'',
-    terminal: parts[2]||'',
-    refClient:parts[3]||'',
-    nom:      (parts[4]||'').split(' ').slice(1).join(' ')||parts[4]||'',
-    prenom:   (parts[4]||'').split(' ')[0]||'',
-    tel:      parts[5]||'',
-    present:  true
-  };
+// Sépare "Nom Prénom 06 12 34 56 78" en {nom, tel} en détectant un numéro
+// de téléphone à la fin (+/0 suivi de 8+ caractères chiffres/espaces/tirets).
+function _splitNomTel(s) {
+  if(!s) return {nom:'', tel:''};
+  const txt = String(s).trim();
+  const m = txt.match(/([\+\d][\d\s\.\-\(\)]{8,})$/);
+  if(m) return { nom: txt.slice(0, m.index).trim(), tel: m[1].trim() };
+  return { nom: txt, tel: '' };
 }
+
+// Parse un texte LIBRE (sans aucun /) et essaie d'extraire :
+//   - heure HH:MM en début   (optionnel)
+//   - n° de vol (chiffres ou lettres+chiffres, 2-8 car.) en 2ème position (optionnel)
+//   - téléphone à la fin      (optionnel)
+//   - le reste = Nom Prénom
+// Exemples qui marchent :
+//   "Akdogan Mustafa 0033686680017"
+//   "10:00 Akdogan Mustafa 0033686680017"
+//   "1022 Akdogan Mustafa 0033686680017"
+//   "10:00 1022 Akdogan Mustafa 0033686680017"
+//   "TO3910 Angela Bruciafreddo +393491972346"
+//   "Mustafa"              (juste un nom)
+//   "0033686680017"        (juste un tél)
+function _parseFreeForm(txt) {
+  let s = String(txt||'').trim();
+  let harrivee='', vol='', nomBrut='', tel='';
+  if(!s) return {harrivee, vol, nom:'', tel};
+
+  // 1) Heure en tête : HH:MM, HHhMM, HH:MM:SS
+  const mTime = s.match(/^(\d{1,2})[:h.](\d{2})(?:[:h.]\d{2})?\s+/);
+  if(mTime) {
+    harrivee = mTime[1].padStart(2,'0') + ':' + mTime[2];
+    s = s.slice(mTime[0].length).trim();
+  }
+
+  // 2) N° de vol en tête : code court (2-8 car. alphanum, contient au moins 1 chiffre),
+  //    suivi d'espace puis d'une LETTRE (= début du nom).
+  //    Évite de prendre "Mustafa" (pas de chiffre) ou "Dupont" comme vol.
+  const mVol = s.match(/^([A-Za-z0-9]{2,8})\s+([A-Za-zÀ-ÿ])/);
+  if(mVol && /\d/.test(mVol[1])) {
+    vol = mVol[1];
+    s = s.slice(mVol[1].length).trim();
+  }
+
+  // 3) Téléphone à la fin + nom
+  const sp = _splitNomTel(s);
+  return { harrivee, vol, nom: sp.nom, tel: sp.tel };
+}
+
+function parsePaxLine(line) {
+  // Formats supportés — détection auto sur le nombre de segments :
+  //   LONG  : H.Arrivée / Vol / Terminal / RéfClient / Nom Prénom / Téléphone
+  //           ex: 07:20 / TO3910 / 3 / R4N7XF3F5KF / Angela Bruciafreddo / +393491972346
+  //   COURT : H.Arrivée / Vol / NbPax / Nom Prénom Téléphone
+  //           ex: 10:00 / 1022 / 1 / Akdogan Mustafa 0033686680017
+  //   LIBRE : aucun /  — ex: "Akdogan Mustafa 0033686680017", "10:00 1022 Mustafa 06…"
+  const parts = String(line||'').split('/').map(s=>s.trim());
+
+  let harrivee='', vol='', terminal='', refClient='', nomBrut='', tel='';
+
+  if (parts.length >= 5) {
+    // Format LONG (5 ou 6 segments)
+    harrivee  = parts[0]||'';
+    vol       = parts[1]||'';
+    terminal  = parts[2]||'';
+    refClient = parts[3]||'';
+    nomBrut   = parts[4]||'';
+    tel       = parts[5]||'';
+    if(!tel) {
+      const sp = _splitNomTel(nomBrut);
+      nomBrut = sp.nom; tel = sp.tel;
+    }
+  } else if (parts.length === 4) {
+    // Format COURT : heure / vol / nb / Nom Tél
+    harrivee = parts[0]||'';
+    vol      = parts[1]||'';
+    terminal = parts[2]||'';
+    const sp = _splitNomTel(parts[3]||'');
+    nomBrut = sp.nom; tel = sp.tel;
+  } else if (parts.length === 3) {
+    harrivee = parts[0]||'';
+    vol      = parts[1]||'';
+    const sp = _splitNomTel(parts[2]||'');
+    nomBrut = sp.nom; tel = sp.tel;
+  } else if (parts.length === 2) {
+    vol = parts[0]||'';
+    const sp = _splitNomTel(parts[1]||'');
+    nomBrut = sp.nom; tel = sp.tel;
+  } else {
+    // LIBRE : pas de slash du tout → heuristique heure/vol/nom/tél
+    const ff = _parseFreeForm(parts[0]||'');
+    harrivee = ff.harrivee;
+    vol      = ff.vol;
+    nomBrut  = ff.nom;
+    tel      = ff.tel;
+  }
+
+  // Prénom = premier mot, Nom = le reste
+  const mots = String(nomBrut||'').split(/\s+/).filter(Boolean);
+  const prenom = mots[0]||'';
+  const nom    = mots.slice(1).join(' ')||'';
+
+  return { harrivee, vol, terminal, refClient, nom, prenom, tel, present: true };
+}
+
+// AUTO-RATTRAPAGE pour les courses enregistrées AVANT la correction du parser.
+// Si prenom+nom sont vides, on va chercher le nom et le téléphone dans les
+// champs qui ont pu les absorber à cause de l'ancien parser :
+//   - refClient  (format "10:00 / 1022 / 1 / Akdogan Mustafa 0033686680017")
+//   - harrivee   (format totalement libre : "Akdogan Mustafa 06…")
+//   - terminal   (très rare — texte tombé ici par erreur)
+// Ne modifie PAS Firebase, juste l'objet local pour l'affichage.
+function _healPax(p) {
+  if(!p || typeof p !== 'object') return p;
+  const hasNom = ((p.prenom||'').trim() || (p.nom||'').trim());
+  if(hasNom) return p;
+
+  // Ordre de priorité : refClient d'abord (le plus fréquent), puis harrivee, puis terminal.
+  const sources = [
+    {key: 'refClient', val: (p.refClient||'').trim()},
+    {key: 'harrivee',  val: (p.harrivee ||'').trim()},
+    {key: 'terminal',  val: (p.terminal ||'').trim()},
+  ];
+
+  for(const src of sources) {
+    if(!src.val) continue;
+    // Vraie heure (HH:MM / HHhMM) → c'est une vraie heure, pas un nom
+    if(/^\d{1,2}[:h.]\d{2}(?:[:h.]\d{2})?$/.test(src.val)) continue;
+    // Juste un petit nombre seul (1, 2, 3, 10, 1022) → compteur / vol / terminal, pas un nom
+    if(/^\d{1,5}$/.test(src.val)) continue;
+    // Aucune lettre → pas un nom (c'est juste des chiffres/ponctuation/tél)
+    if(!/[A-Za-zÀ-ÿ]/.test(src.val)) continue;
+
+    const sp = _splitNomTel(src.val);
+    const mots = sp.nom.split(/\s+/).filter(Boolean);
+    if(mots.length >= 1) {
+      p.prenom = p.prenom || (mots[0]||'');
+      p.nom    = p.nom    || (mots.slice(1).join(' ')||'');
+      if(!p.tel && sp.tel) p.tel = sp.tel;
+      // Vide le champ source puisque son contenu a été réaffecté
+      p[src.key] = '';
+      // Si "terminal" est resté un nombre seul, vide aussi (c'était le nb pax)
+      if(/^\d{1,3}$/.test((p.terminal||'').trim())) p.terminal = '';
+      break;
+    }
+  }
+  return p;
+}
+
+// Applique _healPax à tout le tableau passagers d'une course.
+function healCoursePax(c) {
+  if(c && Array.isArray(c.passagers)) {
+    c.passagers.forEach(_healPax);
+  }
+  return c;
+}
+window._healPax = _healPax;
+window.healCoursePax = healCoursePax;
 
 window.addPax = function() {
   const rows = document.querySelectorAll('.pax-row');
@@ -11428,6 +11796,7 @@ window.showInvoiceChooser = function(invoices, moisLabel){
 window.generateDriverPDF = function(courseId) {
   const c = D.courses.find(x=>x._id===courseId);
   if(!c) { showToast('Course introuvable', true); return; }
+  healCoursePax(c); // auto-rattrapage noms/tél des passagers
   // Récupérer la fiche du chauffeur assigné (pour ses infos société/personnelles)
   const drv = (D.chauffeurs||[]).find(ch => (ch.prenom+(ch.nom?' '+ch.nom:'')) === c.chauffeur) || {};
   const estSousTraitant = !!(drv.soc_nom || drv.soustraitant);
@@ -17700,6 +18069,7 @@ window.prixClientFinal = prixClientFinal;
 // nom du PASSAGER réel qu'il transporte. On retourne donc le 1er passager
 // présent si la course en a un ; sinon on retombe sur le nom client.
 function nomPassagerChauffeur(course) {
+  healCoursePax(course); // auto-rattrapage des courses saisies avec l'ancien parser
   // 1) Tableau de passagers structuré (c.passagers)
   const pax = Array.isArray(course.passagers) ? course.passagers : [];
   const p = pax.find(x => x && x.present !== false && ((x.prenom||'').trim() || (x.nom||'').trim()))
@@ -17716,6 +18086,7 @@ function nomPassagerChauffeur(course) {
 
 // Téléphone du passager à afficher au chauffeur (1er passager, sinon c.tel).
 function telPassagerChauffeur(course) {
+  healCoursePax(course); // auto-rattrapage
   const pax = Array.isArray(course.passagers) ? course.passagers : [];
   const p = pax.find(x => x && x.present !== false && (x.tel||'').trim())
          || pax.find(x => x && (x.tel||'').trim());
@@ -20200,6 +20571,7 @@ window.viewPax = function(id) {
   if(SESSION.role === 'chauffeur') {
     const c = D.courses.find(x=>x._id===id);
     if(!c||!c.passagers?.length) return;
+    healCoursePax(c);
 
     const ov = document.createElement('div');
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000001;display:flex;align-items:center;justify-content:center;padding:20px';
@@ -20233,6 +20605,7 @@ window.viewPax = function(id) {
   // le véhicule, et avec quel chauffeur. En lecture seule.
   const c = D.courses.find(x=>x._id===id);
   if(!c || !c.passagers?.length) { editCourse(id); return; }
+  healCoursePax(c);
   const presents = c.passagers.filter(p=>p.present!==false).length;
   const total = c.passagers.length;
   const ov = document.createElement('div');
@@ -20286,6 +20659,7 @@ window.chauffeurSetPax = async function(courseId, paxIndex, present, btn) {
 window.editCourse = function(id) {
   const c = D.courses.find(x=>x._id===id);
   if(!c){showToast('Course introuvable',true);return;}
+  healCoursePax(c);
   currentEditCourse = id;
 
   const present = (c.passagers||[]).filter(p=>p.present!==false).length;
