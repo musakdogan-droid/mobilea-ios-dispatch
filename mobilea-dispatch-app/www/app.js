@@ -3748,42 +3748,41 @@ function renderClientColors() {
   if(!wrap) return;
   const list = ccMergedList();
 
-  // Compte les doublons DÉTECTÉS en base (CUSTOM_CLIENT_COLORS) pour
-  // décider si on affiche un bandeau "Nettoyer les doublons".
   const doublonsCount = _ccCountDuplicates();
-
-  // Datalist des vrais clients pour l'auto-complétion du champ "+ Ajouter"
   _ccUpdateClientsDatalist();
 
   // Bandeau "Nettoyer les doublons" en tête si on en détecte
   const cleanupBanner = doublonsCount > 0
     ? `<div id="cc-cleanup-banner" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#fff7ed;border:1px solid #fdba74;border-radius:10px;margin-bottom:10px">
-         <div style="flex:1;font-size:12px;color:#9a3412"><b>${doublonsCount}</b> doublon${doublonsCount>1?'s':''} détecté${doublonsCount>1?'s':''} (ex : "B&amp;B Hôtel" / "B&amp;B Hotels"). Les fusionner garde le nom de la fiche Gestion client.</div>
-         <button class="btn btn-sm" onclick="ccNettoyerDoublons()" style="background:#f97316;color:#fff;border:none;padding:6px 10px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">🧹 Nettoyer</button>
+         <div style="flex:1;font-size:12px;color:#9a3412"><b>${doublonsCount}</b> doublon${doublonsCount>1?'s':''} détecté${doublonsCount>1?'s':''} (ex : "B&amp;B Hôtel" / "B&amp;B Hotels"). Fusion automatique = garde le nom de la fiche Gestion client.</div>
+         <button class="btn btn-sm" onclick="ccNettoyerDoublons()" style="background:#f97316;color:#fff;border:none;padding:6px 10px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">🧹 Fusionner auto</button>
        </div>`
     : '';
 
-  wrap.innerHTML = cleanupBanner + list.map(({ normKey, upper, label, source }) => {
+  // Barre de sélection multiple : "Tout cocher / Aucun" + "Supprimer sélection"
+  const selectBar = `
+    <div id="cc-select-bar" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card2);border:1px solid var(--border);border-radius:10px;margin-bottom:10px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none">
+        <input type="checkbox" id="cc-select-all" onclick="ccToggleSelectAll(this.checked)" style="width:16px;height:16px;cursor:pointer;accent-color:var(--gold)">
+        <b>Tout sélectionner</b>
+      </label>
+      <span id="cc-sel-count" style="font-size:11px;color:var(--muted);margin-left:auto"><span id="cc-sel-n">0</span> / ${list.length} sélectionné${list.length>1?'s':''}</span>
+      <button onclick="ccDeleteSelected()" style="background:#dc2626;color:#fff;border:none;padding:8px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px">🗑️ Supprimer la sélection</button>
+    </div>`;
+
+  wrap.innerHTML = cleanupBanner + selectBar + list.map(({ normKey, upper, label, source }) => {
     const info = getClientInfo(label);
-    // Essaie plusieurs clés de recherche pour la couleur personnalisée
-    // (compatibilité avec les anciennes entrées)
     const custom = CUSTOM_CLIENT_COLORS[upper]
                 || CUSTOM_CLIENT_COLORS[label.toUpperCase()]
                 || _ccFindCustomByNorm(normKey);
     const arr = (custom && custom.arr) || info.arr;
     const dep = (custom && custom.dep) || info.dep;
     const isCustom = !!custom;
-    // Petite pastille pour identifier d'où vient le client
     const srcBadge = source === 'client'
       ? ' <span title="Depuis Gestion client" style="color:#4a9eff;font-size:10px">●</span>'
       : (isCustom ? ' <span title="Couleur personnalisée" style="color:var(--green);font-size:10px">●</span>' : '');
-    // Bouton "supprimer" seulement pour les entrées qui NE viennent PAS de Gestion client
-    // (sinon on supprimerait l'équivalent de la fiche client)
-    const canDelete = (source !== 'client');
-    const delBtn = canDelete
-      ? `<button title="Retirer cette entrée" onclick="ccRemoveEntry('${normKey}')" style="background:transparent;border:none;color:#e05c5c;cursor:pointer;padding:4px 6px;font-size:14px">🗑️</button>`
-      : '';
-    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)" data-cc-norm="${normKey}" data-cc-name="${label.replace(/"/g,'&quot;').toUpperCase()}" data-cc-label="${label.replace(/"/g,'&quot;')}">
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)" data-cc-norm="${normKey}" data-cc-name="${label.replace(/"/g,'&quot;').toUpperCase()}" data-cc-label="${label.replace(/"/g,'&quot;')}" data-cc-source="${source}">
+      <input type="checkbox" class="cc-chk" onchange="ccUpdateSelCount()" style="width:16px;height:16px;cursor:pointer;accent-color:var(--gold);flex-shrink:0">
       <div style="flex:1;font-size:13px;font-weight:600">${E(label)}${srcBadge}</div>
       <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)">🛬 Arrivée
         <input type="color" class="cc-arr" value="${arr}" style="width:34px;height:28px;border:none;background:none;cursor:pointer;padding:0">
@@ -3791,10 +3790,135 @@ function renderClientColors() {
       <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)">🛫 Départ
         <input type="color" class="cc-dep" value="${dep}" style="width:34px;height:28px;border:none;background:none;cursor:pointer;padding:0">
       </label>
-      ${delBtn}
+      <button title="Supprimer cette entrée" onclick="ccRemoveEntryFull('${normKey}')" style="background:transparent;border:none;color:#e05c5c;cursor:pointer;padding:4px 6px;font-size:14px">🗑️</button>
     </div>`;
   }).join('');
+
+  ccUpdateSelCount();
 }
+
+// Coche / décoche TOUTES les cases d'un coup
+window.ccToggleSelectAll = function(checked) {
+  document.querySelectorAll('#cc-list .cc-chk').forEach(ch => { ch.checked = checked; });
+  ccUpdateSelCount();
+};
+
+// Met à jour le compteur "X / Y sélectionné"
+window.ccUpdateSelCount = function() {
+  const chks = document.querySelectorAll('#cc-list .cc-chk');
+  const cocheees = [...chks].filter(c => c.checked).length;
+  const el = document.getElementById('cc-sel-n');
+  if(el) el.textContent = cocheees;
+  const all = document.getElementById('cc-select-all');
+  if(all) {
+    all.checked = (cocheees === chks.length && chks.length > 0);
+    all.indeterminate = (cocheees > 0 && cocheees < chks.length);
+  }
+};
+
+// Supprime TOUTES les entrées cochées :
+//  - couleur personnalisée dans CUSTOM_CLIENT_COLORS
+//  - FICHE CLIENT dans D.clients (si l'entrée vient de Gestion client)
+// Avec confirmation détaillée de ce qui va être supprimé.
+window.ccDeleteSelected = async function() {
+  const rows = [...document.querySelectorAll('#cc-list [data-cc-norm]')]
+    .filter(r => r.querySelector('.cc-chk')?.checked);
+  if(!rows.length) { showToast('Rien de sélectionné', true); return; }
+
+  // Prépare la liste des choses à supprimer
+  const aSupprimer = rows.map(r => ({
+    norm:   r.getAttribute('data-cc-norm'),
+    label:  r.getAttribute('data-cc-label'),
+    upper:  r.getAttribute('data-cc-name'),
+    source: r.getAttribute('data-cc-source'),
+  }));
+
+  // Détaille ce qui sera touché pour la confirmation
+  const nbCouleurs = aSupprimer.length;
+  const fichesClient = aSupprimer.filter(a => a.source === 'client');
+  const nbFiches = fichesClient.length;
+
+  let msg = `Supprimer ${nbCouleurs} entrée${nbCouleurs>1?'s':''} ?\n\n`;
+  msg += aSupprimer.map(a => '• ' + a.label + (a.source==='client' ? '  (fiche Gestion client)' : '')).join('\n');
+  if(nbFiches > 0) {
+    msg += `\n\n⚠️ ATTENTION : ${nbFiches} fiche${nbFiches>1?'s':''} de Gestion client sera${nbFiches>1?'ont':''} supprimée${nbFiches>1?'s':''}.`;
+    msg += `\nLes courses déjà enregistrées au nom de ce${nbFiches>1?'s':''} client${nbFiches>1?'s':''} ne sont PAS touchées.`;
+  }
+
+  if(!confirm(msg)) return;
+
+  let okCouleurs = 0, okFiches = 0, errors = 0;
+
+  // 1) Supprime dans CUSTOM_CLIENT_COLORS (en mémoire + Firebase à la fin)
+  for(const a of aSupprimer) {
+    let found = false;
+    for(const key of Object.keys(CUSTOM_CLIENT_COLORS)) {
+      if(_ccNormKey(key) === a.norm) {
+        delete CUSTOM_CLIENT_COLORS[key];
+        found = true;
+      }
+    }
+    if(found) okCouleurs++;
+  }
+  try {
+    await fbUpdate('settings', 'clientColors', { data: CUSTOM_CLIENT_COLORS });
+  } catch(e) { errors++; }
+
+  // 2) Supprime les fiches D.clients qui correspondent (même clé normalisée)
+  for(const a of aSupprimer) {
+    const fiches = (D.clients || []).filter(c => c && c.nom && _ccNormKey(c.nom) === a.norm);
+    for(const fiche of fiches) {
+      if(!fiche._id) continue;
+      try {
+        await fbDelete('clients', fiche._id);
+        okFiches++;
+      } catch(e) { errors++; }
+    }
+  }
+
+  // Recharge et ré-affiche
+  if(typeof loadAll === 'function') try { await loadAll(); } catch(e){}
+  renderClientColors();
+
+  // Toast récapitulatif
+  const parts = [];
+  if(okCouleurs) parts.push(okCouleurs + ' couleur' + (okCouleurs>1?'s':''));
+  if(okFiches)   parts.push(okFiches   + ' fiche'   + (okFiches>1?'s':''));
+  const resume = parts.join(' + ') || '0';
+  showToast('✓ Supprimé : ' + resume + (errors ? ' (' + errors + ' erreurs)' : ''), errors > 0);
+};
+
+// Suppression UNITAIRE (bouton 🗑️ sur une ligne) : supprime la couleur ET,
+// si l'entrée vient de Gestion client, propose aussi de supprimer la fiche.
+window.ccRemoveEntryFull = async function(normKey) {
+  if(!normKey) return;
+  const list = ccMergedList();
+  const entry = list.find(e => e.normKey === normKey);
+  if(!entry) { showToast('Entrée introuvable', true); return; }
+
+  let msg = 'Supprimer "' + entry.label + '" ?';
+  const fiches = (D.clients || []).filter(c => c && c.nom && _ccNormKey(c.nom) === normKey);
+  if(fiches.length) {
+    msg += `\n\n⚠️ Cela supprimera aussi la fiche ${fiches.length>1?'des '+fiches.length+' clients':'du client'} dans Gestion client.`;
+    msg += `\nLes courses déjà enregistrées ne sont PAS touchées.`;
+  }
+  if(!confirm(msg)) return;
+
+  // Supprime la couleur
+  for(const key of Object.keys(CUSTOM_CLIENT_COLORS)) {
+    if(_ccNormKey(key) === normKey) delete CUSTOM_CLIENT_COLORS[key];
+  }
+  try { await fbUpdate('settings', 'clientColors', { data: CUSTOM_CLIENT_COLORS }); } catch(e){}
+  // Supprime la ou les fiches clients correspondantes
+  for(const fiche of fiches) {
+    if(!fiche._id) continue;
+    try { await fbDelete('clients', fiche._id); } catch(e){}
+  }
+
+  if(typeof loadAll === 'function') try { await loadAll(); } catch(e){}
+  renderClientColors();
+  showToast('✓ Supprimé');
+};
 
 // Cherche une couleur personnalisée par sa clé NORMALISÉE (accents/plurals/
 // espaces ignorés). Utile pour retrouver "B&B HOTELS" quand on cherche
