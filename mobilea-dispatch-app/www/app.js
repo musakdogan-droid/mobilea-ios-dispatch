@@ -112,7 +112,7 @@ let SESSION = null;
 let D = { courses:[], chauffeurs:[], clients:[], tarifs:[], vehicules:[], logs:[], dispatch_accounts:[], client_accounts:[], messages:[], factures_chauffeurs:[] };
 
 // Récupérer le token Firebase Auth pour les requêtes sécurisées
-async function getAuthToken() {
+async function getAuthToken(forceRefresh) {
   try {
     // 1) Attendre que Firebase ait FINI de restaurer la session (sinon
     // currentUser est null alors qu'une session existe).
@@ -126,7 +126,10 @@ async function getAuthToken() {
       tries++;
     }
     if(window.fbAuth && window.fbAuth.currentUser) {
-      return await window.fbAuth.currentUser.getIdToken();
+      // forceRefresh=true demande à Firebase un NOUVEAU token (utile quand
+      // l'app sort de veille après 20+ min — l'ancien peut avoir expiré et les
+      // conversations/listes seraient alors vides à tort).
+      return await window.fbAuth.currentUser.getIdToken(!!forceRefresh);
     }
     // 3) Aucune session Firebase : la session locale est "fantôme". On le
     // signale une seule fois et on renvoie l'utilisateur vers la connexion,
@@ -223,12 +226,24 @@ let _dernierRetour = Date.now();
 function appVisible() { return !_enArrierePlan; }
 
 document.addEventListener('visibilitychange', () => {
+  const retourApresMs = Date.now() - (_dernierRetour || 0);
   _enArrierePlan = document.hidden;
   if(!document.hidden) {
     _dernierRetour = Date.now();
-    // Retour au premier plan : on rattrape immediatement.
-    try { if(typeof loadAll === 'function') loadAll(); } catch(e){}
-    try { if(typeof renderMesCourses === 'function' && SESSION.role === 'chauffeur') renderMesCourses(); } catch(e){}
+    // Si l'app a dormi plus de 10 min, le token Firebase a probablement expiré.
+    // On force un nouveau token AVANT de recharger, pour éviter que fbGet
+    // retourne vide et vide les conversations / listes à tort.
+    const vraimentLongue = retourApresMs > 10 * 60 * 1000;
+    (async () => {
+      try {
+        if (vraimentLongue && typeof getAuthToken === 'function') {
+          await getAuthToken(true); // force un refresh du token
+          if (typeof fbInvalidate === 'function') fbInvalidate(); // purge cache
+        }
+      } catch(e){}
+      try { if(typeof loadAll === 'function') loadAll(); } catch(e){}
+      try { if(typeof renderMesCourses === 'function' && SESSION.role === 'chauffeur') renderMesCourses(); } catch(e){}
+    })();
   }
 });
 
@@ -1331,7 +1346,8 @@ async function loadAll() {
       }
       const messages = await fbGet('messages');
       D.courses = (courses||[]).sort((a,b) => new Date(b.datetime||0) - new Date(a.datetime||0));
-      D.messages = messages;
+      // Anti-écrasement : garde l'ancien état si fbGet renvoie vide (token expiré, coupure)
+      D.messages = (Array.isArray(messages) && messages.length > 0) ? messages : (D.messages || []);
       // PARTENAIRE : la query serveur a déjà cloisonné par partenaireUid — c'est
       // la source de vérité. On NE réapplique PAS le filtre par nom/société
       // ci-dessous (il rejetterait des courses dont le champ "client" ne
@@ -1363,11 +1379,16 @@ async function loadAll() {
         fbGet('courses'), fbGet('chauffeurs'), fbGet('clients'),
         fbGet('tarifs'), fbGet('vehicules'), fbGet('messages'), fbGet('logs')
       ]);
-      D.courses = courses.sort((a,b) => new Date(b.datetime||0) - new Date(a.datetime||0));
-      window._coursesFresh = true; // liste complète : la page Transferts gérants est recalculée
-      D.chauffeurs = chauffeurs; D.clients = clients;
-      D.tarifs = tarifs; D.vehicules = vehicules; D.messages = messages;
-      D.logs = (logs||[]).sort((a,b) => new Date(b.at||0) - new Date(a.at||0));
+      // GARDE-FOU anti-écrasement par du vide (token expiré, coupure réseau brève)
+      const gardeD = (neuf, ancien) => (Array.isArray(neuf) && neuf.length>0) ? neuf : (ancien||[]);
+      D.courses = gardeD(courses, D.courses).sort((a,b) => new Date(b.datetime||0) - new Date(a.datetime||0));
+      if(Array.isArray(courses) && courses.length) window._coursesFresh = true;
+      D.chauffeurs = gardeD(chauffeurs, D.chauffeurs);
+      D.clients = gardeD(clients, D.clients);
+      D.tarifs = gardeD(tarifs, D.tarifs);
+      D.vehicules = gardeD(vehicules, D.vehicules);
+      D.messages = gardeD(messages, D.messages);
+      D.logs = gardeD(logs, D.logs).sort((a,b) => new Date(b.at||0) - new Date(a.at||0));
       D.dispatch_accounts = []; D.client_accounts = []; D.factures_chauffeurs = [];
       try { D.geofence_zones = await fbGet('geofence_zones') || []; } catch(e){ D.geofence_zones = D.geofence_zones||[]; }
 
@@ -3635,13 +3656,35 @@ async function loadClientColors() {
   } catch(e) { CUSTOM_CLIENT_COLORS = {}; }
 }
 
-// Construit la liste fusionnée : clients de la palette par défaut + personnalisés.
+// Construit la liste fusionnée des clients à colorer :
+//  - clients de la palette par défaut (hardcodés)
+//  - clients ayant déjà une couleur personnalisée (CUSTOM_CLIENT_COLORS)
+//  - ★ clients de la table Gestion client (D.clients) — pour que tout nouveau
+//    client ajouté apparaisse automatiquement ici.
+// Dédupliqué CASE-INSENSITIVE par la clé UPPERCASE, pour qu'il n'y ait plus de
+// "B&B Hotels" affiché en double (une fois depuis CLIENT_PALETTE, une fois
+// depuis CUSTOM_CLIENT_COLORS en MAJ).
 function ccMergedList() {
-  const names = new Set();
-  Object.values(CLIENT_PALETTE).forEach(v => names.add((v.label||'').toUpperCase()));
-  Object.keys(CLIENT_PALETTE).forEach(k => names.add(k));
-  Object.keys(CUSTOM_CLIENT_COLORS).forEach(k => names.add(k));
-  return [...names].filter(Boolean).sort();
+  const byUpper = new Map(); // UPPER → { label, source }
+  Object.entries(CLIENT_PALETTE).forEach(([key, v]) => {
+    const upper = String(key).toUpperCase();
+    byUpper.set(upper, { label: v.label || key, source: 'palette' });
+  });
+  Object.entries(CUSTOM_CLIENT_COLORS).forEach(([key, v]) => {
+    const upper = String(key).toUpperCase();
+    byUpper.set(upper, { label: v.label || key, source: 'custom' });
+  });
+  // ★ Vrais clients : overwrite avec le nom propre (bonne casse) de la fiche
+  (D.clients || []).forEach(c => {
+    if (c && c.nom) {
+      const upper = c.nom.toUpperCase();
+      const prev = byUpper.get(upper);
+      byUpper.set(upper, { label: c.nom, source: prev?.source || 'client' });
+    }
+  });
+  return [...byUpper.entries()]
+    .map(([upper, v]) => ({ upper, label: v.label, source: v.source }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'fr', { sensitivity: 'base' }));
 }
 
 // Affiche l'éditeur de couleurs dans les Paramètres.
@@ -3649,14 +3692,18 @@ function renderClientColors() {
   const wrap = document.getElementById('cc-list');
   if(!wrap) return;
   const list = ccMergedList();
-  wrap.innerHTML = list.map(name => {
-    const info = getClientInfo(name);
-    const custom = CUSTOM_CLIENT_COLORS[name];
+  wrap.innerHTML = list.map(({ upper, label, source }) => {
+    const info = getClientInfo(label);
+    const custom = CUSTOM_CLIENT_COLORS[upper] || CUSTOM_CLIENT_COLORS[label];
     const arr = (custom && custom.arr) || info.arr;
     const dep = (custom && custom.dep) || info.dep;
     const isCustom = !!custom;
-    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)" data-cc-name="${name.replace(/"/g,'&quot;')}">
-      <div style="flex:1;font-size:13px;font-weight:600">${info.label||name}${isCustom?' <span style=\'color:var(--green);font-size:10px\'>●</span>':''}</div>
+    // Petite pastille pour identifier d'où vient le client
+    const srcBadge = source === 'client'
+      ? ' <span title="Depuis Gestion client" style="color:#4a9eff;font-size:10px">●</span>'
+      : (isCustom ? ' <span title="Couleur personnalisée" style="color:var(--green);font-size:10px">●</span>' : '');
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)" data-cc-name="${upper.replace(/"/g,'&quot;')}">
+      <div style="flex:1;font-size:13px;font-weight:600">${E(label)}${srcBadge}</div>
       <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)">🛬 Arrivée
         <input type="color" class="cc-arr" value="${arr}" style="width:34px;height:28px;border:none;background:none;cursor:pointer;padding:0">
       </label>
@@ -7409,7 +7456,18 @@ window.saveClient = async function() {  if(SESSION.role!=='admin'&&SESSION.role!
   } else {
     data.createdAt = new Date().toISOString();
     await fbPush('clients', data);
-    showToast('Client ajouté ✓');
+    // ★ AUTO-CRÉATION DE L'ENTRÉE COULEUR pour ce nouveau client — pour qu'il
+    // apparaisse immédiatement dans "Couleurs par client" sans action manuelle.
+    try {
+      const upper = nom.toUpperCase();
+      const dejaExistant = CUSTOM_CLIENT_COLORS[upper] || CLIENT_PALETTE[upper];
+      if (!dejaExistant) {
+        const info = getClientInfo(nom); // couleur par défaut cohérente
+        CUSTOM_CLIENT_COLORS[upper] = { arr: info.arr, dep: info.dep, label: nom };
+        await fbUpdate('settings', 'clientColors', { data: CUSTOM_CLIENT_COLORS });
+      }
+    } catch(e) { console.warn('[saveClient] auto color add:', e); }
+    showToast('Client ajouté ✓ — couleur par défaut assignée');
   }
   await loadAll();
 };
@@ -12133,7 +12191,28 @@ let _convLastMsgIds = '';
 
 async function loadMessages(convId) {
   const allMsgs = await fbGet('messages');
-  D.messages = allMsgs;
+  // ★ PROTECTION ANTI-DISPARITION DES CONVERSATIONS :
+  // Si fbGet renvoie un tableau vide alors qu'on en avait, c'est probablement
+  // une erreur réseau silencieuse ou un token d'auth expiré (fréquent sur iOS
+  // quand l'app sort de la veille après 10-20 min). On garde l'ancien état
+  // plutôt que d'archiver toutes les conversations à tort.
+  if (Array.isArray(allMsgs) && allMsgs.length === 0
+      && Array.isArray(D.messages) && D.messages.length > 0) {
+    console.warn('[loadMessages] fbGet renvoie vide alors qu\'on avait des messages — on garde l\'ancien état');
+    // Déclencher une ré-authentification pour rattraper le coup
+    try {
+      if (typeof fbInvalidate === 'function') fbInvalidate('messages');
+      if (typeof getAuthToken === 'function') await getAuthToken(true);
+    } catch(e){}
+    // Ré-essayer une fois tout de suite avec un token frais
+    const retry = await fbGet('messages');
+    if (Array.isArray(retry) && retry.length > 0) {
+      D.messages = retry;
+    }
+    // Sinon on ne touche à rien (on garde D.messages précédent) et on repart
+  } else {
+    D.messages = allMsgs;
+  }
   const msgs = allMsgs.filter(m=>m.conv===convId).sort((a,b)=>new Date(a.at)-new Date(b.at));
   const box = document.getElementById('chat-messages');
   if(!box) return;
@@ -12347,10 +12426,12 @@ function startMsgRefresh() {
     // suffisent largement, et rien du tout quand l'app est en arriere-plan.
     if(!cycleActif('msg', 120000)) return;
     if(currentConv) await loadMessages(currentConv);
-    // Update unread badge
+    // Update unread badge — garde l'ancien état si fbGet renvoie vide (pas d'archivage à tort)
     const allMsgs = await fbGet('messages');
-    D.messages = allMsgs;
-    const unread = allMsgs.filter(m=>!m.read&&m.from!==SESSION.uid).length;
+    if (Array.isArray(allMsgs) && (allMsgs.length > 0 || !D.messages || D.messages.length === 0)) {
+      D.messages = allMsgs;
+    }
+    const unread = (D.messages||[]).filter(m=>!m.read&&m.from!==SESSION.uid).length;
     const nb = document.getElementById('nb-msg');
     if(nb) nb.textContent = unread||'0';
     // Badge messagerie client (dans le portail)
