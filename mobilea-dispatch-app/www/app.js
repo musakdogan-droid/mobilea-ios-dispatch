@@ -2636,7 +2636,25 @@ function startApp() {
     setTimeout(() => {
       try {
         if(SESSION && SESSION.role === 'chauffeur' && _driverOnService && !gpsActive) {
-          demarrerSuiviGPS();
+          // Priorité au tracking natif en arrière-plan (iOS/Android) : marche
+          // même quand l'écran est verrouillé ou que le chauffeur utilise Waze.
+          if (window.MobileaNative && window.MobileaNative.isNative) {
+            window.MobileaNative.startBackgroundGPS().then(ok => {
+              if (ok) {
+                gpsActive = true;
+                const btn = document.getElementById('gps-btn');
+                const st = document.getElementById('gps-status');
+                if(btn){btn.innerHTML='<i class="fas fa-map-marker-alt"></i> Position active (bg)';btn.style.borderColor='#22c55e';btn.style.color='#22c55e';}
+                if(st){st.textContent='● Position partagée (arrière-plan activé)';st.style.color='#22c55e';}
+              } else {
+                // Fallback : watchPosition classique (foreground uniquement)
+                demarrerSuiviGPS();
+              }
+            }).catch(() => demarrerSuiviGPS());
+          } else {
+            // Mode web (PWA ou navigateur classique) : watchPosition
+            demarrerSuiviGPS();
+          }
         }
       } catch(e) { console.warn('auto GPS start:', e); }
     }, 2000);
@@ -4039,20 +4057,50 @@ window.viewCourseDetail = function(id) {
     </div>`;
 
   // Bloc prix (admin/dispatch uniquement)
+  // ★ Le prix affiché inclut DÉSORMAIS la majoration nuit/weekend + le supplément
+  // d'attente, pour que le staff voit immédiatement le montant TTC total à
+  // facturer au client et à verser au chauffeur. Une ventilation est détaillée
+  // en dessous quand il y a un supplément.
   let bPrix = '';
   if(estStaff && (c.prix != null || c.prixChauffeur != null)) {
-    const pClient = c.prix != null ? parseFloat(c.prix).toFixed(2) : null;
-    const pChauff = c.prixChauffeur != null ? parseFloat(c.prixChauffeur).toFixed(2) : null;
-    const diff = (pClient && pChauff) ? Math.max(0, parseFloat(pClient) - parseFloat(pChauff)).toFixed(2) : null;
+    const baseClient = c.prix != null ? parseFloat(c.prix) : null;
+    const baseChauff = c.prixChauffeur != null ? parseFloat(c.prixChauffeur) : null;
+    const _w = calcWaitFees(c);
+    const _m = getCourseMajoration(c);
+    const pctMajo = _m ? _m.pct : 0;
+
+    const majoClient = (baseClient != null && pctMajo > 0) ? Math.round(baseClient * pctMajo) / 100 : 0;
+    const majoChauff = (baseChauff != null && pctMajo > 0) ? Math.round(baseChauff * pctMajo) / 100 : 0;
+    const attClient = _w ? _w.clientFee : 0;
+    const attChauff = _w ? _w.chauffeurFee : 0;
+
+    const totalClient = baseClient != null ? Math.round((baseClient + majoClient + attClient) * 100) / 100 : null;
+    const totalChauff = baseChauff != null ? Math.round((baseChauff + majoChauff + attChauff) * 100) / 100 : null;
+    const diff = (totalClient != null && totalChauff != null) ? Math.max(0, totalClient - totalChauff).toFixed(2) : null;
+
+    const hasSuppClient = (majoClient + attClient) > 0;
+    const hasSuppChauff = (majoChauff + attChauff) > 0;
+
+    const ventilationClient = hasSuppClient ? `
+      <div style="font-size:11px;color:#777;margin-top:6px;line-height:1.5">
+        Base : ${baseClient.toFixed(2)}€${majoClient>0 ? `<br>+ Majoration ${pctMajo}% : +${majoClient.toFixed(2)}€` : ''}${attClient>0 ? `<br>+ Attente : +${attClient.toFixed(2)}€` : ''}
+      </div>` : '';
+    const ventilationChauff = hasSuppChauff ? `
+      <div style="font-size:11px;color:#777;margin-top:6px;line-height:1.5">
+        Base : ${baseChauff.toFixed(2)}€${majoChauff>0 ? `<br>+ Majoration ${pctMajo}% : +${majoChauff.toFixed(2)}€` : ''}${attChauff>0 ? `<br>+ Attente : +${attChauff.toFixed(2)}€` : ''}
+      </div>` : '';
+
     bPrix = `
       <div style="margin-top:18px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div style="padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
-          <div style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">💶 Prix client</div>
-          <div style="font-size:22px;color:#1a1a1a;font-weight:700">${pClient!=null?pClient+'€':'—'}</div>
+          <div style="font-size:11px;font-weight:700;color:#8a8a8a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">💶 Prix client TTC</div>
+          <div style="font-size:22px;color:#1a1a1a;font-weight:700">${totalClient!=null?totalClient.toFixed(2)+'€':'—'}</div>
+          ${ventilationClient}
         </div>
         <div style="padding:14px 16px;background:#fafafa;border-radius:14px;border:1px solid #ececec">
           <div style="font-size:11px;font-weight:700;color:#16a34a;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px">🚗 Prix chauffeur</div>
-          <div style="font-size:22px;color:#16a34a;font-weight:700">${pChauff!=null?pChauff+'€':'—'}</div>
+          <div style="font-size:22px;color:#16a34a;font-weight:700">${totalChauff!=null?totalChauff.toFixed(2)+'€':'—'}</div>
+          ${ventilationChauff}
         </div>
       </div>
       ${diff!=null?`<div style="margin-top:10px;padding:12px 16px;background:rgba(217,119,6,0.08);border:1px solid rgba(217,119,6,0.3);border-radius:14px;display:flex;justify-content:space-between;align-items:center">
@@ -7683,6 +7731,67 @@ function renderClientGrid(clientName) {
   html += `<tr><td colspan="5" style="padding:12px 8px;text-align:center">
     <button onclick="addCustomZone()" style="background:rgba(200,169,110,0.15);border:1px dashed var(--gold);border-radius:8px;color:var(--gold);padding:10px 20px;font-size:12px;font-weight:700;cursor:pointer">➕ Ajouter un trajet personnalisé</button>
   </td></tr>`;
+
+  // ★ NOUVELLE SECTION — Attente & majorations spécifiques au client
+  // Tous les champs sont vides par défaut : si un champ reste vide, le système
+  // tombe sur ses règles par défaut (franchise aéroport 45/15 min, etc.).
+  // Dès qu'un champ est rempli, il prend le dessus pour les courses de CE client.
+  const att = grid._attente || {};
+  html += `<tr style="background:var(--card2)"><td colspan="5" style="padding:10px 8px;font-weight:700;color:var(--gold);font-size:11px;text-transform:uppercase;letter-spacing:1px">⏱️ Attente & majorations — spécifiques à ce client</td></tr>`;
+  html += `<tr><td colspan="5" style="padding:14px 8px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+
+      <div>
+        <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Franchise standard (min)</label>
+        <input type="number" id="cg-att-franchiseMin" value="${att.franchiseMin||''}" placeholder="ex: 15" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px">
+        <div style="font-size:10px;color:var(--muted);margin-top:3px">Minutes gratuites avant facturation (hors aéroport)</div>
+      </div>
+
+      <div>
+        <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Franchise aéroport (min)</label>
+        <input type="number" id="cg-att-franchiseAeroMin" value="${att.franchiseAeroMin||''}" placeholder="ex: 45" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px">
+        <div style="font-size:10px;color:var(--muted);margin-top:3px">Minutes gratuites après atterrissage</div>
+      </div>
+
+      <div>
+        <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Tarif attente CLIENT (€/min)</label>
+        <input type="number" step="0.01" id="cg-att-tarifClient" value="${att.tarifClient||''}" placeholder="ex: 1.00" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px">
+        <div style="font-size:10px;color:var(--muted);margin-top:3px">Prix facturé au client après franchise</div>
+      </div>
+
+      <div>
+        <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Tarif attente CHAUFFEUR (€/min)</label>
+        <input type="number" step="0.01" id="cg-att-tarifChauffeur" value="${att.tarifChauffeur||''}" placeholder="ex: 0.80" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--green);font-size:12px">
+        <div style="font-size:10px;color:var(--muted);margin-top:3px">Reversé au chauffeur par minute d'attente</div>
+      </div>
+
+      <div>
+        <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Majoration NUIT (%)</label>
+        <input type="number" step="1" id="cg-att-majoNuitPct" value="${att.majoNuitPct||''}" placeholder="ex: 20" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px">
+        <div style="display:flex;gap:6px;margin-top:4px">
+          <input type="time" id="cg-att-majoNuitDebut" value="${att.majoNuitDebut||''}" placeholder="22:00" style="flex:1;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:6px;color:var(--white);font-size:11px">
+          <input type="time" id="cg-att-majoNuitFin" value="${att.majoNuitFin||''}" placeholder="06:00" style="flex:1;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:6px;color:var(--white);font-size:11px">
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:3px">Appliqué sur le prix total</div>
+      </div>
+
+      <div>
+        <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Majoration WEEK-END (%)</label>
+        <input type="number" step="1" id="cg-att-majoWeekendPct" value="${att.majoWeekendPct||''}" placeholder="ex: 15" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px">
+        <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--white);cursor:pointer"><input type="checkbox" id="cg-att-weekSat" ${att.weekSat?'checked':''} style="margin:0"> Samedi</label>
+          <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--white);cursor:pointer"><input type="checkbox" id="cg-att-weekSun" ${att.weekSun!==false?'checked':''} style="margin:0"> Dimanche</label>
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:3px">Appliqué sur le prix total</div>
+      </div>
+
+    </div>
+    <div style="margin-top:14px;padding:10px 12px;background:rgba(200,169,110,0.1);border-left:3px solid var(--gold);border-radius:4px;font-size:11px;color:var(--muted);line-height:1.5">
+      💡 <strong>Laissez vide</strong> pour utiliser les règles par défaut (franchise 15 min, 45 min aéroport, 30€/30min client, 24€/30min chauffeur, aucune majoration).<br>
+      <strong>Remplissez</strong> pour appliquer un barème spécifique à ce client. Les valeurs renseignées remplacent entièrement la règle par défaut correspondante.
+    </div>
+  </td></tr>`;
+
   body.innerHTML = html;
 }
 
@@ -7731,6 +7840,39 @@ function captureGridInputs() {
     zone.prix = zone.prix || {};
     GRID_VEHS.forEach(veh => { zone.prix[veh.key] = readGridCell('CUSTOM'+zi+'_'+veh.key); });
   });
+  // ★ Capture des paramètres d'attente & majorations (section dédiée)
+  const _val = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return '';
+    const v = (el.value || '').trim();
+    return v === '' ? '' : v;
+  };
+  const _valNum = (id) => {
+    const v = _val(id);
+    if (v === '') return '';
+    const n = parseFloat(v);
+    return isNaN(n) ? '' : n;
+  };
+  const att = {};
+  const vFr = _valNum('cg-att-franchiseMin'); if (vFr !== '') att.franchiseMin = vFr;
+  const vFa = _valNum('cg-att-franchiseAeroMin'); if (vFa !== '') att.franchiseAeroMin = vFa;
+  const vTc = _valNum('cg-att-tarifClient'); if (vTc !== '') att.tarifClient = vTc;
+  const vTch = _valNum('cg-att-tarifChauffeur'); if (vTch !== '') att.tarifChauffeur = vTch;
+  const vMn = _valNum('cg-att-majoNuitPct'); if (vMn !== '') att.majoNuitPct = vMn;
+  const vMnd = _val('cg-att-majoNuitDebut'); if (vMnd !== '') att.majoNuitDebut = vMnd;
+  const vMnf = _val('cg-att-majoNuitFin'); if (vMnf !== '') att.majoNuitFin = vMnf;
+  const vMw = _valNum('cg-att-majoWeekendPct'); if (vMw !== '') att.majoWeekendPct = vMw;
+  // Jours du weekend (checkboxes). Défaut : dimanche uniquement cochée.
+  const wkSat = document.getElementById('cg-att-weekSat');
+  const wkSun = document.getElementById('cg-att-weekSun');
+  if (wkSat) att.weekSat = !!wkSat.checked;
+  if (wkSun) att.weekSun = !!wkSun.checked;
+  // Ne stocke le bloc que si au moins un champ non vide (sinon on garde vide)
+  if (Object.keys(att).length > 2 || att.franchiseMin !== undefined || att.tarifClient !== undefined || att.majoNuitPct !== undefined || att.majoWeekendPct !== undefined) {
+    grid._attente = att;
+  } else {
+    delete grid._attente;
+  }
 }
 
 function readGridCell(k) {
@@ -7757,6 +7899,11 @@ window.saveClientGrid = async function() {
   const custom = clientGrids[currentGridClient]?._custom;
   if(Array.isArray(custom) && custom.length) {
     grid._custom = custom.filter(z => (z.label||'').trim() !== ''); // on ignore les zones sans nom
+  }
+  // ★ Conserver les paramètres d'attente & majorations spécifiques à ce client
+  const attente = clientGrids[currentGridClient]?._attente;
+  if (attente && typeof attente === 'object' && Object.keys(attente).length > 0) {
+    grid._attente = attente;
   }
   const safeKey = currentGridClient.replace(/[.#$/\[\]]/g, '_');
   try {
@@ -10416,6 +10563,20 @@ function estPaiementABord(c) {
   return c && ((c.payMode === 'direct') || (c.mode_paiement === 'onboard'));
 }
 
+// Permet au chauffeur d'ouvrir rapidement la conversation avec le dispatch
+// quand il est bloqué (course non terminée, besoin d'une intervention admin...).
+// Utilisé par la bannière "🔒 Transfert verrouillé" affichée dans renderMesCourses.
+window.ouvrirConvDispatchChauffeur = function() {
+  try {
+    if (typeof gp === 'function') gp('messagerie', document.querySelector('[data-p="messagerie"]'));
+    // Ouvre la conv Support/Dispatch (openConv redirige automatiquement sur
+    // le canal personnel du chauffeur : "support_drv_<id>")
+    setTimeout(function(){
+      try { window.openConv && window.openConv('admin_support', 'Dispatch', 'admin'); } catch(e){}
+    }, 300);
+  } catch(e) { console.warn('[ouvrirConvDispatchChauffeur]', e); }
+};
+
 function renderMesCourses() {
   if(SESSION.role!=='chauffeur') return;
   const name = SESSION.name;
@@ -10757,25 +10918,29 @@ function renderMesCourses() {
         }
         return true;
       });
-      const isBlocked = autreActive && activeStatuts.includes(flow.next);
-      // Afficher QUELLE course bloque, avec un bouton pour aller la terminer.
-      // Sans cette info, le chauffeur voit "Terminer la course en cours" sans
-      // savoir laquelle, ni comment la débloquer.
+      // POLITIQUE DE SÉCURITÉ : si une AUTRE course est en cours, on bloque
+      // intégralement les actions sur CETTE course (pas juste le bouton principal).
+      // Le chauffeur ne doit pas pouvoir modifier une autre course ni la débloquer
+      // lui-même : il doit contacter le dispatch, qui a seul l'autorité de
+      // "débloquer" (ex: marquer une course fantôme comme annulée).
+      const isBlocked = !!autreActive;
       let blockingHtml = '';
       if (isBlocked && autreActive) {
         const bTime = autreActive.datetime ? autreActive.datetime.slice(11,16) : '';
         const bRoute = (autreActive.depart||autreActive.lieu||'')+' → '+(autreActive.arrivee||'');
-        blockingHtml = '<div style="background:#fff8ed;border:1px solid #f0c674;border-radius:12px;padding:12px;margin-bottom:8px;font-size:13px;color:#92700a">'
-          + '<div style="font-weight:800;margin-bottom:4px">⚠️ Course en cours à terminer</div>'
-          + '<div style="font-size:12px;margin-bottom:8px">'+bTime+' · '+E(bRoute)+' (statut : '+(STATUT_LABELS[autreActive.statut]||autreActive.statut)+')</div>'
-          + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
-          + '<button onclick="viewCourseDetail(\''+autreActive._id+'\')" style="background:#b8860b;border:none;border-radius:8px;padding:8px 14px;color:#fff;font-size:13px;font-weight:700;cursor:pointer">→ Ouvrir pour terminer</button>'
-          + '<button onclick="driverForceUnblock(\''+autreActive._id+'\')" title="Si la course est un fantôme" style="background:transparent;border:1px solid #b8860b;border-radius:8px;padding:8px 14px;color:#92700a;font-size:13px;font-weight:700;cursor:pointer">🗑️ Débloquer (fantôme)</button>'
-          + '</div></div>';
+        blockingHtml = '<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:14px;margin-bottom:10px;font-size:13px;color:#7f1d1d">'
+          + '<div style="font-weight:800;margin-bottom:6px;font-size:14px">🔒 Transfert verrouillé</div>'
+          + '<div style="font-size:12.5px;line-height:1.45;margin-bottom:10px">Vous n\'avez pas terminé un transfert en cours :<br>'
+          + '<strong style="color:#991b1b">'+bTime+' · '+E(bRoute)+'</strong><br>'
+          + 'Veuillez contacter un dispatch pour débloquer.</div>'
+          + '<button onclick="ouvrirConvDispatchChauffeur()" style="width:100%;background:#dc2626;border:none;border-radius:10px;padding:12px 14px;color:#fff;font-size:14px;font-weight:700;cursor:pointer">💬 Contacter le dispatch</button>'
+          + '</div>';
       }
       const btnBg = isBlocked ? '#e0e3e8' : flow.color;
       const btnTxt = isBlocked ? '#999' : '#fff';
-      const btnLbl = isBlocked ? 'Terminer la course en cours' : flow.label;
+      const btnLbl = isBlocked ? '🔒 Verrouillé — contactez le dispatch' : flow.label;
+      // Pas de bouton "No show" non plus : un chauffeur ne peut pas no-show une
+      // course alors qu'il en a déjà une en cours (ambigüité facturation).
       const noShowHtml = isBlocked ? '' : '<button onclick="driverNoShow(\''+c._id+'\')" style="background:#f5f6f8;border:1px solid #e0e3e8;border-radius:12px;padding:16px 18px;font-size:13px;font-weight:700;color:#444;cursor:pointer;white-space:nowrap">No show</button>';
 
       // Case "récupération aéroport" + heure d'atterrissage : visible quand le
@@ -16976,18 +17141,31 @@ window.clearLiveTraces = function() {
 
 // ── HISTORIQUE DE DÉPLACEMENT (relecture du trajet d'un chauffeur) ──────────
 window._ccTrace = null;
+
+// Renvoie la liste des chauffeurs VISIBLES pour l'utilisateur courant.
+// Un gérant ne voit QUE les chauffeurs de sa société (soc_nom === SESSION.socNom).
+// Un admin / dispatch voit tout.
+function _ccChauffeursVisibles() {
+  const tous = (D.chauffeurs || []).filter(c => !c.archived);
+  // Gérant : filtre strict sur sa société
+  if (SESSION && SESSION.role === 'chauffeur' && SESSION.gerant && SESSION.socNom) {
+    const soc = SESSION.socNom.trim();
+    return tous.filter(c => (c.soc_nom||'').trim() === soc);
+  }
+  return tous;
+}
+
 window.populateCcHistDrivers = function(){
   const sel = document.getElementById('cc-hist-driver');
   if(!sel) return;
 
   // Alimenter le select caché (pour compat avec voirTraceChauffeur qui lit sel.value)
-  if(sel.options.length <= 1) {
-    const list = (D.chauffeurs||[]).slice().sort(function(a,b){ return (a.prenom||'').localeCompare(b.prenom||''); });
-    if(list.length) {
-      sel.innerHTML = '<option value="">Choisir un chauffeur…</option>' + list.map(function(c){
-        return '<option value="'+c._id+'">'+E((c.prenom||'')+(c.nom?' '+c.nom:''))+'</option>';
-      }).join('');
-    }
+  // ★ Pour un gérant : uniquement les chauffeurs de sa société.
+  const list = _ccChauffeursVisibles().slice().sort(function(a,b){ return (a.prenom||'').localeCompare(b.prenom||''); });
+  if(list.length) {
+    sel.innerHTML = '<option value="">Choisir un chauffeur…</option>' + list.map(function(c){
+      return '<option value="'+c._id+'">'+E((c.prenom||'')+(c.nom?' '+c.nom:''))+'</option>';
+    }).join('');
   }
 
   // Remplacer visuellement le select par une barre de recherche + dropdown filtrée
@@ -17008,11 +17186,12 @@ window.populateCcHistDrivers = function(){
 };
 
 // Filtre la dropdown d'historique au fur et à mesure que l'utilisateur tape
+// ★ Un gérant ne voit que ses chauffeurs (via _ccChauffeursVisibles)
 window.ccHistFilter = function(query){
   const drop = document.getElementById('cc-hist-drop');
   if(!drop) return;
   const q = String(query||'').trim().toLowerCase();
-  const list = (D.chauffeurs||[]).slice().sort(function(a,b){ return (a.prenom||'').localeCompare(b.prenom||''); });
+  const list = _ccChauffeursVisibles().slice().sort(function(a,b){ return (a.prenom||'').localeCompare(b.prenom||''); });
   const filtered = q ? list.filter(function(c){
     const nom = ((c.prenom||'')+' '+(c.nom||'')).toLowerCase();
     const tel = String(c.tel||'').toLowerCase();
@@ -17069,24 +17248,108 @@ window.voirTraceChauffeur = async function(){
   if(!ccMap || !window.L){ showToast('Carte pas encore prête', true); return; }
   if(info) info.textContent = 'Chargement…';
   const jour = date.replace(/-/g,'');
-  const pts = [];
+  // ★ On conserve TOUS les champs du point (lat, lng, at) — pas juste [lat,lng]
+  // pour pouvoir afficher l'heure de chaque point sur la carte.
+  const points = [];
   try {
     const r = await fetch(`${FB_URL}/gps_trails/${id}/${jour}.json${authParam(await getAuthToken())}`);
     const data = await r.json();
-    if(data){ Object.keys(data).sort().forEach(function(k){ const p=data[k]; if(p&&p.lat&&p.lng) pts.push([p.lat,p.lng]); }); }
+    if(data){
+      Object.keys(data).sort().forEach(function(k){
+        const p = data[k];
+        if(p && p.lat && p.lng) points.push({ lat:p.lat, lng:p.lng, at:p.at || null, key:k });
+      });
+    }
   } catch(e){}
   effacerTraceChauffeur();
-  if(!pts.length){ if(info) info.textContent = 'Aucun déplacement enregistré ce jour-là.'; showToast('Aucune trace pour cette date', true); return; }
+  if(!points.length){ if(info) info.textContent = 'Aucun déplacement enregistré ce jour-là.'; showToast('Aucune trace pour cette date', true); return; }
+
+  const latlngs = points.map(p => [p.lat, p.lng]);
   const layers = [];
-  const line = window.L.polyline(pts, { color:'#c8a96e', weight:4, opacity:0.85 }).addTo(ccMap);
+
+  // Tracé principal
+  const line = window.L.polyline(latlngs, { color:'#c8a96e', weight:4, opacity:0.85 }).addTo(ccMap);
   layers.push(line);
   const nom = (sel.options[sel.selectedIndex]||{}).text || '';
-  layers.push(window.L.circleMarker(pts[0], { radius:7, color:'#fff', weight:2, fillColor:'#2ecc8a', fillOpacity:1 }).addTo(ccMap).bindPopup('Départ · '+E(nom)));
-  layers.push(window.L.circleMarker(pts[pts.length-1], { radius:7, color:'#fff', weight:2, fillColor:'#e74c3c', fillOpacity:1 }).addTo(ccMap).bindPopup('Dernier point · '+E(nom)));
+
+  // ── Helpers heure/distance ────────────────────────────────────────────
+  const fmtHeure = (iso, key) => {
+    try {
+      if (iso) return new Date(iso).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      // Fallback : le `key` contient HHMMSS si at manque
+      if (key && key.length === 6) return key.slice(0,2)+':'+key.slice(2,4)+':'+key.slice(4,6);
+    } catch(e){}
+    return '';
+  };
+  const first = points[0];
+  const last = points[points.length - 1];
+  const hDebut = fmtHeure(first.at, first.key);
+  const hFin   = fmtHeure(last.at,  last.key);
+
+  // Distance totale approximative
+  let distKm = 0;
+  for (let i=1; i<points.length; i++) {
+    distKm += distanceKm(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng);
+  }
+
+  // Durée (si on a des timestamps valides au début et à la fin)
+  let dureeStr = '';
+  try {
+    if (first.at && last.at) {
+      const mn = Math.max(0, Math.round((new Date(last.at) - new Date(first.at)) / 60000));
+      if (mn >= 60) dureeStr = Math.floor(mn/60)+'h'+String(mn%60).padStart(2,'0');
+      else dureeStr = mn+' min';
+    }
+  } catch(e){}
+
+  // ── Marker DÉPART (vert) avec heure dans le popup ──────────────────────
+  const popupDebut = '<div style="font-weight:800;font-size:13px;color:#166534;margin-bottom:4px">🚦 Départ</div>'
+    + '<div style="font-size:12px"><strong>' + E(hDebut || '--:--') + '</strong></div>'
+    + '<div style="font-size:11px;color:#555;margin-top:4px">' + E(nom) + '</div>';
+  layers.push(
+    window.L.circleMarker(latlngs[0], { radius:9, color:'#fff', weight:3, fillColor:'#2ecc8a', fillOpacity:1 })
+      .addTo(ccMap).bindPopup(popupDebut)
+  );
+
+  // ── Marker ARRIVÉE (rouge) avec heure + durée + distance ───────────────
+  const popupFin = '<div style="font-weight:800;font-size:13px;color:#991b1b;margin-bottom:4px">🏁 Arrivée</div>'
+    + '<div style="font-size:12px"><strong>' + E(hFin || '--:--') + '</strong></div>'
+    + (dureeStr ? '<div style="font-size:11px;color:#555;margin-top:4px">⏱️ Durée : ' + dureeStr + '</div>' : '')
+    + (distKm > 0.1 ? '<div style="font-size:11px;color:#555">📏 Distance : ' + distKm.toFixed(1) + ' km</div>' : '')
+    + '<div style="font-size:11px;color:#555;margin-top:4px">' + E(nom) + '</div>';
+  layers.push(
+    window.L.circleMarker(latlngs[latlngs.length-1], { radius:9, color:'#fff', weight:3, fillColor:'#e74c3c', fillOpacity:1 })
+      .addTo(ccMap).bindPopup(popupFin)
+  );
+
+  // ── Petits points INTERMÉDIAIRES cliquables (toutes les N positions) ──
+  // Pour ne pas surcharger la carte, on n'affiche pas tous les points :
+  // seulement 1 sur N pour avoir ~15-25 points cliquables.
+  const nbInterm = Math.max(0, points.length - 2);
+  const step = Math.max(1, Math.ceil(nbInterm / 20));
+  for (let i = 1; i < points.length - 1; i += step) {
+    const p = points[i];
+    const h = fmtHeure(p.at, p.key);
+    const popup = '<div style="font-size:12px;font-weight:700;color:#8b6914">📍 Point ' + i + '</div>'
+      + '<div style="font-size:12px;margin-top:2px"><strong>' + E(h || '--:--') + '</strong></div>';
+    layers.push(
+      window.L.circleMarker([p.lat, p.lng], { radius:4, color:'#fff', weight:1.5, fillColor:'#d4a017', fillOpacity:0.85 })
+        .addTo(ccMap).bindPopup(popup)
+    );
+  }
+
   window._ccTrace = layers;
-  ccMap._userMoved = true; // ne pas recentrer sur les positions live
+  ccMap._userMoved = true;
   try { ccMap.fitBounds(line.getBounds(), { padding:[40,40] }); } catch(e){}
-  if(info) info.textContent = pts.length + ' points · ' + date;
+
+  // Récap affiché sous la barre de recherche
+  if(info) {
+    const parts = [points.length + ' points'];
+    if (hDebut && hFin) parts.push(hDebut + ' → ' + hFin);
+    if (dureeStr) parts.push('⏱️ ' + dureeStr);
+    if (distKm > 0.1) parts.push('📏 ' + distKm.toFixed(1) + ' km');
+    info.textContent = parts.join(' · ');
+  }
 };
 
 // ── CARTE SUIVI CHAUFFEUR (espace client) ──
@@ -17265,33 +17528,121 @@ function calcWaitFees(course) {
   const waitMin = Math.max(0, Math.round((fin - debut) / 60000));
 
   // La franchise dépend du LIEU DE PRISE EN CHARGE (le DÉPART) : plus généreuse
-  // quand le chauffeur récupère le client À l'aéroport. On se fie d'abord à la
-  // case "récupération aéroport" cochée par le chauffeur ; sinon on détecte via
-  // l'adresse de départ.
+  // quand le chauffeur récupère le client À l'aéroport.
   const dep = (course.depart || course.lieu || '').toLowerCase();
   const departAeroport = course.recupAeroport === true ||
                          dep.includes('cdg') || dep.includes('roissy') || dep.includes('orly') ||
                          dep.includes('charles de gaulle') || dep.includes('aéroport') || dep.includes('aeroport') ||
                          dep.includes('beauvais') || dep.includes('airport') || dep.includes('terminal');
 
-  // Franchises selon le lieu de prise en charge :
-  //  - Aéroport (départ) : client 45 min offertes, chauffeur 60 min incluses
-  //  - Autres           : client 15 min offertes, chauffeur 25 min incluses
-  const clientFreeMin = departAeroport ? 45 : 15;
-  const chauffeurFreeMin = departAeroport ? 60 : 25;
+  // ★ Récupération des paramètres SPÉCIFIQUES à ce client (via grille tarifaire).
+  // Si un champ est vide → fallback sur la règle par défaut historique.
+  const att = getClientAttenteParams(course.client);
 
-  // CLIENT : puis 30€ par tranche de 30 min entamée
+  // Franchises
+  const defaultFreeStd = 15, defaultFreeAero = 45, defaultFreeStdCh = 25, defaultFreeAeroCh = 60;
+  const clientFreeMin = departAeroport
+    ? (att.franchiseAeroMin != null ? att.franchiseAeroMin : defaultFreeAero)
+    : (att.franchiseMin != null ? att.franchiseMin : defaultFreeStd);
+  // Pour le chauffeur : on applique la même franchise que celle fixée pour le
+  // client (si configurée), sinon on garde l'ancienne règle (franchise plus
+  // longue côté chauffeur).
+  const chauffeurFreeMin = departAeroport
+    ? (att.franchiseAeroMin != null ? att.franchiseAeroMin : defaultFreeAeroCh)
+    : (att.franchiseMin != null ? att.franchiseMin : defaultFreeStdCh);
+
+  // CLIENT : si tarif €/min défini → facturation à la minute, sinon tranches 30€/30min
   const clientBillableMin = Math.max(0, waitMin - clientFreeMin);
-  const clientTranches = Math.ceil(clientBillableMin / 30);
-  const clientFee = clientTranches * 30;
+  let clientFee, clientTranches;
+  if (att.tarifClient != null && att.tarifClient >= 0) {
+    clientFee = Math.round(clientBillableMin * att.tarifClient * 100) / 100;
+    clientTranches = clientBillableMin; // nombre de minutes facturées
+  } else {
+    clientTranches = Math.ceil(clientBillableMin / 30);
+    clientFee = clientTranches * 30;
+  }
 
-  // CHAUFFEUR : puis 24€ par tranche de 30 min entamée
+  // CHAUFFEUR : si tarif €/min défini → facturation à la minute, sinon tranches 24€/30min
   const chauffeurBillableMin = Math.max(0, waitMin - chauffeurFreeMin);
-  const chauffeurTranches = Math.ceil(chauffeurBillableMin / 30);
-  const chauffeurFee = chauffeurTranches * 24;
+  let chauffeurFee, chauffeurTranches;
+  if (att.tarifChauffeur != null && att.tarifChauffeur >= 0) {
+    chauffeurFee = Math.round(chauffeurBillableMin * att.tarifChauffeur * 100) / 100;
+    chauffeurTranches = chauffeurBillableMin;
+  } else {
+    chauffeurTranches = Math.ceil(chauffeurBillableMin / 30);
+    chauffeurFee = chauffeurTranches * 24;
+  }
 
   return { waitMin, clientFee, clientTranches, chauffeurFee, chauffeurTranches, clientFreeMin, chauffeurFreeMin, departAeroport };
 }
+
+// ★ Récupère les paramètres d'attente & majorations spécifiques à un client.
+// Retourne toujours un objet (vide si rien de configuré). Appelé par calcWaitFees
+// et getCourseMajoration pour appliquer les règles personnalisées.
+function getClientAttenteParams(clientName) {
+  if (!clientName) return {};
+  // Essai plusieurs variantes de clé (sensibilité à la casse / espaces)
+  const grids = (typeof clientGrids !== 'undefined') ? clientGrids : {};
+  const g = grids[clientName]
+    || grids[String(clientName).toUpperCase()]
+    || grids[String(clientName).trim()]
+    || null;
+  if (!g || !g._attente || typeof g._attente !== 'object') return {};
+  return g._attente;
+}
+
+// ★ Calcule la MAJORATION à appliquer sur le prix d'une course (nuit / week-end)
+// en fonction des paramètres du client. Retourne { pct, multi, raisons }.
+//   - pct = pourcentage total de majoration (ex: 20 → +20%)
+//   - multi = multiplicateur à appliquer directement sur un prix (ex: 1.20)
+//   - raisons = ["Nuit (22h-06h)", "Week-end (dim)"] pour affichage
+// Si aucune majoration configurée OU conditions non remplies → pct=0, multi=1.
+function getCourseMajoration(course) {
+  const empty = { pct: 0, multi: 1, raisons: [] };
+  if (!course || !course.datetime) return empty;
+  const att = getClientAttenteParams(course.client);
+  if (!att || Object.keys(att).length === 0) return empty;
+
+  const d = new Date(course.datetime);
+  if (isNaN(d.getTime())) return empty;
+
+  let pct = 0;
+  const raisons = [];
+
+  // Majoration NUIT — intervalle [debut, fin] en heure:minute
+  if (att.majoNuitPct > 0 && att.majoNuitDebut && att.majoNuitFin) {
+    const hhmm = d.getHours() * 60 + d.getMinutes();
+    const parse = (s) => {
+      const parts = String(s).split(':');
+      return parseInt(parts[0],10)*60 + parseInt(parts[1]||'0',10);
+    };
+    const debutMn = parse(att.majoNuitDebut);
+    const finMn = parse(att.majoNuitFin);
+    const estNuit = (debutMn < finMn)
+      ? (hhmm >= debutMn && hhmm < finMn)                // ex: 02:00-06:00
+      : (hhmm >= debutMn || hhmm < finMn);               // ex: 22:00-06:00 (chevauche minuit)
+    if (estNuit) {
+      pct += att.majoNuitPct;
+      raisons.push('Nuit (' + att.majoNuitDebut + '-' + att.majoNuitFin + ')');
+    }
+  }
+
+  // Majoration WEEK-END — samedi / dimanche selon ce qui est coché
+  if (att.majoWeekendPct > 0) {
+    const jour = d.getDay(); // 0 = dimanche, 6 = samedi
+    const estSamedi = (jour === 6 && att.weekSat === true);
+    const estDimanche = (jour === 0 && att.weekSun !== false); // dimanche = par défaut
+    if (estSamedi || estDimanche) {
+      pct += att.majoWeekendPct;
+      raisons.push('Week-end' + (estSamedi ? ' (sam)' : ' (dim)'));
+    }
+  }
+
+  return { pct, multi: 1 + pct/100, raisons };
+}
+// Exposer en global pour que bon de commande PDF / factures puissent l'utiliser
+window.getCourseMajoration = getCourseMajoration;
+window.getClientAttenteParams = getClientAttenteParams;
 
 // GAIN RÉEL DU CHAUFFEUR pour une course = prix chauffeur de base + supplément
 // d'attente qui lui revient. Source unique de vérité : à utiliser PARTOUT où
@@ -17304,6 +17655,15 @@ function gainChauffeur(course) {
     const w = calcWaitFees(course);
     if(w && w.chauffeurFee > 0) attente = w.chauffeurFee;
   } catch(e){}
+  // ★ Majoration nuit/week-end spécifique au client — appliquée sur la BASE
+  // du prix chauffeur (pas sur l'attente, qui a son propre tarif/min).
+  let majoration = 0;
+  try {
+    const m = getCourseMajoration(course);
+    if (m && m.pct > 0) {
+      majoration = Math.round(base * (m.pct / 100) * 100) / 100;
+    }
+  } catch(e){}
   // Paiement à bord : le chauffeur a encaissé le client, mais la commission
   // MOBILEA lui est deduite -> il voit le NET (prix chauffeur - commission).
   let commissionPAB = 0;
@@ -17311,8 +17671,29 @@ function gainChauffeur(course) {
     commissionPAB = (course.commissionPAB!=null && course.commissionPAB!=='')
       ? (parseFloat(course.commissionPAB)||0) : 0;
   }
-  return base + attente - commissionPAB;
+  return base + majoration + attente - commissionPAB;
 }
+
+// ★ PRIX FINAL CLIENT pour une course = prix base + majoration nuit/weekend +
+// supplément d'attente client. Source unique de vérité : utilisée partout où
+// on affiche/facture le prix côté client (factures, bons, exports CSV).
+function prixClientFinal(course) {
+  const base = parseFloat(course.prixClient || course.prix || 0) || 0;
+  let attente = 0;
+  try {
+    const w = calcWaitFees(course);
+    if(w && w.clientFee > 0) attente = w.clientFee;
+  } catch(e){}
+  let majoration = 0;
+  try {
+    const m = getCourseMajoration(course);
+    if (m && m.pct > 0) {
+      majoration = Math.round(base * (m.pct / 100) * 100) / 100;
+    }
+  } catch(e){}
+  return Math.round((base + majoration + attente) * 100) / 100;
+}
+window.prixClientFinal = prixClientFinal;
 
 // NOM AFFICHÉ AU CHAUFFEUR pour une course. Pour les clients "grossistes" B2B
 // (ex: Valoritel), le chauffeur ne doit PAS voir le nom de la société mais le
@@ -17798,6 +18179,21 @@ window.toggleGPS = async function() {
   }
 };
 
+// ─── RÉCEPTION DES POSITIONS GPS NATIVES (iOS/Android background) ───────────
+// Appelé par native-bridge.js à chaque nouvelle position du plugin Capacitor
+// BackgroundGeolocation. On applique le MÊME throttling que le mode web
+// (max 1 écriture Firebase toutes les 10s pour économiser).
+window.onNativeGPS = async function(pos) {
+  try {
+    gpsActive = true;
+    _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
+    const now = Date.now();
+    if(now - _gpsLastSent < 10000) return;
+    _gpsLastSent = now;
+    await sendGPS(pos);
+  } catch(e) { console.warn('[onNativeGPS]', e); }
+};
+
 async function sendGPS(pos) {
   const name = SESSION.name;
   const ch = D.chauffeurs.find(c=>(c.prenom+(c.nom?' '+c.nom:''))===name);
@@ -17818,18 +18214,24 @@ async function sendGPS(pos) {
   try { await enregistrerTrace(ch._id, pos.coords.latitude, pos.coords.longitude); } catch(e){}
 }
 
-// Enregistre la trace GPS du chauffeur, de façon ÉCONOME : au maximum un point
-// toutes les 90 s et seulement s'il a bougé de plus de ~120 m (sinon on ne
-// remplit pas la base quand il est à l'arrêt). Rangé par jour pour pouvoir
-// rejouer un trajet : gps_trails/<chauffeurId>/<AAAAMMJJ>/<HHMMSS>.
+// Enregistre la trace GPS du chauffeur. Seuils réduits pour un suivi plus fin :
+//  - minimum 30 s entre 2 points (au lieu de 90 s)
+//  - OU >50 m de déplacement (au lieu de 120 m)
+// Toujours économe (pas de point à l'arrêt), mais le trajet est beaucoup plus
+// détaillé. Rangé par jour : gps_trails/<chauffeurId>/<AAAAMMJJ>/<HHMMSS>.
+// Un premier point est toujours enregistré à l'ouverture (even if no last).
 window._lastTrace = window._lastTrace || {};
 async function enregistrerTrace(driverId, lat, lng){
   if(!driverId || !lat || !lng) return;
   const now = Date.now();
   const last = window._lastTrace[driverId];
   if(last){
-    if((now - last.at) < 90000) return;
-    if(distanceKm(last.lat, last.lng, lat, lng) < 0.12) return;
+    const ecoule = now - last.at;
+    const dist = distanceKm(last.lat, last.lng, lat, lng);
+    // Point écrit si (30s écoulées ET bougé un peu) OU (bougé significativement)
+    const condition1 = ecoule >= 30000 && dist >= 0.02; // 30s + 20m
+    const condition2 = dist >= 0.05; // 50m peu importe le temps
+    if (!condition1 && !condition2) return;
   }
   window._lastTrace[driverId] = { lat:lat, lng:lng, at:now };
   const d = new Date();
@@ -17837,11 +18239,16 @@ async function enregistrerTrace(driverId, lat, lng){
   const jour = '' + d.getFullYear() + p2(d.getMonth()+1) + p2(d.getDate());
   const heure = p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
   try {
-    await fetch(`${FB_URL}/gps_trails/${driverId}/${jour}/${heure}.json${authParam(await getAuthToken())}`, {
+    const r = await fetch(`${FB_URL}/gps_trails/${driverId}/${jour}/${heure}.json${authParam(await getAuthToken())}`, {
       method:'PUT', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ lat: Math.round(lat*1e5)/1e5, lng: Math.round(lng*1e5)/1e5, at: d.toISOString() })
     });
-  } catch(e){}
+    if (r && !r.ok && window._diagShow) {
+      window._diagShow('enregistrerTrace HTTP ' + r.status + ' pour ' + jour + '/' + heure);
+    }
+  } catch(e){
+    if (window._diagShow) window._diagShow('enregistrerTrace ERREUR: ' + (e && e.message));
+  }
 }
 
 // Alerte automatique au CLIENT PARTENAIRE quand le chauffeur approche de la
