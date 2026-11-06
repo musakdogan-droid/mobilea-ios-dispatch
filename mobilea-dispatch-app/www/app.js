@@ -59,22 +59,92 @@ function isValidPhone(tel) {
 }
 
 // ── RATE LIMITING CONNEXIONS ──
-// Bloque les tentatives de brute-force côté client
-const _loginAttempts = {};
-function checkLoginRateLimit(identifier) {
-  const now = Date.now();
-  if(!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
-  // Garder seulement les 15 dernières minutes
-  _loginAttempts[identifier] = _loginAttempts[identifier].filter(t => now - t < 900000);
-  if(_loginAttempts[identifier].length >= 5) {
-    const waitSec = Math.ceil((900000 - (now - _loginAttempts[identifier][0])) / 1000);
-    return { blocked: true, waitSec };
-  }
-  return { blocked: false };
+// Protection contre les attaques par force brute : 3 essais ratés max par
+// (IP + email) dans une fenêtre glissante de 30 min. Le vrai compteur est
+// chez le Worker Cloudflare (mobilea-auth-ratelimit), donc impossible de
+// contourner en vidant le navigateur ou en changeant d'appareil.
+// Fallback mémoire local si le Worker est injoignable (coupure réseau).
+const LOGIN_RATELIMIT_URL = 'https://mobilea-auth-ratelimit.mus-akdogan.workers.dev';
+const _loginAttempts = {}; // fallback local {identifier: [timestamps]}
+
+// Fenêtre fallback locale : 3 essais / 30 min (identique au serveur)
+const _LOCAL_WINDOW_MS = 30 * 60 * 1000;
+const _LOCAL_MAX_FAILS = 3;
+
+// Extrait l'email de l'identifier préfixé ("admin_foo@bar.com" → "foo@bar.com")
+function _emailFromId(id) {
+  return String(id || '').replace(/^(admin|chauffeur|client)_/, '').toLowerCase().trim();
 }
-function recordLoginAttempt(identifier) {
-  if(!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
+
+// Vérifie en SERVEUR (Worker) si on peut tenter un login.
+//   { blocked: true, waitSec, message }  → interdit
+//   { blocked: false, remaining }        → OK
+async function checkLoginRateLimit(identifier) {
+  const email = _emailFromId(identifier);
+  if (!email) return { blocked: false };
+  // 1) Vérification serveur (source de vérité)
+  try {
+    const r = await fetch(LOGIN_RATELIMIT_URL + '/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const d = await r.json();
+    if (r.status === 429 && d && d.blocked) {
+      return { blocked: true, waitSec: d.retry_in_sec || 1800, message: d.message };
+    }
+    if (d && d.ok) return { blocked: false, remaining: d.remaining };
+  } catch (e) {
+    // Worker injoignable → on retombe sur le fallback local pour ne pas bloquer un vrai utilisateur
+  }
+  // 2) Fallback local
+  const now = Date.now();
+  if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
+  _loginAttempts[identifier] = _loginAttempts[identifier].filter(t => now - t < _LOCAL_WINDOW_MS);
+  if (_loginAttempts[identifier].length >= _LOCAL_MAX_FAILS) {
+    const waitSec = Math.ceil((_LOCAL_WINDOW_MS - (now - _loginAttempts[identifier][0])) / 1000);
+    const minutes = Math.ceil(waitSec / 60);
+    return { blocked: true, waitSec, message: `Trop de tentatives de connexion. Réessayez dans ${minutes} minute${minutes > 1 ? 's' : ''}.` };
+  }
+  return { blocked: false, remaining: _LOCAL_MAX_FAILS - _loginAttempts[identifier].length };
+}
+
+// Enregistre un échec de login (côté Worker + fallback mémoire).
+// Retourne un avertissement si des essais restent : { warning: "..." }
+async function recordLoginAttempt(identifier) {
+  const email = _emailFromId(identifier);
+  // Compteur local (fallback)
+  if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
   _loginAttempts[identifier].push(Date.now());
+  // Compteur serveur
+  if (!email) return {};
+  try {
+    const r = await fetch(LOGIN_RATELIMIT_URL + '/fail', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const d = await r.json();
+    if (r.status === 429 && d && d.blocked) {
+      return { blocked: true, waitSec: d.retry_in_sec || 1800, message: d.message };
+    }
+    if (d && d.warning) return { warning: d.warning, remaining: d.remaining };
+  } catch (e) {}
+  return {};
+}
+
+// Login réussi : efface le compteur côté serveur ET local.
+async function clearLoginAttempts(identifier) {
+  const email = _emailFromId(identifier);
+  delete _loginAttempts[identifier];
+  if (!email) return;
+  try {
+    await fetch(LOGIN_RATELIMIT_URL + '/success', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+  } catch (e) {}
 }
 
 // ── LOG DES CONNEXIONS (succès + échecs) ──
@@ -1783,9 +1853,9 @@ window.doAdminLogin = async function() {
   err.textContent = '';
   if (!pass) { err.textContent = 'Mot de passe requis'; return; }
 
-  // Rate limiting
-  const rl = checkLoginRateLimit('admin_'+email);
-  if(rl.blocked) { err.textContent = `Trop de tentatives. Réessayez dans ${Math.ceil(rl.waitSec/60)} min.`; logSecurityEvent('login_blocked',{role:'admin',email}); return; }
+  // Rate limiting (Worker Cloudflare + fallback local)
+  const rl = await checkLoginRateLimit('admin_'+email);
+  if(rl.blocked) { err.textContent = rl.message || `Trop de tentatives. Réessayez dans ${Math.ceil(rl.waitSec/60)} min.`; logSecurityEvent('login_blocked',{role:'admin',email}); return; }
 
   // NOUVELLE MÉTHODE : Firebase Authentication (email + mot de passe)
   if (email) {
@@ -1836,14 +1906,21 @@ window.doAdminLogin = async function() {
       SESSION = { role:'admin', name:adminName, uid:realUid, email, orgId, superAdmin };
       localStorage.setItem(ADMIN_KEY, JSON.stringify(SESSION));
       logSecurityEvent('login_success',{role:'admin',email});
+      clearLoginAttempts('admin_'+email); // efface le compteur rate-limit
       resetSessionTimeout();
       startApp();
       return;
     } catch(e) {
-      recordLoginAttempt('admin_'+email);
+      const rec = await recordLoginAttempt('admin_'+email);
       logSecurityEvent('login_failed',{role:'admin',email,error:e.code});
+      // Si le Worker a basculé en "blocked" après cet échec, on affiche SON message
+      if(rec && rec.blocked) {
+        err.textContent = rec.message || 'Trop de tentatives. Réessayez plus tard.';
+        return;
+      }
       if(e.code === 'auth/invalid-credential' || e.code === 'auth/wrong-password' || e.code === 'auth/user-not-found') {
-        err.textContent = 'Email ou mot de passe incorrect';
+        // Avertissement "2 essais restants" / "1 essai restant" si fourni par le Worker
+        err.textContent = (rec && rec.warning) ? ('Email ou mot de passe incorrect. ' + rec.warning) : 'Email ou mot de passe incorrect';
       } else if(e.code === 'auth/too-many-requests') {
         err.textContent = 'Trop de tentatives. Réessayez plus tard.';
       } else {
@@ -1964,9 +2041,9 @@ async function _doChauffeurLoginInner(err) {
   err.textContent = '';
   if(!email || !pass) { err.textContent = 'Email et mot de passe requis'; return; }
 
-  // Rate limiting
-  const rl = checkLoginRateLimit('chauffeur_'+email);
-  if(rl.blocked) { err.textContent = `Trop de tentatives. Réessayez dans ${Math.ceil(rl.waitSec/60)} min.`; logSecurityEvent('login_blocked',{role:'chauffeur',email}); return; }
+  // Rate limiting (Worker Cloudflare + fallback local)
+  const rl = await checkLoginRateLimit('chauffeur_'+email);
+  if(rl.blocked) { err.textContent = rl.message || `Trop de tentatives. Réessayez dans ${Math.ceil(rl.waitSec/60)} min.`; logSecurityEvent('login_blocked',{role:'chauffeur',email}); return; }
 
   // Attendre Firebase Auth
   let tries = 0;
@@ -1976,8 +2053,11 @@ async function _doChauffeurLoginInner(err) {
   try {
     await window.fbAuth.signInWithEmailAndPassword(email, pass);
   } catch(ex) {
+    const rec = await recordLoginAttempt('chauffeur_'+email);
+    logSecurityEvent('login_failed',{role:'chauffeur',email,error:ex.code});
+    if(rec && rec.blocked) { err.textContent = rec.message || 'Trop de tentatives. Réessayez plus tard.'; return; }
     if(ex.code === 'auth/invalid-credential' || ex.code === 'auth/wrong-password' || ex.code === 'auth/user-not-found') {
-      err.textContent = 'Email ou mot de passe incorrect';
+      err.textContent = (rec && rec.warning) ? ('Email ou mot de passe incorrect. ' + rec.warning) : 'Email ou mot de passe incorrect';
     } else if(ex.code === 'auth/too-many-requests') {
       err.textContent = 'Trop de tentatives. Réessayez plus tard.';
     } else {
@@ -1985,6 +2065,8 @@ async function _doChauffeurLoginInner(err) {
     }
     return;
   }
+  // Login Firebase OK → on efface le compteur rate-limit (sera écrasé si la vérif rôle échoue)
+  clearLoginAttempts('chauffeur_'+email);
 
   // S'assurer que la session Firebase est bien prete avant de lire la base.
   // (borne courte : n'empeche jamais la connexion de se poursuivre.)
@@ -13886,9 +13968,9 @@ window.doClientLogin = async function() {
   err.textContent = '';
   if(!email||!pass){err.textContent='Email et mot de passe requis';return;}
 
-  // Rate limiting
-  const rl = checkLoginRateLimit('client_'+email);
-  if(rl.blocked) { err.textContent=`Trop de tentatives. Réessayez dans ${Math.ceil(rl.waitSec/60)} min.`; logSecurityEvent('login_blocked',{role:'client',email}); return; }
+  // Rate limiting (Worker Cloudflare + fallback local)
+  const rl = await checkLoginRateLimit('client_'+email);
+  if(rl.blocked) { err.textContent = rl.message || `Trop de tentatives. Réessayez dans ${Math.ceil(rl.waitSec/60)} min.`; logSecurityEvent('login_blocked',{role:'client',email}); return; }
 
   let tries = 0;
   while(!window.fbAuth && tries < 15) { await new Promise(r=>setTimeout(r,200)); tries++; }
@@ -13896,11 +13978,15 @@ window.doClientLogin = async function() {
   try {
     await window.fbAuth.signInWithEmailAndPassword(email, pass);
   } catch(e) {
-    if(e.code==='auth/invalid-credential'||e.code==='auth/wrong-password'||e.code==='auth/user-not-found') err.textContent='Email ou mot de passe incorrect';
+    const rec = await recordLoginAttempt('client_'+email);
+    logSecurityEvent('login_failed',{role:'client',email,error:e.code});
+    if(rec && rec.blocked) { err.textContent = rec.message || 'Trop de tentatives. Réessayez plus tard.'; return; }
+    if(e.code==='auth/invalid-credential'||e.code==='auth/wrong-password'||e.code==='auth/user-not-found') err.textContent = (rec && rec.warning) ? ('Email ou mot de passe incorrect. ' + rec.warning) : 'Email ou mot de passe incorrect';
     else if(e.code==='auth/too-many-requests') err.textContent='Trop de tentatives. Réessayez plus tard.';
     else err.textContent='Erreur de connexion. Vérifiez vos identifiants.';
     return;
   }
+  clearLoginAttempts('client_'+email); // efface le compteur rate-limit
   // Récupérer l'UID Firebase Auth — identifiant UNIQUE et infalsifiable
   const firebaseUser = window.fbAuth.currentUser;
   const firebaseUid = firebaseUser?.uid;
