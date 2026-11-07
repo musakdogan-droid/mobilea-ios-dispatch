@@ -1839,12 +1839,13 @@ window.doAdminLogin = async function() {
         return;
       }
       if(e.code === 'auth/invalid-credential' || e.code === 'auth/wrong-password' || e.code === 'auth/user-not-found') {
-        // Avertissement "2 essais restants" / "1 essai restant" si fourni par le Worker
         err.textContent = (rec && rec.warning) ? ('Email ou mot de passe incorrect. ' + rec.warning) : 'Email ou mot de passe incorrect';
       } else if(e.code === 'auth/too-many-requests') {
         err.textContent = 'Trop de tentatives. Réessayez plus tard.';
       } else {
-        err.textContent = 'Erreur de connexion';
+        // DIAGNOSTIC : affiche le code exact pour comprendre pourquoi ça plante
+        err.textContent = 'Erreur de connexion [' + (e.code || 'no-code') + '] ' + (e.message || '').substring(0,200);
+        if(window._diagShow) window._diagShow('LOGIN FAIL admin: ' + (e.code||'no-code') + ' | ' + (e.message||'').substring(0,200));
       }
       return;
     }
@@ -1981,7 +1982,9 @@ async function _doChauffeurLoginInner(err) {
     } else if(ex.code === 'auth/too-many-requests') {
       err.textContent = 'Trop de tentatives. Réessayez plus tard.';
     } else {
-      err.textContent = 'Erreur de connexion. Vérifiez vos identifiants.';
+      // DIAGNOSTIC : code exact pour comprendre pourquoi ça plante
+      err.textContent = 'Erreur de connexion [' + (ex.code || 'no-code') + '] ' + (ex.message || '').substring(0,200);
+      if(window._diagShow) window._diagShow('LOGIN FAIL chauffeur: ' + (ex.code||'no-code') + ' | ' + (ex.message||'').substring(0,200));
     }
     return;
   }
@@ -13903,7 +13906,11 @@ window.doClientLogin = async function() {
     if(rec && rec.blocked) { err.textContent = rec.message || 'Trop de tentatives. Réessayez plus tard.'; return; }
     if(e.code==='auth/invalid-credential'||e.code==='auth/wrong-password'||e.code==='auth/user-not-found') err.textContent = (rec && rec.warning) ? ('Email ou mot de passe incorrect. ' + rec.warning) : 'Email ou mot de passe incorrect';
     else if(e.code==='auth/too-many-requests') err.textContent='Trop de tentatives. Réessayez plus tard.';
-    else err.textContent='Erreur de connexion. Vérifiez vos identifiants.';
+    else {
+      // DIAGNOSTIC : code exact pour comprendre pourquoi ça plante
+      err.textContent = 'Erreur de connexion [' + (e.code||'no-code') + '] ' + (e.message||'').substring(0,200);
+      if(window._diagShow) window._diagShow('LOGIN FAIL client: ' + (e.code||'no-code') + ' | ' + (e.message||'').substring(0,200));
+    }
     return;
   }
   clearLoginAttempts('client_'+email); // efface le compteur rate-limit
