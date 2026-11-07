@@ -59,110 +59,13 @@ function isValidPhone(tel) {
 }
 
 // ── RATE LIMITING CONNEXIONS ──
-// Protection contre les attaques par force brute : 3 essais ratés max par
-// (IP + email) dans une fenêtre glissante de 30 min. Le vrai compteur est
-// chez le Worker Cloudflare (mobilea-auth-ratelimit), donc impossible de
-// contourner en vidant le navigateur ou en changeant d'appareil.
-// Fallback mémoire local si le Worker est injoignable (coupure réseau).
-const LOGIN_RATELIMIT_URL = 'https://mobilea-auth-ratelimit.mus-akdogan.workers.dev';
-const _loginAttempts = {}; // fallback local {identifier: [timestamps]}
-
-// Fenêtre fallback locale : 3 essais / 30 min (identique au serveur)
-const _LOCAL_WINDOW_MS = 30 * 60 * 1000;
-const _LOCAL_MAX_FAILS = 3;
-
-// Extrait l'email de l'identifier préfixé ("admin_foo@bar.com" → "foo@bar.com")
-function _emailFromId(id) {
-  return String(id || '').replace(/^(admin|chauffeur|client)_/, '').toLowerCase().trim();
-}
-
-// Appel sécurisé au Worker avec TIMEOUT 2 sec. Ne jette jamais : si le Worker
-// est lent, injoignable, ou renvoie n'importe quoi, on retourne null → login
-// procède normalement (fail-open). Essentiel pour ne JAMAIS bloquer un vrai
-// utilisateur à cause d'un souci réseau.
-async function _ratelimitCall(path, email) {
-  if (!email) return null;
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 2000); // 2 sec max
-    const r = await fetch(LOGIN_RATELIMIT_URL + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-      signal: ctrl.signal,
-    }).catch(() => null);
-    clearTimeout(t);
-    if (!r) return null;
-    try {
-      return { status: r.status, body: await r.json() };
-    } catch (e) { return { status: r.status, body: null }; }
-  } catch (e) { return null; }
-}
-
-// Vérifie si on peut tenter un login.
-//   { blocked: true, waitSec, message }  → interdit
-//   { blocked: false, remaining }        → OK
-async function checkLoginRateLimit(identifier) {
-  try {
-    const email = _emailFromId(identifier);
-    if (!email) return { blocked: false };
-    // 1) Vérification serveur (source de vérité, mais ne bloque jamais en cas d'erreur)
-    const rep = await _ratelimitCall('/check', email);
-    if (rep && rep.body) {
-      if (rep.status === 429 && rep.body.blocked) {
-        return { blocked: true, waitSec: rep.body.retry_in_sec || 1800, message: rep.body.message };
-      }
-      if (rep.body.ok) return { blocked: false, remaining: rep.body.remaining };
-    }
-    // 2) Fallback local (Worker injoignable ou réponse invalide)
-    const now = Date.now();
-    if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
-    _loginAttempts[identifier] = _loginAttempts[identifier].filter(t => now - t < _LOCAL_WINDOW_MS);
-    if (_loginAttempts[identifier].length >= _LOCAL_MAX_FAILS) {
-      const waitSec = Math.ceil((_LOCAL_WINDOW_MS - (now - _loginAttempts[identifier][0])) / 1000);
-      const minutes = Math.ceil(waitSec / 60);
-      return { blocked: true, waitSec, message: `Trop de tentatives de connexion. Réessayez dans ${minutes} minute${minutes > 1 ? 's' : ''}.` };
-    }
-    return { blocked: false, remaining: _LOCAL_MAX_FAILS - _loginAttempts[identifier].length };
-  } catch (e) {
-    // En cas d'erreur inattendue, on laisse passer (fail-open)
-    console.warn('checkLoginRateLimit error, fail-open:', e);
-    return { blocked: false };
-  }
-}
-
-// Enregistre un échec de login. Retourne un avertissement si des essais
-// restent : { warning: "..." } ou blocage si c'était le dernier essai.
-async function recordLoginAttempt(identifier) {
-  try {
-    const email = _emailFromId(identifier);
-    // Compteur local (fallback)
-    if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
-    _loginAttempts[identifier].push(Date.now());
-    // Compteur serveur
-    if (!email) return {};
-    const rep = await _ratelimitCall('/fail', email);
-    if (rep && rep.body) {
-      if (rep.status === 429 && rep.body.blocked) {
-        return { blocked: true, waitSec: rep.body.retry_in_sec || 1800, message: rep.body.message };
-      }
-      if (rep.body.warning) return { warning: rep.body.warning, remaining: rep.body.remaining };
-    }
-  } catch (e) { console.warn('recordLoginAttempt error:', e); }
-  return {};
-}
-
-// Login réussi : efface le compteur côté serveur ET local. Fire-and-forget,
-// ne bloque jamais la connexion.
-function clearLoginAttempts(identifier) {
-  try {
-    const email = _emailFromId(identifier);
-    delete _loginAttempts[identifier];
-    if (!email) return;
-    // Fire-and-forget : on n'attend pas la réponse du Worker
-    _ratelimitCall('/success', email).catch(() => {});
-  } catch (e) {}
-}
+// TEMPORAIREMENT DÉSACTIVÉ pour isoler un problème de login du 7/11/2026.
+// Les 3 fonctions sont des no-ops qui retournent IMMÉDIATEMENT (ni await,
+// ni fetch, ni blocage). Le login retrouve son comportement d'avant.
+// Une fois le vrai problème identifié, on réactive avec le Worker.
+function checkLoginRateLimit(identifier) { return { blocked: false }; }
+function recordLoginAttempt(identifier)  { return {}; }
+function clearLoginAttempts(identifier)  { /* no-op */ }
 
 // ── LOG DES CONNEXIONS (succès + échecs) ──
 async function logSecurityEvent(type, details) {
