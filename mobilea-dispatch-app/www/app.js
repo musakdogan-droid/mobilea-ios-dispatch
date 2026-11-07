@@ -76,74 +76,91 @@ function _emailFromId(id) {
   return String(id || '').replace(/^(admin|chauffeur|client)_/, '').toLowerCase().trim();
 }
 
-// Vérifie en SERVEUR (Worker) si on peut tenter un login.
+// Appel sécurisé au Worker avec TIMEOUT 2 sec. Ne jette jamais : si le Worker
+// est lent, injoignable, ou renvoie n'importe quoi, on retourne null → login
+// procède normalement (fail-open). Essentiel pour ne JAMAIS bloquer un vrai
+// utilisateur à cause d'un souci réseau.
+async function _ratelimitCall(path, email) {
+  if (!email) return null;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 2000); // 2 sec max
+    const r = await fetch(LOGIN_RATELIMIT_URL + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+      signal: ctrl.signal,
+    }).catch(() => null);
+    clearTimeout(t);
+    if (!r) return null;
+    try {
+      return { status: r.status, body: await r.json() };
+    } catch (e) { return { status: r.status, body: null }; }
+  } catch (e) { return null; }
+}
+
+// Vérifie si on peut tenter un login.
 //   { blocked: true, waitSec, message }  → interdit
 //   { blocked: false, remaining }        → OK
 async function checkLoginRateLimit(identifier) {
-  const email = _emailFromId(identifier);
-  if (!email) return { blocked: false };
-  // 1) Vérification serveur (source de vérité)
   try {
-    const r = await fetch(LOGIN_RATELIMIT_URL + '/check', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-    const d = await r.json();
-    if (r.status === 429 && d && d.blocked) {
-      return { blocked: true, waitSec: d.retry_in_sec || 1800, message: d.message };
+    const email = _emailFromId(identifier);
+    if (!email) return { blocked: false };
+    // 1) Vérification serveur (source de vérité, mais ne bloque jamais en cas d'erreur)
+    const rep = await _ratelimitCall('/check', email);
+    if (rep && rep.body) {
+      if (rep.status === 429 && rep.body.blocked) {
+        return { blocked: true, waitSec: rep.body.retry_in_sec || 1800, message: rep.body.message };
+      }
+      if (rep.body.ok) return { blocked: false, remaining: rep.body.remaining };
     }
-    if (d && d.ok) return { blocked: false, remaining: d.remaining };
+    // 2) Fallback local (Worker injoignable ou réponse invalide)
+    const now = Date.now();
+    if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
+    _loginAttempts[identifier] = _loginAttempts[identifier].filter(t => now - t < _LOCAL_WINDOW_MS);
+    if (_loginAttempts[identifier].length >= _LOCAL_MAX_FAILS) {
+      const waitSec = Math.ceil((_LOCAL_WINDOW_MS - (now - _loginAttempts[identifier][0])) / 1000);
+      const minutes = Math.ceil(waitSec / 60);
+      return { blocked: true, waitSec, message: `Trop de tentatives de connexion. Réessayez dans ${minutes} minute${minutes > 1 ? 's' : ''}.` };
+    }
+    return { blocked: false, remaining: _LOCAL_MAX_FAILS - _loginAttempts[identifier].length };
   } catch (e) {
-    // Worker injoignable → on retombe sur le fallback local pour ne pas bloquer un vrai utilisateur
+    // En cas d'erreur inattendue, on laisse passer (fail-open)
+    console.warn('checkLoginRateLimit error, fail-open:', e);
+    return { blocked: false };
   }
-  // 2) Fallback local
-  const now = Date.now();
-  if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
-  _loginAttempts[identifier] = _loginAttempts[identifier].filter(t => now - t < _LOCAL_WINDOW_MS);
-  if (_loginAttempts[identifier].length >= _LOCAL_MAX_FAILS) {
-    const waitSec = Math.ceil((_LOCAL_WINDOW_MS - (now - _loginAttempts[identifier][0])) / 1000);
-    const minutes = Math.ceil(waitSec / 60);
-    return { blocked: true, waitSec, message: `Trop de tentatives de connexion. Réessayez dans ${minutes} minute${minutes > 1 ? 's' : ''}.` };
-  }
-  return { blocked: false, remaining: _LOCAL_MAX_FAILS - _loginAttempts[identifier].length };
 }
 
-// Enregistre un échec de login (côté Worker + fallback mémoire).
-// Retourne un avertissement si des essais restent : { warning: "..." }
+// Enregistre un échec de login. Retourne un avertissement si des essais
+// restent : { warning: "..." } ou blocage si c'était le dernier essai.
 async function recordLoginAttempt(identifier) {
-  const email = _emailFromId(identifier);
-  // Compteur local (fallback)
-  if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
-  _loginAttempts[identifier].push(Date.now());
-  // Compteur serveur
-  if (!email) return {};
   try {
-    const r = await fetch(LOGIN_RATELIMIT_URL + '/fail', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
-    const d = await r.json();
-    if (r.status === 429 && d && d.blocked) {
-      return { blocked: true, waitSec: d.retry_in_sec || 1800, message: d.message };
+    const email = _emailFromId(identifier);
+    // Compteur local (fallback)
+    if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
+    _loginAttempts[identifier].push(Date.now());
+    // Compteur serveur
+    if (!email) return {};
+    const rep = await _ratelimitCall('/fail', email);
+    if (rep && rep.body) {
+      if (rep.status === 429 && rep.body.blocked) {
+        return { blocked: true, waitSec: rep.body.retry_in_sec || 1800, message: rep.body.message };
+      }
+      if (rep.body.warning) return { warning: rep.body.warning, remaining: rep.body.remaining };
     }
-    if (d && d.warning) return { warning: d.warning, remaining: d.remaining };
-  } catch (e) {}
+  } catch (e) { console.warn('recordLoginAttempt error:', e); }
   return {};
 }
 
-// Login réussi : efface le compteur côté serveur ET local.
-async function clearLoginAttempts(identifier) {
-  const email = _emailFromId(identifier);
-  delete _loginAttempts[identifier];
-  if (!email) return;
+// Login réussi : efface le compteur côté serveur ET local. Fire-and-forget,
+// ne bloque jamais la connexion.
+function clearLoginAttempts(identifier) {
   try {
-    await fetch(LOGIN_RATELIMIT_URL + '/success', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    });
+    const email = _emailFromId(identifier);
+    delete _loginAttempts[identifier];
+    if (!email) return;
+    // Fire-and-forget : on n'attend pas la réponse du Worker
+    _ratelimitCall('/success', email).catch(() => {});
   } catch (e) {}
 }
 
