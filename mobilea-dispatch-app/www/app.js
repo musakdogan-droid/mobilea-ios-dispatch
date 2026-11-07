@@ -1843,9 +1843,7 @@ window.doAdminLogin = async function() {
       } else if(e.code === 'auth/too-many-requests') {
         err.textContent = 'Trop de tentatives. Réessayez plus tard.';
       } else {
-        // DIAGNOSTIC : affiche le code exact pour comprendre pourquoi ça plante
-        err.textContent = 'Erreur de connexion [' + (e.code || 'no-code') + '] ' + (e.message || '').substring(0,200);
-        if(window._diagShow) window._diagShow('LOGIN FAIL admin: ' + (e.code||'no-code') + ' | ' + (e.message||'').substring(0,200));
+        err.textContent = 'Erreur de connexion';
       }
       return;
     }
@@ -1982,9 +1980,7 @@ async function _doChauffeurLoginInner(err) {
     } else if(ex.code === 'auth/too-many-requests') {
       err.textContent = 'Trop de tentatives. Réessayez plus tard.';
     } else {
-      // DIAGNOSTIC : code exact pour comprendre pourquoi ça plante
-      err.textContent = 'Erreur de connexion [' + (ex.code || 'no-code') + '] ' + (ex.message || '').substring(0,200);
-      if(window._diagShow) window._diagShow('LOGIN FAIL chauffeur: ' + (ex.code||'no-code') + ' | ' + (ex.message||'').substring(0,200));
+      err.textContent = 'Erreur de connexion. Vérifiez vos identifiants.';
     }
     return;
   }
@@ -3709,31 +3705,32 @@ function _ccNormKey(name) {
 window._ccNormKey = _ccNormKey;
 
 // Construit la liste fusionnée des clients à colorer, dédupliquée via
-// _ccNormKey. Priorité d'affichage pour le libellé :
-//   1. Gestion client (D.clients) — nom propre saisi par l'admin
-//   2. Palette par défaut (hardcodée)
-//   3. Couleur personnalisée saisie manuellement dans cet écran
+// _ccNormKey.
+//
+// SOURCES AFFICHÉES dans l'éditeur Couleurs par client :
+//   1. Vrais clients de Gestion client (D.clients)           → source 'client'
+//   2. Couleurs personnalisées saisies ici (CUSTOM_CLIENT_COLORS)
+//      qui NE CORRESPONDENT PAS à un client (sinon la fiche l'emporte) → source 'custom'
+//
+// La palette hardcodée CLIENT_PALETTE ne figure PLUS dans cette liste :
+// elle sert uniquement de source de couleurs par défaut dans getClientInfo
+// (pour les courses dont le nom client matche une entrée de la palette).
+// Résultat : chaque ligne de la liste est supprimable, soit en retirant
+// la couleur custom, soit en supprimant la fiche Gestion client.
 function ccMergedList() {
   const byKey = new Map(); // normKey → { label, source, upper (clé d'origine) }
 
-  // Palette par défaut d'abord (source la plus faible)
-  Object.entries(CLIENT_PALETTE).forEach(([key, v]) => {
-    const k = _ccNormKey(key);
-    if (!k) return;
-    byKey.set(k, { label: v.label || key, source: 'palette', upper: String(key).toUpperCase() });
-  });
-
-  // Couleurs personnalisées (écrase la palette, mais pas D.clients)
+  // 1) Couleurs personnalisées (toutes conservées, même si elles ne matchent
+  //    pas un client — l'utilisateur les a ajoutées explicitement)
   Object.entries(CUSTOM_CLIENT_COLORS).forEach(([key, v]) => {
     const k = _ccNormKey(key);
     if (!k) return;
-    const prev = byKey.get(k);
-    // Garde le label du plus "humain" (avec espaces/accents) si on a mieux
     const label = v.label || key;
-    byKey.set(k, { label: (prev && prev.source === 'palette') ? label : (label || prev?.label), source: 'custom', upper: String(key).toUpperCase() });
+    byKey.set(k, { label, source: 'custom', upper: String(key).toUpperCase() });
   });
 
-  // ★ Vrais clients de Gestion client — priorité absolue sur le libellé
+  // 2) Vrais clients de Gestion client — écrase le libellé (priorité absolue
+  //    sur le nom propre saisi par l'admin)
   (D.clients || []).forEach(c => {
     if (c && c.nom) {
       const k = _ccNormKey(c.nom);
@@ -11327,32 +11324,26 @@ function renderMesCourses() {
 
     // Notes
     // ── APPELER LE CLIENT ─────────────────────────────────────────────────
-    // Bouton d'appel direct au client (+ SMS et WhatsApp), pour que le chauffeur
-    // puisse le joindre en cas de besoin. Numéro pris sur la course (c.tel), avec
-    // repli sur le téléphone passager.
-    const telClient = (telPassagerChauffeur(c) || '').toString().trim();
+    // Boutons d'appel direct (+ SMS et WhatsApp). S'il y a PLUSIEURS passagers
+    // avec un téléphone, les boutons ouvrent un sélecteur pour choisir qui
+    // appeler / contacter. S'il n'y a qu'un seul contact, lien direct comme avant.
+    const contactsCourse = _collectCourseContacts(c);
     let callBtn = '';
-    if(telClient) {
-      // Normalisation du numéro en format international propre (+33…), utilisé
-      // pour l'appel ET le SMS. Un numéro français "06 12 34 56 78" devient
-      // "+33612345678" ; un numéro déjà international ("+33…" ou "0033…") est
-      // conservé. Sans ça, le lien sms: échouait sur certains téléphones.
-      const digits = telClient.replace(/[^0-9+]/g,'');
-      let telIntl;
-      if(digits.startsWith('+')) {
-        telIntl = digits;
-      } else if(digits.startsWith('00')) {
-        telIntl = '+' + digits.slice(2);
-      } else if(digits.startsWith('0')) {
-        telIntl = '+33' + digits.slice(1);   // numéro français
-      } else {
-        telIntl = '+' + digits;
-      }
-      const waNum = telIntl.replace(/[^0-9]/g,'');   // WhatsApp : chiffres seuls
+    if(contactsCourse.length === 1) {
+      // Comportement classique : un seul numéro → liens directs
+      const t = _normalizeTelForContact(contactsCourse[0].tel);
       callBtn = '<div style="display:flex;gap:8px;margin-bottom:14px">'
-        + '<a href="tel:'+telIntl+'" style="flex:1;text-align:center;background:#22c55e;border-radius:10px;padding:12px;color:#fff;text-decoration:none;font-size:13px;font-weight:800;box-shadow:0 4px 12px rgba(34,197,94,0.3)">📞 Appeler client</a>'
-        + '<a href="sms:'+telIntl+'" style="flex:1;text-align:center;background:#2563eb;border-radius:10px;padding:12px;color:#fff;text-decoration:none;font-size:13px;font-weight:800">💬 SMS</a>'
-        + '<a href="https://wa.me/'+waNum+'" target="_blank" style="flex:1;text-align:center;background:#25d366;border-radius:10px;padding:12px;color:#fff;text-decoration:none;font-size:13px;font-weight:800">📱 WhatsApp</a>'
+        + '<a href="tel:'+t.tel+'" style="flex:1;text-align:center;background:#22c55e;border-radius:10px;padding:12px;color:#fff;text-decoration:none;font-size:13px;font-weight:800;box-shadow:0 4px 12px rgba(34,197,94,0.3)">📞 Appeler client</a>'
+        + '<a href="sms:'+t.tel+'" style="flex:1;text-align:center;background:#2563eb;border-radius:10px;padding:12px;color:#fff;text-decoration:none;font-size:13px;font-weight:800">💬 SMS</a>'
+        + '<a href="https://wa.me/'+t.wa+'" target="_blank" style="flex:1;text-align:center;background:#25d366;border-radius:10px;padding:12px;color:#fff;text-decoration:none;font-size:13px;font-weight:800">📱 WhatsApp</a>'
+        + '</div>';
+    } else if(contactsCourse.length > 1) {
+      // Plusieurs contacts : boutons qui ouvrent un sélecteur
+      const badge = ' <span style="background:rgba(255,255,255,0.3);border-radius:10px;padding:1px 6px;font-size:11px;font-weight:900">'+contactsCourse.length+'</span>';
+      callBtn = '<div style="display:flex;gap:8px;margin-bottom:14px">'
+        + '<button onclick="openContactChooser(\''+c._id+'\',\'call\')" style="flex:1;text-align:center;background:#22c55e;border:none;border-radius:10px;padding:12px;color:#fff;font-size:13px;font-weight:800;box-shadow:0 4px 12px rgba(34,197,94,0.3);cursor:pointer">📞 Appeler'+badge+'</button>'
+        + '<button onclick="openContactChooser(\''+c._id+'\',\'sms\')" style="flex:1;text-align:center;background:#2563eb;border:none;border-radius:10px;padding:12px;color:#fff;font-size:13px;font-weight:800;cursor:pointer">💬 SMS'+badge+'</button>'
+        + '<button onclick="openContactChooser(\''+c._id+'\',\'whatsapp\')" style="flex:1;text-align:center;background:#25d366;border:none;border-radius:10px;padding:12px;color:#fff;font-size:13px;font-weight:800;cursor:pointer">📱 WhatsApp'+badge+'</button>'
         + '</div>';
     }
 
@@ -13906,11 +13897,7 @@ window.doClientLogin = async function() {
     if(rec && rec.blocked) { err.textContent = rec.message || 'Trop de tentatives. Réessayez plus tard.'; return; }
     if(e.code==='auth/invalid-credential'||e.code==='auth/wrong-password'||e.code==='auth/user-not-found') err.textContent = (rec && rec.warning) ? ('Email ou mot de passe incorrect. ' + rec.warning) : 'Email ou mot de passe incorrect';
     else if(e.code==='auth/too-many-requests') err.textContent='Trop de tentatives. Réessayez plus tard.';
-    else {
-      // DIAGNOSTIC : code exact pour comprendre pourquoi ça plante
-      err.textContent = 'Erreur de connexion [' + (e.code||'no-code') + '] ' + (e.message||'').substring(0,200);
-      if(window._diagShow) window._diagShow('LOGIN FAIL client: ' + (e.code||'no-code') + ' | ' + (e.message||'').substring(0,200));
-    }
+    else err.textContent='Erreur de connexion. Vérifiez vos identifiants.';
     return;
   }
   clearLoginAttempts('client_'+email); // efface le compteur rate-limit
@@ -18205,6 +18192,128 @@ window.prixClientFinal = prixClientFinal;
 // (ex: Valoritel), le chauffeur ne doit PAS voir le nom de la société mais le
 // nom du PASSAGER réel qu'il transporte. On retourne donc le 1er passager
 // présent si la course en a un ; sinon on retombe sur le nom client.
+// ── SÉLECTEUR DE CONTACT (appel / SMS / WhatsApp) ─────────────────────
+// Quand une course a plusieurs passagers avec téléphone, le chauffeur peut
+// choisir qui appeler via un modal plutôt que d'être forcé sur le 1er pax.
+
+// Collecte tous les contacts téléphoniques disponibles pour une course :
+// le client principal (c.tel) + chaque passager avec un numéro. Déduplique
+// par numéro normalisé pour éviter les doublons client == passager1.
+function _collectCourseContacts(course) {
+  if(!course) return [];
+  healCoursePax(course);
+  const out = [];
+  // 1) Client principal (champ c.tel ou c.telPassager — numéro de réservation)
+  const telClient = (course.tel || course.telPassager || '').toString().trim();
+  if(telClient) {
+    out.push({
+      label: course.client || 'Client',
+      role: 'Client',
+      tel: telClient
+    });
+  }
+  // 2) Passagers avec téléphone
+  (course.passagers || []).forEach((p, i) => {
+    if(!p) return;
+    const t = (p.tel || '').trim();
+    if(!t) return;
+    const nom = ((p.prenom||'') + ' ' + (p.nom||'')).trim() || ('Passager ' + (i+1));
+    out.push({
+      label: nom,
+      role: 'Passager ' + (i+1) + (p.vol ? ' · vol ' + p.vol : ''),
+      tel: t
+    });
+  });
+  // 3) Dédup par numéro normalisé (pour ne pas lister 2x le même num)
+  const seen = new Set();
+  return out.filter(ct => {
+    const n = String(ct.tel).replace(/\D/g,'').replace(/^0033/,'33').replace(/^0/,'33');
+    if(seen.has(n)) return false;
+    seen.add(n);
+    return true;
+  });
+}
+
+// Normalise un numéro en format international +33… pour tel: / sms: / WhatsApp
+function _normalizeTelForContact(tel) {
+  const digits = String(tel||'').replace(/[^0-9+]/g,'');
+  if(!digits) return { tel:'', wa:'' };
+  let telIntl;
+  if(digits.startsWith('+'))        telIntl = digits;
+  else if(digits.startsWith('00'))  telIntl = '+' + digits.slice(2);
+  else if(digits.startsWith('0'))   telIntl = '+33' + digits.slice(1);
+  else                              telIntl = '+' + digits;
+  return { tel: telIntl, wa: telIntl.replace(/[^0-9]/g,'') };
+}
+
+// Ouvre le sélecteur de contact (appel / sms / whatsapp) pour la course.
+// action ∈ { 'call', 'sms', 'whatsapp' }
+window.openContactChooser = function(courseId, action) {
+  const c = (D.courses||[]).find(x => x._id === courseId);
+  if(!c) { showToast('Course introuvable', true); return; }
+  const contacts = _collectCourseContacts(c);
+  if(!contacts.length) { showToast('Aucun numéro disponible', true); return; }
+  // Si un seul contact malgré tout → raccourci direct
+  if(contacts.length === 1) {
+    const t = _normalizeTelForContact(contacts[0].tel);
+    if(action === 'call')          location.href = 'tel:' + t.tel;
+    else if(action === 'sms')      location.href = 'sms:' + t.tel;
+    else if(action === 'whatsapp') window.open('https://wa.me/' + t.wa, '_blank');
+    return;
+  }
+  const title = action === 'call' ? '📞 Appeler qui ?'
+              : action === 'sms'  ? '💬 Envoyer un SMS à qui ?'
+              :                     '📱 WhatsApp à qui ?';
+  const color = action === 'call' ? '#22c55e'
+              : action === 'sms'  ? '#2563eb'
+              :                     '#25d366';
+  const emoji = action === 'call' ? '📞'
+              : action === 'sms'  ? '💬'
+              :                     '📱';
+  // Supprimer un éventuel modal précédent
+  const old = document.getElementById('_contactChooser');
+  if(old) old.remove();
+  const modal = document.createElement('div');
+  modal.id = '_contactChooser';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:flex-end;justify-content:center;padding:0;animation:_ccFadeIn 0.2s ease-out';
+  if(!document.getElementById('_ccAnim')) {
+    const st = document.createElement('style');
+    st.id = '_ccAnim';
+    st.textContent = '@keyframes _ccFadeIn{from{opacity:0}to{opacity:1}}@keyframes _ccSlideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}';
+    document.head.appendChild(st);
+  }
+  const rows = contacts.map(ct => {
+    const t = _normalizeTelForContact(ct.tel);
+    let href, target = '';
+    if(action === 'call')          href = 'tel:' + t.tel;
+    else if(action === 'sms')      href = 'sms:' + t.tel;
+    else { href = 'https://wa.me/' + t.wa; target = ' target="_blank"'; }
+    return '<a href="' + href + '"' + target + ' onclick="setTimeout(function(){var m=document.getElementById(\'_contactChooser\');if(m)m.remove();},150)" '
+         + 'style="display:flex;align-items:center;gap:12px;padding:14px;margin-bottom:8px;background:#f8f9fb;border:1px solid #e5e7eb;border-radius:12px;text-decoration:none;color:#111">'
+      + '<div style="width:42px;height:42px;background:' + color + ';border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;flex-shrink:0">' + emoji + '</div>'
+      + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:14px;font-weight:700;color:#111;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + E(ct.label) + '</div>'
+        + '<div style="font-size:11px;color:#5f6368;margin-bottom:2px">' + E(ct.role) + '</div>'
+        + '<div style="font-size:13px;color:#111;font-weight:600;letter-spacing:0.3px">' + E(ct.tel) + '</div>'
+      + '</div>'
+      + '<div style="color:' + color + ';font-size:22px;font-weight:700">›</div>'
+    + '</a>';
+  }).join('');
+  modal.innerHTML = '<div style="background:#fff;border-radius:18px 18px 0 0;max-width:520px;width:100%;padding:18px 16px 28px;max-height:75vh;overflow-y:auto;box-shadow:0 -10px 40px rgba(0,0,0,0.25);animation:_ccSlideUp 0.25s ease-out">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">'
+      + '<div style="font-size:17px;font-weight:800;color:#111">' + title + '</div>'
+      + '<button onclick="document.getElementById(\'_contactChooser\').remove()" style="background:#f3f4f6;border:none;width:32px;height:32px;border-radius:50%;font-size:20px;cursor:pointer;color:#5f6368;line-height:1;padding:0">×</button>'
+    + '</div>'
+    + '<div style="font-size:12px;color:#5f6368;margin-bottom:12px">' + contacts.length + ' contact' + (contacts.length>1?'s':'') + ' disponible' + (contacts.length>1?'s':'') + ' sur cette course</div>'
+    + rows
+  + '</div>';
+  // Clic sur le fond noir → ferme
+  modal.addEventListener('click', function(e){
+    if(e.target === modal) modal.remove();
+  });
+  document.body.appendChild(modal);
+};
+
 function nomPassagerChauffeur(course) {
   healCoursePax(course); // auto-rattrapage des courses saisies avec l'ancien parser
   // 1) Tableau de passagers structuré (c.passagers)
