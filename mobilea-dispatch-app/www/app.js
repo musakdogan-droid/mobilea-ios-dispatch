@@ -17709,6 +17709,200 @@ window.refreshCarteChauffeurs = async function() {
     else ccMap.fitBounds(bounds, {padding:[50,50], maxZoom:14});
   }
   try { populateCcHistDrivers(); } catch(e){}
+  // ★ Mise à jour du panneau détail (stats + liste chauffeurs + actions)
+  try { _ccRenderDetailPanel(chauffeurs, D.courses, gpsTime, estPerimee); } catch(e){ console.warn('cc panel:', e); }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PANNEAU DÉTAIL CARTE CHAUFFEURS (stats + liste + filtres + actions rapides)
+// ═══════════════════════════════════════════════════════════════════════════
+// Injecté dynamiquement sous le bloc carte, met à jour à chaque refresh.
+// Pour chaque chauffeur : nom, véhicule, statut, course en cours, GPS âge,
+// boutons 📍 Centrer, 📞 Appeler, 💬 SMS, 📱 WhatsApp.
+function _ccRenderDetailPanel(chauffeurs, courses, gpsTime, estPerimee) {
+  const mapContainer = document.getElementById('cc-map-container');
+  if(!mapContainer) return;
+  let panel = document.getElementById('cc-detail-panel');
+  if(!panel) {
+    panel = document.createElement('div');
+    panel.id = 'cc-detail-panel';
+    panel.style.cssText = 'margin-top:14px;background:var(--card);border:1px solid var(--border);border-radius:var(--r);overflow:hidden';
+    panel.innerHTML = `
+      <div id="cc-stats-bar" style="display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--border)">
+        <div class="cc-stat" data-filter="all"       style="background:var(--card);padding:10px 8px;text-align:center;cursor:pointer;transition:background .15s">
+          <div style="font-size:18px;font-weight:800;color:var(--white)" id="cc-s-all">0</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">TOTAL</div>
+        </div>
+        <div class="cc-stat" data-filter="en_course" style="background:var(--card);padding:10px 8px;text-align:center;cursor:pointer;transition:background .15s">
+          <div style="font-size:18px;font-weight:800;color:#f0934a" id="cc-s-course">0</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">🚗 En course</div>
+        </div>
+        <div class="cc-stat" data-filter="dispo"     style="background:var(--card);padding:10px 8px;text-align:center;cursor:pointer;transition:background .15s">
+          <div style="font-size:18px;font-weight:800;color:#2ecc8a" id="cc-s-dispo">0</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">🟢 Dispo</div>
+        </div>
+        <div class="cc-stat" data-filter="indispo"   style="background:var(--card);padding:10px 8px;text-align:center;cursor:pointer;transition:background .15s">
+          <div style="font-size:18px;font-weight:800;color:#e74c3c" id="cc-s-indispo">0</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">🔴 Indispo</div>
+        </div>
+        <div class="cc-stat" data-filter="offline"   style="background:var(--card);padding:10px 8px;text-align:center;cursor:pointer;transition:background .15s">
+          <div style="font-size:18px;font-weight:800;color:#9ca3af" id="cc-s-offline">0</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">⚫ Hors ligne</div>
+        </div>
+      </div>
+      <div style="padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-top:1px solid var(--border);background:var(--card2)">
+        <input id="cc-search-drv" type="search" placeholder="🔎 Rechercher un chauffeur…" oninput="_ccRenderList()"
+          style="flex:1;min-width:180px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--dark);color:var(--white);font-size:13px">
+        <span id="cc-filter-label" style="font-size:11px;color:var(--muted);font-weight:600">Filtre : Tous</span>
+      </div>
+      <div id="cc-drv-list" style="max-height:520px;overflow-y:auto;padding:8px"></div>
+    `;
+    mapContainer.parentNode.insertBefore(panel, mapContainer.nextSibling);
+    // Click handlers sur les stats (filtre)
+    panel.querySelectorAll('.cc-stat').forEach(el => {
+      el.addEventListener('click', () => {
+        panel.querySelectorAll('.cc-stat').forEach(e => { e.style.background = 'var(--card)'; });
+        el.style.background = 'rgba(200,168,76,0.15)';
+        window._ccFilter = el.getAttribute('data-filter');
+        const labels = {all:'Tous', en_course:'En course', dispo:'Disponibles', indispo:'Indisponibles', offline:'Hors ligne'};
+        const fl = document.getElementById('cc-filter-label');
+        if(fl) fl.textContent = 'Filtre : ' + (labels[window._ccFilter] || 'Tous');
+        _ccRenderList();
+      });
+    });
+  }
+
+  // ── Calcul des stats ──
+  let nbCourse = 0, nbDispo = 0, nbIndispo = 0, nbOffline = 0;
+  const _coursesActives = ['acceptee','en_route','sur_place','onboard'];
+
+  const items = chauffeurs.map(c => {
+    const name = c.prenom + (c.nom ? ' ' + c.nom : '');
+    const course = courses.find(x =>
+      (x.chauffeur === name || x.chauffeurId === c._id) &&
+      _coursesActives.includes(x.statut)
+    );
+    const perime = estPerimee(c);
+    const hasGps = !!(c.gps && c.gps.lat);
+    let cat;
+    if(!hasGps || perime)             cat = 'offline';
+    else if(course)                   cat = 'en_course';
+    else if(c.statut === 'indisponible') cat = 'indispo';
+    else                              cat = 'dispo';
+
+    if(cat === 'en_course') nbCourse++;
+    else if(cat === 'dispo') nbDispo++;
+    else if(cat === 'indispo') nbIndispo++;
+    else if(cat === 'offline') nbOffline++;
+
+    return { c, name, course, perime, cat };
+  });
+
+  // Mise à jour des compteurs
+  const upd = (id, v) => { const e = document.getElementById(id); if(e) e.textContent = v; };
+  upd('cc-s-all', items.length);
+  upd('cc-s-course', nbCourse);
+  upd('cc-s-dispo', nbDispo);
+  upd('cc-s-indispo', nbIndispo);
+  upd('cc-s-offline', nbOffline);
+
+  // Stocker la liste pour le filtre
+  window._ccAllItems = items;
+  _ccRenderList();
+}
+
+// Rendu de la liste des chauffeurs (avec filtre + recherche)
+window._ccRenderList = function() {
+  const listEl = document.getElementById('cc-drv-list');
+  if(!listEl) return;
+  const items = window._ccAllItems || [];
+  const filter = window._ccFilter || 'all';
+  const q = (document.getElementById('cc-search-drv')?.value || '').trim().toLowerCase();
+
+  const filtered = items.filter(it => {
+    if(filter !== 'all' && it.cat !== filter) return false;
+    if(q && !it.name.toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a, b) => {
+    // Tri : en course d'abord, puis dispo, puis indispo, puis offline
+    const order = {en_course:0, dispo:1, indispo:2, offline:3};
+    if(order[a.cat] !== order[b.cat]) return order[a.cat] - order[b.cat];
+    return a.name.localeCompare(b.name, 'fr');
+  });
+
+  if(!filtered.length) {
+    listEl.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted);font-size:13px">Aucun chauffeur dans ce filtre</div>';
+    return;
+  }
+
+  const vehEmoji = {berline:'🚗',van:'🚐',sprinter:'🚌',bus:'🚍',pmr:'♿',limousine:'🥂',classes:'🖤'};
+  const statusLabel = {en_course:'En course', dispo:'Disponible', indispo:'Indisponible', offline:'Hors ligne'};
+  const statusColor = {en_course:'#f0934a', dispo:'#2ecc8a', indispo:'#e74c3c', offline:'#9ca3af'};
+
+  listEl.innerHTML = filtered.map(it => {
+    const { c, name, course, cat } = it;
+    const vi = vehEmoji[c.vehicule] || '🚗';
+    const col = statusColor[cat];
+    const lbl = statusLabel[cat];
+    const gpsAge = (c.gps && c.gps.at) ? formatGpsAge(c.gps.at) : null;
+    const tel = (c.tel || '').trim();
+    const telDigits = tel.replace(/[^0-9+]/g, '');
+    let telIntl = '';
+    if(telDigits.startsWith('+')) telIntl = telDigits;
+    else if(telDigits.startsWith('00')) telIntl = '+' + telDigits.slice(2);
+    else if(telDigits.startsWith('0')) telIntl = '+33' + telDigits.slice(1);
+    else if(telDigits) telIntl = '+' + telDigits;
+    const waNum = telIntl.replace(/[^0-9]/g, '');
+
+    const centerBtn = (c.gps && c.gps.lat)
+      ? `<button onclick="_ccCenterOn('${c._id}', ${c.gps.lat}, ${c.gps.lng})" title="Centrer la carte" style="background:#3b82f6;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer">📍 Centrer</button>`
+      : '';
+    const telBtns = telIntl ? `
+      <a href="tel:${telIntl}" title="Appeler" style="background:#22c55e;color:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;text-decoration:none">📞</a>
+      <a href="sms:${telIntl}" title="SMS" style="background:#2563eb;color:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;text-decoration:none">💬</a>
+      <a href="https://wa.me/${waNum}" target="_blank" title="WhatsApp" style="background:#25d366;color:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;text-decoration:none">📱</a>
+    ` : '<span style="font-size:10px;color:var(--muted)">(pas de n°)</span>';
+
+    const courseHtml = course
+      ? `<div style="margin-top:6px;padding:6px 10px;background:rgba(240,147,74,0.1);border-left:3px solid #f0934a;border-radius:4px;font-size:11px;color:var(--white)">
+           ▶ <b>${E(course.client || '—')}</b> · ${E(course.depart || '')} → ${E(course.arrivee || '')}
+           ${course.datetime ? `<span style="color:var(--muted);margin-left:4px">· ${E(new Date(course.datetime).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}))}</span>` : ''}
+         </div>`
+      : '';
+
+    return `<div style="padding:10px 12px;margin-bottom:6px;background:var(--card2);border:1px solid var(--border);border-radius:8px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="flex:1;min-width:140px">
+          <div style="font-size:13px;font-weight:800;color:var(--white)">${vi} ${E(name)}</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap">
+            <span style="display:inline-block;width:8px;height:8px;background:${col};border-radius:50%"></span>
+            <span style="font-size:11px;color:${col};font-weight:700">${lbl}</span>
+            ${gpsAge ? `<span style="font-size:10px;color:${gpsAge.couleur};font-weight:600">· 📍 ${gpsAge.texte}</span>` : ''}
+            ${c.soc_nom ? `<span style="font-size:10px;color:var(--muted);font-weight:600">· ${E(c.soc_nom)}</span>` : ''}
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          ${centerBtn}
+          ${telBtns}
+        </div>
+      </div>
+      ${courseHtml}
+    </div>`;
+  }).join('');
+};
+
+// Centre la carte sur un chauffeur depuis la liste
+window._ccCenterOn = function(driverId, lat, lng) {
+  if(!ccMap) return;
+  ccMap.setView([lat, lng], 15, { animate: true });
+  ccMap._userMoved = true; // empêche fitBounds de re-zoomer
+  // Ouvre le popup du marker correspondant
+  if(ccMarkers[driverId]) {
+    try { ccMarkers[driverId].openPopup(); } catch(e){}
+  }
+  // Scroll vers la carte pour que l'utilisateur voie le résultat
+  const cont = document.getElementById('cc-map-container');
+  if(cont) cont.scrollIntoView({ behavior: 'smooth', block: 'center' });
 };
 
 // ★ TRACÉ GPS EN DIRECT — toggle on/off et clear ──────────────────────────
