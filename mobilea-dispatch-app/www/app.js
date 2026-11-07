@@ -7128,11 +7128,35 @@ async function monPointageDuJour() {
 
 const MSG_VERROU = 'Horaire déjà enregistré — contactez votre dispatch ou votre gérant pour le corriger';
 
+// Demande une heure au chauffeur (prompt natif iOS). Pré-remplit avec l'heure
+// actuelle, que le chauffeur peut garder ou modifier. Format attendu : HH:MM.
+// Retourne null si annulé ou format invalide.
+function _demanderHeure(titre) {
+  const defaut = heureMaintenant();
+  const saisi = prompt(titre + '\n\nFormat : HH:MM  (ex: 08:30)', defaut);
+  if(saisi === null) return null; // Annulé
+  const h = String(saisi).trim();
+  // Validation stricte HH:MM (00:00 → 23:59)
+  const m = h.match(/^(\d{1,2})[:h.](\d{2})$/);
+  if(!m) {
+    showToast('Heure invalide — format attendu HH:MM', true);
+    return null;
+  }
+  const hh = Number(m[1]), mm = Number(m[2]);
+  if(hh > 23 || mm > 59) {
+    showToast('Heure invalide (00:00 à 23:59)', true);
+    return null;
+  }
+  return String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+}
+
 window.pointerDebut = async function() {
   // VERROU : une heure de debut ne se saisit qu'une fois.
   const p = await monPointageDuJour();
   if(p && p.heureDebut) { showToast(MSG_VERROU, true); return; }
-  const h = heureMaintenant();
+  // Le chauffeur saisit son heure de début (pré-remplie avec l'heure actuelle)
+  const h = _demanderHeure('🚀 Heure de début de journée');
+  if(!h) return; // Annulé ou invalide
   if(await majMonPointage({ heureDebut: h })) {
     showToast('✓ Journée démarrée à ' + h);
     renderMaJournee();
@@ -7144,15 +7168,16 @@ window.pointerFin = async function() {
   if(p && p.heureFin) { showToast(MSG_VERROU, true); return; }
   // On ne peut pas terminer une journee qui n'a pas commence.
   if(!p || !p.heureDebut) { showToast('Enregistrez d\'abord votre heure de début', true); return; }
+  // Le chauffeur saisit son heure de fin (pré-remplie avec l'heure actuelle)
+  const h = _demanderHeure('🏁 Heure de fin de journée');
+  if(!h) return; // Annulé ou invalide
   // Confirmation en 2 temps pour terminer la journée.
-  if(!confirm('🏁 Êtes-vous sûr de vouloir terminer votre journée ?')) return;
+  if(!confirm('🏁 Terminer la journée à ' + h + ' ?')) return;
   // Cloturer une pause en cours avant de terminer.
   if(p.pauseEnCours) {
-    const finP = heureMaintenant();
-    const totalP = (p.pauseMinutes||0) + minutesEntre(p.pauseEnCours, finP);
+    const totalP = (p.pauseMinutes||0) + minutesEntre(p.pauseEnCours, h);
     await majMonPointage({ pauseMinutes: totalP, pauseEnCours: null });
   }
-  const h = heureMaintenant();
   if(await majMonPointage({ heureFin: h })) {
     showToast('👋 Bonne soirée ! Journée terminée à ' + h);
     renderMaJournee();
@@ -18275,7 +18300,10 @@ window.openContactChooser = function(courseId, action) {
   if(old) old.remove();
   const modal = document.createElement('div');
   modal.id = '_contactChooser';
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99999;display:flex;align-items:flex-end;justify-content:center;padding:0;animation:_ccFadeIn 0.2s ease-out';
+  // z-index MAX pour passer par-dessus la fiche réservation (z-index:650) et
+  // toute autre modal de l'app. Positionnement explicite (top/left/right/bottom)
+  // plutôt que `inset:0` pour éviter certains soucis de WKWebView iOS.
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:2147483647;display:flex;align-items:flex-end;justify-content:center;padding:0;animation:_ccFadeIn 0.2s ease-out';
   if(!document.getElementById('_ccAnim')) {
     const st = document.createElement('style');
     st.id = '_ccAnim';
@@ -18311,7 +18339,18 @@ window.openContactChooser = function(courseId, action) {
   modal.addEventListener('click', function(e){
     if(e.target === modal) modal.remove();
   });
+  // Append au body puis FORCE ré-ordre : le modal doit être le DERNIER enfant
+  // du body pour être au-dessus même si une fiche réservation plein-écran est
+  // déjà ouverte. En plus du z-index max, l'ordre DOM garantit la stacking.
   document.body.appendChild(modal);
+  // Safety : refocus sur le modal pour que les interactions tactiles aillent dessus
+  setTimeout(function(){
+    try {
+      if(modal.parentNode !== document.body) {
+        document.body.appendChild(modal);
+      }
+    } catch(e){}
+  }, 0);
 };
 
 function nomPassagerChauffeur(course) {
