@@ -59,13 +59,97 @@ function isValidPhone(tel) {
 }
 
 // ── RATE LIMITING CONNEXIONS ──
-// TEMPORAIREMENT DÉSACTIVÉ pour isoler un problème de login du 7/11/2026.
-// Les 3 fonctions sont des no-ops qui retournent IMMÉDIATEMENT (ni await,
-// ni fetch, ni blocage). Le login retrouve son comportement d'avant.
-// Une fois le vrai problème identifié, on réactive avec le Worker.
-function checkLoginRateLimit(identifier) { return { blocked: false }; }
-function recordLoginAttempt(identifier)  { return {}; }
-function clearLoginAttempts(identifier)  { /* no-op */ }
+// Protection contre les attaques par force brute : 3 essais ratés max par
+// (IP + email) dans une fenêtre glissante de 30 min. Le vrai compteur est
+// chez le Worker Cloudflare (mobilea-auth-ratelimit), donc impossible de
+// contourner en vidant le navigateur ou en changeant d'appareil.
+// Fail-open : si le Worker est injoignable ou lent (>2s), on bascule sur
+// un compteur local mémoire pour ne JAMAIS bloquer un utilisateur légitime.
+const LOGIN_RATELIMIT_URL = 'https://mobilea-auth-ratelimit.mus-akdogan.workers.dev';
+const _loginAttempts = {};
+const _LOCAL_WINDOW_MS = 30 * 60 * 1000;
+const _LOCAL_MAX_FAILS = 3;
+
+function _emailFromId(id) {
+  return String(id || '').replace(/^(admin|chauffeur|client)_/, '').toLowerCase().trim();
+}
+
+// Appel au Worker avec TIMEOUT 2 sec. Retourne null si lent/erreur/injoignable.
+async function _ratelimitCall(path, email) {
+  if (!email) return null;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 2000);
+    const r = await fetch(LOGIN_RATELIMIT_URL + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+      signal: ctrl.signal,
+    }).catch(() => null);
+    clearTimeout(t);
+    if (!r) return null;
+    try { return { status: r.status, body: await r.json() }; }
+    catch (e) { return { status: r.status, body: null }; }
+  } catch (e) { return null; }
+}
+
+// Vérifie si on peut tenter un login. Fail-open en cas d'erreur.
+async function checkLoginRateLimit(identifier) {
+  try {
+    const email = _emailFromId(identifier);
+    if (!email) return { blocked: false };
+    // 1) Vérification serveur (Worker Cloudflare)
+    const rep = await _ratelimitCall('/check', email);
+    if (rep && rep.body) {
+      if (rep.status === 429 && rep.body.blocked) {
+        return { blocked: true, waitSec: rep.body.retry_in_sec || 1800, message: rep.body.message };
+      }
+      if (rep.body.ok) return { blocked: false, remaining: rep.body.remaining };
+    }
+    // 2) Fallback local (Worker injoignable)
+    const now = Date.now();
+    if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
+    _loginAttempts[identifier] = _loginAttempts[identifier].filter(t => now - t < _LOCAL_WINDOW_MS);
+    if (_loginAttempts[identifier].length >= _LOCAL_MAX_FAILS) {
+      const waitSec = Math.ceil((_LOCAL_WINDOW_MS - (now - _loginAttempts[identifier][0])) / 1000);
+      const minutes = Math.ceil(waitSec / 60);
+      return { blocked: true, waitSec, message: `Trop de tentatives de connexion. Réessayez dans ${minutes} minute${minutes > 1 ? 's' : ''}.` };
+    }
+    return { blocked: false, remaining: _LOCAL_MAX_FAILS - _loginAttempts[identifier].length };
+  } catch (e) {
+    console.warn('checkLoginRateLimit error, fail-open:', e);
+    return { blocked: false };
+  }
+}
+
+// Enregistre un échec de login. Retourne un avertissement si des essais
+// restent ou un blocage si c'était le dernier.
+async function recordLoginAttempt(identifier) {
+  try {
+    const email = _emailFromId(identifier);
+    if (!_loginAttempts[identifier]) _loginAttempts[identifier] = [];
+    _loginAttempts[identifier].push(Date.now());
+    if (!email) return {};
+    const rep = await _ratelimitCall('/fail', email);
+    if (rep && rep.body) {
+      if (rep.status === 429 && rep.body.blocked) {
+        return { blocked: true, waitSec: rep.body.retry_in_sec || 1800, message: rep.body.message };
+      }
+      if (rep.body.warning) return { warning: rep.body.warning, remaining: rep.body.remaining };
+    }
+  } catch (e) { console.warn('recordLoginAttempt error:', e); }
+  return {};
+}
+
+// Login réussi : efface le compteur (fire-and-forget, non bloquant).
+function clearLoginAttempts(identifier) {
+  try {
+    const email = _emailFromId(identifier);
+    delete _loginAttempts[identifier];
+    if (!email) return;
+    _ratelimitCall('/success', email).catch(() => {});
+  } catch (e) {}
+}
 
 // ── LOG DES CONNEXIONS (succès + échecs) ──
 async function logSecurityEvent(type, details) {
