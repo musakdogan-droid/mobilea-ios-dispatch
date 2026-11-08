@@ -2461,6 +2461,23 @@ function startApp() {
       if(_stTries > 20) clearInterval(_stLink);
     }, 500);
   }
+  // ⭐ APP NATIVE CHAUFFEUR : même mécanisme pour les chauffeurs. Sans cet
+  // appel, le bridge natif (native-bridge.js) n'était jamais déclenché pour
+  // un chauffeur → iOS ne demandait JAMAIS la permission notifications et
+  // l'external_id OneSignal n'était jamais défini (device non abonné).
+  if(SESSION.role === 'chauffeur') {
+    window.SESSION = SESSION;
+    var _chTries = 0;
+    var _chLink = setInterval(function(){
+      _chTries++;
+      window.SESSION = SESSION;
+      if(typeof window.mobileaLinkPush === 'function') {
+        try { window.mobileaLinkPush(); } catch(e){}
+        clearInterval(_chLink);
+      }
+      if(_chTries > 20) clearInterval(_chLink);
+    }, 500);
+  }
   // Enregistrer le CLIENT (particulier) pour recevoir les notifications de SA
   // course (chauffeur assigné, en route, arrivé). Web push via l'app OneSignal
   // existante — on cible ensuite par external_id = identifiant client.
