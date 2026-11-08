@@ -2467,15 +2467,20 @@ function startApp() {
   // l'external_id OneSignal n'était jamais défini (device non abonné).
   if(SESSION.role === 'chauffeur') {
     window.SESSION = SESSION;
+    if(window._diagShow) window._diagShow('[APP] Chauffeur login — démarrage link OneSignal');
     var _chTries = 0;
     var _chLink = setInterval(function(){
       _chTries++;
       window.SESSION = SESSION;
       if(typeof window.mobileaLinkPush === 'function') {
-        try { window.mobileaLinkPush(); } catch(e){}
+        if(window._diagShow) window._diagShow('[APP] mobileaLinkPush trouvé (essai '+_chTries+'), appel...');
+        try { window.mobileaLinkPush(); } catch(e){ if(window._diagShow) window._diagShow('[APP] linkPush ERR: '+e.message); }
         clearInterval(_chLink);
       }
-      if(_chTries > 20) clearInterval(_chLink);
+      if(_chTries > 20) {
+        if(window._diagShow) window._diagShow('[APP] mobileaLinkPush INTROUVABLE après 10s — native-bridge.js ancien ?');
+        clearInterval(_chLink);
+      }
     }, 500);
   }
   // Enregistrer le CLIENT (particulier) pour recevoir les notifications de SA
