@@ -219,15 +219,41 @@
     try {
       diagShow("Plugin trouve : " + foundPath + "\nlogin=" + (typeof OS.login) + " setExternalUserId=" + (typeof OS.setExternalUserId));
 
-      // Demander la permission si pas encore donnee.
+      // ⭐ Demander la permission notification (version AWAIT + diag).
+      // AVANT : appel fire-and-forget → iOS pouvait ne pas avoir le temps
+      // de montrer le prompt avant le login/addTag. On attend maintenant
+      // la réponse utilisateur avant de continuer.
+      var permPromise = Promise.resolve(null);
       try {
         if (OS.Notifications && typeof OS.Notifications.requestPermission === "function") {
-          OS.Notifications.requestPermission(true);
+          permPromise = Promise.resolve(OS.Notifications.requestPermission(true))
+            .then(function(granted){
+              diagShow("Permission notif: " + (granted ? "✓ accordee" : "✗ refusee / deja repondu"));
+              return granted;
+            })
+            .catch(function(e){ diagShow("requestPermission ERR: " + String(e)); return null; });
         } else if (typeof OS.promptForPushNotificationsWithUserResponse === "function") {
-          OS.promptForPushNotificationsWithUserResponse(function(){});
+          permPromise = new Promise(function(resolve){
+            try {
+              OS.promptForPushNotificationsWithUserResponse(function(resp){
+                diagShow("Permission notif (v4): " + JSON.stringify(resp));
+                resolve(resp);
+              });
+            } catch(e){ diagShow("prompt v4 ERR: " + String(e)); resolve(null); }
+          });
+        } else {
+          diagShow("Aucune API requestPermission trouvee sur OS");
         }
-      } catch(e){}
+      } catch(e){ diagShow("requestPermission wrap ERR: " + String(e)); }
 
+      // Une fois la permission demandee (ou non), continuer avec le login.
+      permPromise.then(function(){ continueLink(OS); });
+    } catch(e){ diagShow("doLink ERR: " + String(e)); }
+  }
+
+  // Suite du linking APRES la demande de permission (login, tags, opt-in).
+  function continueLink(OS) {
+    try {
       var S = window.SESSION || null;
       if (!S) { diagShow("SESSION absent, abandon"); return; }
 
@@ -264,7 +290,18 @@
         }
       } catch(e){}
 
+      // ⭐ FORCE L'OPT-IN apres login.
+      // Sans ca, certains SDK OneSignal gardent la subscription desactivee
+      // meme apres que l'utilisateur ait accorde la permission iOS.
+      // Resultat : "All included players are not subscribed" cote Worker push.
+      try {
+        if (OS.User && OS.User.pushSubscription && typeof OS.User.pushSubscription.optIn === "function") {
+          OS.User.pushSubscription.optIn();
+          diagShow("pushSubscription.optIn() appele");
+        }
+      } catch(e){ diagShow("optIn ERR: " + String(e)); }
+
       diagShow("OneSignal lie\nAPI=" + called + "\nexternal_id=" + externalId + "\nrole=" + tagRole);
-    } catch(e){ diagShow("doLink ERR: " + String(e)); }
+    } catch(e){ diagShow("continueLink ERR: " + String(e)); }
   }
 })();
