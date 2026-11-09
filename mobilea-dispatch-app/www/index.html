@@ -450,19 +450,30 @@ tr:last-child td{border-bottom:none}
 .mc-carrousel{scrollbar-width:none}
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" media="print" onload="this.media='all'">
-<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 <script>
   // Marqueur de version — visible dans « Diagnostic » pour confirmer que l'app
   // (surtout l'app native) charge bien la DERNIÈRE version du code.
-  window.MOBILEA_BUILD = '2026-10-13-notif-diag';
-  window.OneSignalDeferred = window.OneSignalDeferred || [];
-  OneSignalDeferred.push(async function(OneSignal) {
-    await OneSignal.init({
-      appId: "85e71302-1646-456d-9db4-a1875bb7d25c",
-      safari_web_id: "web.onesignal.auto.064b44a8-1dd7-4e10-9d87-452ef5b9c9dd",
-      notifyButton: { enable: true },
+  window.MOBILEA_BUILD = '2026-11-09-notif-fix-apns';
+
+  // OneSignal Web SDK : charge UNIQUEMENT dans un vrai navigateur (pas dans
+  // l'app Capacitor iOS/Android, ou il peut entrer en conflit avec le plugin
+  // natif OneSignal Cordova pour le token APNs). L'app native (iOS/Android)
+  // utilise le plugin OneSignal Cordova configure dans capacitor.config.
+  var _isCapNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  if (!_isCapNative) {
+    var _osScript = document.createElement('script');
+    _osScript.src = 'https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js';
+    _osScript.defer = true;
+    document.head.appendChild(_osScript);
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    OneSignalDeferred.push(async function(OneSignal) {
+      await OneSignal.init({
+        appId: "85e71302-1646-456d-9db4-a1875bb7d25c",
+        safari_web_id: "web.onesignal.auto.064b44a8-1dd7-4e10-9d87-452ef5b9c9dd",
+        notifyButton: { enable: true },
+      });
     });
-  });
+  }
 </script>
 <!-- MOBILEA — Stripe.js -->
 <script src="https://js.stripe.com/v3/" defer></script>
