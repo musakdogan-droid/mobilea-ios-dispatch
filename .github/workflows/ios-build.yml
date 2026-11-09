@@ -15,8 +15,6 @@ jobs:
 
       - name: Trouver le dossier du projet Capacitor
         run: |
-          # Dispatch : on identifie le projet par son appId (fr.mobilea.dispatch),
-          # ce qui marche meme si le nom du dossier contient un espace.
           CFG=""
           while IFS= read -r f; do
             if grep -q "fr.mobilea.dispatch" "$f"; then CFG="$f"; break; fi
@@ -28,7 +26,6 @@ jobs:
           fi
           PROJ=$(dirname "$CFG")
           echo "Projet dispatch: $PROJ"
-          echo "Projet trouve dans : $PROJ"
           echo "PROJ_DIR=$PROJ" >> "$GITHUB_ENV"
 
       - name: Installer dependances + generer projet iOS
@@ -38,22 +35,17 @@ jobs:
           # IMPORTANT : `cap add ios` et `cap sync ios` lancent un `pod install`
           # AUTOMATIQUE. A ce stade le Podfile est encore en iOS 13/14 (defaut
           # Capacitor), alors qu'OneSignal 5.6.0 exige iOS 15 -> ce premier
-          # pod install echoue. On l'ignore avec `|| true` : le Podfile et les
-          # plugins Cordova sont quand meme generes. Le Podfile est passe en
-          # iOS 15 a l'etape suivante, et le vrai pod install a lieu plus bas
-          # (etape "Install CocoaPods"), cette fois avec succes.
+          # pod install echoue. On l'ignore avec `|| true`. Le vrai pod install
+          # a lieu plus bas.
           if [ ! -d "ios" ]; then
             npx cap add ios || true
           fi
           npx cap sync ios || true
 
       # ═══════════════════════════════════════════════════════════════
-      # ★★★ PATCH CRITIQUE : AppDelegate.swift avec methodes push ★★★
-      # Capacitor par defaut n'inclut PAS les methodes qui relaient le
-      # token APNs de iOS vers Capacitor PushNotifications. OneSignal
-      # Cordova fait son propre swizzling pour recuperer le token de son
-      # cote, donc Dispatch marche deja avec OneSignal. Mais ajouter ces
-      # methodes explicites rend l'app plus robuste et prepare un fallback
+      # Patch AppDelegate.swift pour push notifications
+      # OneSignal Cordova continue de fonctionner via son propre swizzling.
+      # Ces methodes explicites coexistent avec lui et prepare un fallback
       # au cas ou on retirerait OneSignal plus tard.
       # ═══════════════════════════════════════════════════════════════
       - name: Patch AppDelegate.swift pour push notifications
@@ -86,11 +78,7 @@ jobs:
                   return ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
               }
 
-              // ★★★ PUSH NOTIFICATIONS — relais obligatoire APNs -> Capacitor ★★★
-              // iOS appelle ces methodes quand APNs livre (ou refuse) le token.
-              // NotificationCenter transmet l'event au plugin Capacitor
-              // PushNotifications. OneSignal Cordova continue de fonctionner en
-              // parallele via son propre swizzling (les deux coexistent OK).
+              // Push notifications : relais iOS -> Capacitor (coexiste avec OneSignal)
               func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
                   NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications, object: deviceToken)
               }
@@ -100,12 +88,6 @@ jobs:
               }
           }
           SWIFT
-          echo "✓ AppDelegate.swift patche avec methodes push notifications"
-          if grep -q "didRegisterForRemoteNotificationsWithDeviceToken" AppDelegate.swift; then
-            echo "✓ didRegisterForRemoteNotificationsWithDeviceToken PRESENT"
-          else
-            echo "❌ ECHEC injection"; exit 1
-          fi
 
       - name: Config iOS (permissions + chiffrement + iOS 15)
         run: |
@@ -121,13 +103,10 @@ jobs:
           pb "Set :NSMicrophoneUsageDescription $MIC"              || pb "Add :NSMicrophoneUsageDescription string $MIC"
           pb "Set :NSCameraUsageDescription $CAM"                  || pb "Add :NSCameraUsageDescription string $CAM"
           pb "Set :ITSAppUsesNonExemptEncryption false"           || pb "Add :ITSAppUsesNonExemptEncryption bool false"
-          echo "Permissions + chiffrement configures."
           if [ -f "Podfile" ]; then
             sed -i '' -E "s/platform :ios, '[0-9.]+'/platform :ios, '15.0'/" Podfile || true
-            echo "Podfile -> $(grep 'platform :ios' Podfile)"
           fi
-          # --- Notifications push : entitlements + background mode + liaison projet ---
-          # 1) Fichier d'entitlements avec aps-environment (indispensable pour recevoir un jeton push).
+          # Entitlements APNs + liaison projet Xcode
           printf '%s\n' \
             '<?xml version="1.0" encoding="UTF-8"?>' \
             '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -138,40 +117,12 @@ jobs:
             '</dict>' \
             '</plist>' \
             > App/App.entitlements
-          echo "App.entitlements cree."
-          # 2) Background modes : reception push en arriere-plan (Dispatch n'a pas
-          #    besoin de suivi GPS en arriere-plan, seulement le push).
           pb "Delete :UIBackgroundModes" 2>/dev/null || true
           pb "Add :UIBackgroundModes array" || true
           pb "Add :UIBackgroundModes:0 string remote-notification" || true
-          # 3) Lier le fichier d'entitlements au projet Xcode (CODE_SIGN_ENTITLEMENTS)
-          #    pour toutes les configurations de la cible App.
           if ! grep -q "CODE_SIGN_ENTITLEMENTS" App.xcodeproj/project.pbxproj; then
             /usr/bin/sed -i '' -E 's/(PRODUCT_BUNDLE_IDENTIFIER = fr\.mobilea\.dispatch;)/CODE_SIGN_ENTITLEMENTS = App\/App.entitlements; \1/g' App.xcodeproj/project.pbxproj || true
-            echo "CODE_SIGN_ENTITLEMENTS injecte dans le projet."
-          else
-            echo "CODE_SIGN_ENTITLEMENTS deja present."
           fi
-
-      - name: DIAG - Verifier config APNs apres sync
-        run: |
-          cd "$PROJ_DIR/ios/App"
-          echo "════════════════════════════════════════════"
-          echo "DIAG : CONFIGURATION APNS"
-          echo "════════════════════════════════════════════"
-          echo ""
-          echo "=== AppDelegate.swift - methodes push ==="
-          if grep -q "didRegisterForRemoteNotificationsWithDeviceToken" App/AppDelegate.swift; then
-            echo "✓ didRegisterForRemoteNotificationsWithDeviceToken PRESENT"
-          else
-            echo "❌ didRegisterForRemoteNotificationsWithDeviceToken MANQUANT"
-          fi
-          echo ""
-          echo "=== App.entitlements ==="
-          cat App/App.entitlements || echo "❌ MANQUANT"
-          echo ""
-          echo "=== CODE_SIGN_ENTITLEMENTS ==="
-          grep -n "CODE_SIGN_ENTITLEMENTS" App.xcodeproj/project.pbxproj || echo "❌ PAS DE CODE_SIGN_ENTITLEMENTS"
 
       - name: Placer GoogleService-Info.plist (Firebase push)
         env:
@@ -180,9 +131,6 @@ jobs:
           cd "$PROJ_DIR"
           if [ -n "$GOOGLE_SERVICE_INFO_PLIST_BASE64" ]; then
             echo "$GOOGLE_SERVICE_INFO_PLIST_BASE64" | base64 --decode > ios/App/App/GoogleService-Info.plist
-            echo "plist installe."
-          else
-            echo "ATTENTION: secret GOOGLE_SERVICE_INFO_PLIST_BASE64 absent (notifications inactives pour ce build)."
           fi
 
       - name: Setup Ruby
@@ -194,9 +142,6 @@ jobs:
         run: |
           gem install cocoapods
           cd "$PROJ_DIR/ios/App"
-          # Le Podfile de Capacitor a deja un post_install. On INSERE nos reglages
-          # de signature juste apres sa ligne "post_install do |installer|"
-          # (un second hook post_install est interdit par CocoaPods).
           if ! grep -q "MOBILEA_NO_POD_SIGNING" Podfile; then
             HOOK=$(grep -n "post_install do" Podfile | head -1 | cut -d: -f1)
             if [ -n "$HOOK" ]; then
@@ -219,8 +164,6 @@ jobs:
               printf '\npost_install do |installer|\n  # MOBILEA_NO_POD_SIGNING\n  installer.pods_project.targets.each do |t|\n    t.build_configurations.each do |c|\n      c.build_settings["CODE_SIGNING_ALLOWED"] = "NO"\n      c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "15.0"\n    end\n  end\nend\n' >> Podfile
             fi
           fi
-          echo "----- Podfile final -----"
-          cat Podfile
           pod install || pod install --repo-update
 
       - name: Import Certificate
@@ -248,36 +191,22 @@ jobs:
       - name: Build Archive
         run: |
           cd "$PROJ_DIR/ios/App"
-
-          # Extraction fiable de l'UUID du profil (methode Apple : security cms + plutil).
-          # On desactive -e le temps de l'extraction pour ne pas casser le script si ca echoue.
           set +e
           UUID=$(security cms -D -i /tmp/profile.mobileprovision 2>/dev/null | plutil -extract UUID raw - 2>/dev/null)
           set -e
-          echo "UUID du profil trouve : [$UUID]"
-
           if [ -z "$UUID" ]; then
             echo "ERREUR : impossible d'extraire l'UUID du profil de provisioning."
-            echo "--- Contenu lisible du profil (debut) ---"
-            security cms -D -i /tmp/profile.mobileprovision 2>/dev/null | head -40 || true
             exit 1
           fi
-
-          # Versions uniques forcees ici (Apple refuse un build deja envoye).
           MARKETING="1.0.$GITHUB_RUN_NUMBER"
           BUILD="$GITHUB_RUN_NUMBER"
-          echo "Version marketing=$MARKETING  build=$BUILD"
-
-          # Filet de securite : forcer aussi directement dans Info.plist.
           PLIST="App/Info.plist"
           if [ -f "$PLIST" ]; then
             /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MARKETING" "$PLIST" 2>/dev/null || \
               /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $MARKETING" "$PLIST"
             /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" "$PLIST" 2>/dev/null || \
               /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD" "$PLIST"
-            echo "Info.plist -> $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST") / $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
           fi
-
           xcodebuild archive \
             -workspace "App.xcworkspace" \
             -scheme "App" \
@@ -345,23 +274,10 @@ jobs:
             printf '%s' "$API_KEY_RAW" | tr -d ' \r\n' | base64 -d > "$KEYFILE"
           fi
           chmod 600 "$KEYFILE"
-          # Diagnostic SANS fuite de secret (GitHub masque les valeurs) :
-          echo "Longueur Key ID : ${#KEY_ID_CLEAN} (attendu 10)"
-          echo "Longueur Issuer ID : ${#ISSUER_CLEAN} (attendu 36)"
-          if head -1 "$KEYFILE" | grep -q "BEGIN PRIVATE KEY"; then
-            echo ".p8 : OK (commence bien par BEGIN PRIVATE KEY)"
-          else
-            echo "ATTENTION : le .p8 ne commence PAS par BEGIN PRIVATE KEY — secret mal colle."
-          fi
           IPA="$(ls "$RUNNER_TEMP"/export/*.ipa)"
-          echo "Upload de : $IPA"
-          BID=$(unzip -p "$IPA" 'Payload/*.app/Info.plist' 2>/dev/null | plutil -extract CFBundleIdentifier raw - 2>/dev/null || echo '?')
-          echo "Bundle ID dans l'IPA : [$BID]  (attendu : fr.mobilea.dispatch)"
-          echo "===== Tentative d'upload (altool) ====="
-          UPLOAD_FAILED=0
-          xcrun altool --upload-app --file "$IPA" --type ios --apiKey "$KEY_ID_CLEAN" --apiIssuer "$ISSUER_CLEAN" || UPLOAD_FAILED=1
+          xcrun altool --upload-app \
+            --file "$IPA" \
+            --type ios \
+            --apiKey "$KEY_ID_CLEAN" \
+            --apiIssuer "$ISSUER_CLEAN"
           rm -f "$KEYFILE"
-          if [ "$UPLOAD_FAILED" = "1" ]; then
-            echo "altool a echoue"
-            exit 1
-          fi
