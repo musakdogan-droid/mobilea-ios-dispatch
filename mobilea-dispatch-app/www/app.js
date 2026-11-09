@@ -2467,18 +2467,15 @@ function startApp() {
   // l'external_id OneSignal n'était jamais défini (device non abonné).
   if(SESSION.role === 'chauffeur') {
     window.SESSION = SESSION;
-    if(window._diagShow) window._diagShow('[APP] Chauffeur login — démarrage link OneSignal');
     var _chTries = 0;
     var _chLink = setInterval(function(){
       _chTries++;
       window.SESSION = SESSION;
       if(typeof window.mobileaLinkPush === 'function') {
-        if(window._diagShow) window._diagShow('[APP] mobileaLinkPush trouvé (essai '+_chTries+'), appel...');
-        try { window.mobileaLinkPush(); } catch(e){ if(window._diagShow) window._diagShow('[APP] linkPush ERR: '+e.message); }
+        try { window.mobileaLinkPush(); } catch(e){ console.warn('[APP] linkPush error:', e); }
         clearInterval(_chLink);
       }
       if(_chTries > 20) {
-        if(window._diagShow) window._diagShow('[APP] mobileaLinkPush INTROUVABLE après 10s — native-bridge.js ancien ?');
         clearInterval(_chLink);
       }
     }, 500);
@@ -8357,26 +8354,61 @@ function renderClientGrid(clientName) {
     <button onclick="addCustomZone()" style="background:rgba(200,169,110,0.15);border:1px dashed var(--gold);border-radius:8px;color:var(--gold);padding:10px 20px;font-size:12px;font-weight:700;cursor:pointer">➕ Ajouter un trajet personnalisé</button>
   </td></tr>`;
 
-  // ★ NOUVELLE SECTION — Attente & majorations spécifiques au client
-  // Tous les champs sont vides par défaut : si un champ reste vide, le système
-  // tombe sur ses règles par défaut (franchise aéroport 45/15 min, etc.).
-  // Dès qu'un champ est rempli, il prend le dessus pour les courses de CE client.
+  // ★ SECTION — Attente & majorations spécifiques au client
+  // Les franchises sont déclinées par ACTEUR (client / chauffeur) et par TYPE
+  // DE LIEU (standard / gare / aéroport). Ex : client facture au bout de 20 min,
+  // mais le chauffeur ne nous facture qu'au bout de 30 min → différence absorbée.
+  // Détection auto : gare SI depart OU arrivée contient "gare du nord/est/lyon/
+  // chessy", aéroport SI "cdg/orly/beauvais/aéroport", sinon standard.
   const att = grid._attente || {};
+  // Helpers pour pré-remplir les nouveaux champs à partir des anciens si présents
+  const _fsc = att.frStdClient != null ? att.frStdClient : (att.franchiseMin != null ? att.franchiseMin : '');
+  const _fsh = att.frStdChauff != null ? att.frStdChauff : (att.franchiseMin != null ? att.franchiseMin : '');
+  const _fgc = att.frGareClient != null ? att.frGareClient : '';
+  const _fgh = att.frGareChauff != null ? att.frGareChauff : '';
+  const _fac = att.frAeroClient != null ? att.frAeroClient : (att.franchiseAeroMin != null ? att.franchiseAeroMin : '');
+  const _fah = att.frAeroChauff != null ? att.frAeroChauff : (att.franchiseAeroMin != null ? att.franchiseAeroMin : '');
   html += `<tr style="background:var(--card2)"><td colspan="5" style="padding:10px 8px;font-weight:700;color:var(--gold);font-size:11px;text-transform:uppercase;letter-spacing:1px">⏱️ Attente & majorations — spécifiques à ce client</td></tr>`;
   html += `<tr><td colspan="5" style="padding:14px 8px">
+
+    <!-- Tableau FRANCHISES par acteur et par type de lieu -->
+    <div style="margin-bottom:18px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;font-weight:700">
+        Franchises (minutes gratuites avant facturation)
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;background:var(--dark);border-radius:8px;overflow:hidden">
+        <thead>
+          <tr style="background:var(--card2)">
+            <th style="padding:10px 12px;text-align:left;color:var(--muted);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">Lieu (départ ou arrivée)</th>
+            <th style="padding:10px 8px;text-align:center;color:var(--muted);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;width:130px">👤 Client (min)</th>
+            <th style="padding:10px 8px;text-align:center;color:#16a34a;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;width:130px">🚕 Chauffeur (min)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:10px 12px;color:var(--white)">Standard <span style="color:var(--muted);font-size:10px">(adresse classique)</span></td>
+            <td style="padding:6px"><input type="number" id="cg-att-frStdClient" value="${_fsc}" placeholder="ex: 20" style="width:100%;text-align:center;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px"></td>
+            <td style="padding:6px"><input type="number" id="cg-att-frStdChauff" value="${_fsh}" placeholder="ex: 30" style="width:100%;text-align:center;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--green);font-size:12px"></td>
+          </tr>
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:10px 12px;color:var(--white)">🚉 Gare <span style="color:var(--muted);font-size:10px">(Nord, Est, Lyon, Chessy…)</span></td>
+            <td style="padding:6px"><input type="number" id="cg-att-frGareClient" value="${_fgc}" placeholder="ex: 20" style="width:100%;text-align:center;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px"></td>
+            <td style="padding:6px"><input type="number" id="cg-att-frGareChauff" value="${_fgh}" placeholder="ex: 30" style="width:100%;text-align:center;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--green);font-size:12px"></td>
+          </tr>
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:10px 12px;color:var(--white)">✈️ Aéroport <span style="color:var(--muted);font-size:10px">(CDG, Orly, Beauvais)</span></td>
+            <td style="padding:6px"><input type="number" id="cg-att-frAeroClient" value="${_fac}" placeholder="ex: 30" style="width:100%;text-align:center;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px"></td>
+            <td style="padding:6px"><input type="number" id="cg-att-frAeroChauff" value="${_fah}" placeholder="ex: 45" style="width:100%;text-align:center;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--green);font-size:12px"></td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">
+        💡 Exemple : <strong>client=20 / chauffeur=30</strong> → entre 20 et 30 min d'attente, on facture le client mais le chauffeur ne nous facture rien → marge nette. Ces franchises s'appliquent dès que le <strong>départ OU l'arrivée</strong> est détectée comme gare/aéroport.
+      </div>
+    </div>
+
+    <!-- Tarifs à la minute + majorations -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
-
-      <div>
-        <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Franchise standard (min)</label>
-        <input type="number" id="cg-att-franchiseMin" value="${att.franchiseMin||''}" placeholder="ex: 15" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px">
-        <div style="font-size:10px;color:var(--muted);margin-top:3px">Minutes gratuites avant facturation (hors aéroport)</div>
-      </div>
-
-      <div>
-        <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Franchise aéroport (min)</label>
-        <input type="number" id="cg-att-franchiseAeroMin" value="${att.franchiseAeroMin||''}" placeholder="ex: 45" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--white);font-size:12px">
-        <div style="font-size:10px;color:var(--muted);margin-top:3px">Minutes gratuites après atterrissage</div>
-      </div>
 
       <div>
         <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Tarif attente CLIENT (€/min)</label>
@@ -8412,7 +8444,7 @@ function renderClientGrid(clientName) {
 
     </div>
     <div style="margin-top:14px;padding:10px 12px;background:rgba(200,169,110,0.1);border-left:3px solid var(--gold);border-radius:4px;font-size:11px;color:var(--muted);line-height:1.5">
-      💡 <strong>Laissez vide</strong> pour utiliser les règles par défaut (franchise 15 min, 45 min aéroport, 30€/30min client, 24€/30min chauffeur, aucune majoration).<br>
+      💡 <strong>Laissez vide</strong> pour utiliser les règles par défaut (franchise standard 15/25 min, gare 20/30 min, aéroport 45/60 min, 30€/30min client, 24€/30min chauffeur, aucune majoration).<br>
       <strong>Remplissez</strong> pour appliquer un barème spécifique à ce client. Les valeurs renseignées remplacent entièrement la règle par défaut correspondante.
     </div>
   </td></tr>`;
@@ -8479,8 +8511,13 @@ function captureGridInputs() {
     return isNaN(n) ? '' : n;
   };
   const att = {};
-  const vFr = _valNum('cg-att-franchiseMin'); if (vFr !== '') att.franchiseMin = vFr;
-  const vFa = _valNum('cg-att-franchiseAeroMin'); if (vFa !== '') att.franchiseAeroMin = vFa;
+  // Franchises par acteur (client/chauffeur) et par type de lieu (standard/gare/aéroport)
+  const vFsc = _valNum('cg-att-frStdClient');   if (vFsc !== '') att.frStdClient   = vFsc;
+  const vFsh = _valNum('cg-att-frStdChauff');   if (vFsh !== '') att.frStdChauff   = vFsh;
+  const vFgc = _valNum('cg-att-frGareClient');  if (vFgc !== '') att.frGareClient  = vFgc;
+  const vFgh = _valNum('cg-att-frGareChauff');  if (vFgh !== '') att.frGareChauff  = vFgh;
+  const vFac = _valNum('cg-att-frAeroClient');  if (vFac !== '') att.frAeroClient  = vFac;
+  const vFah = _valNum('cg-att-frAeroChauff');  if (vFah !== '') att.frAeroChauff  = vFah;
   const vTc = _valNum('cg-att-tarifClient'); if (vTc !== '') att.tarifClient = vTc;
   const vTch = _valNum('cg-att-tarifChauffeur'); if (vTch !== '') att.tarifChauffeur = vTch;
   const vMn = _valNum('cg-att-majoNuitPct'); if (vMn !== '') att.majoNuitPct = vMn;
@@ -8492,8 +8529,16 @@ function captureGridInputs() {
   const wkSun = document.getElementById('cg-att-weekSun');
   if (wkSat) att.weekSat = !!wkSat.checked;
   if (wkSun) att.weekSun = !!wkSun.checked;
-  // Ne stocke le bloc que si au moins un champ non vide (sinon on garde vide)
-  if (Object.keys(att).length > 2 || att.franchiseMin !== undefined || att.tarifClient !== undefined || att.majoNuitPct !== undefined || att.majoWeekendPct !== undefined) {
+  // Ne stocke le bloc que si au moins une franchise ou un tarif ou une majo est renseignée
+  // (les 2 checkboxes week-end seules ne suffisent pas à créer un bloc).
+  const _hasSomeData = (
+    att.frStdClient !== undefined || att.frStdChauff !== undefined ||
+    att.frGareClient !== undefined || att.frGareChauff !== undefined ||
+    att.frAeroClient !== undefined || att.frAeroChauff !== undefined ||
+    att.tarifClient !== undefined || att.tarifChauffeur !== undefined ||
+    att.majoNuitPct !== undefined || att.majoWeekendPct !== undefined
+  );
+  if (_hasSomeData) {
     grid._attente = att;
   } else {
     delete grid._attente;
@@ -18345,29 +18390,63 @@ function calcWaitFees(course) {
   const fin = new Date(course.heureOnboard).getTime();
   const waitMin = Math.max(0, Math.round((fin - debut) / 60000));
 
-  // La franchise dépend du LIEU DE PRISE EN CHARGE (le DÉPART) : plus généreuse
-  // quand le chauffeur récupère le client À l'aéroport.
-  const dep = (course.depart || course.lieu || '').toLowerCase();
-  const departAeroport = course.recupAeroport === true ||
-                         dep.includes('cdg') || dep.includes('roissy') || dep.includes('orly') ||
-                         dep.includes('charles de gaulle') || dep.includes('aéroport') || dep.includes('aeroport') ||
-                         dep.includes('beauvais') || dep.includes('airport') || dep.includes('terminal');
+  // ★ DÉTECTION LIEU — on regarde départ ET arrivée. Si l'un des deux est
+  // aéroport/gare, la franchise correspondante s'applique (aéroport prioritaire).
+  // Un override manuel course.typeLieu = 'standard'|'gare'|'aeroport' est aussi
+  // supporté s'il est défini dans la fiche course.
+  const dep = String(course.depart || course.lieu || '').toLowerCase();
+  const arr = String(course.arrivee || course.destination || '').toLowerCase();
+  const isAero = (s) => s.includes('cdg') || s.includes('roissy') || s.includes('orly') ||
+                        s.includes('charles de gaulle') || s.includes('aéroport') || s.includes('aeroport') ||
+                        s.includes('beauvais') || s.includes('airport') || s.includes('terminal');
+  const isGare = (s) => s.includes('gare du nord') || s.includes('gare de l\'est') || s.includes('gare de lyon') ||
+                        s.includes('gare de chessy') || s.includes('chessy marne') ||
+                        s.includes('gare montparnasse') || s.includes('gare saint-lazare') ||
+                        s.includes('gare austerlitz') || s.includes('gare d\'austerlitz') ||
+                        /\bgare\s/.test(s);
+  let typeLieu = String(course.typeLieu || '').toLowerCase();
+  if (!['standard','gare','aeroport'].includes(typeLieu)) {
+    const aeroDetect = course.recupAeroport === true || isAero(dep) || isAero(arr);
+    const gareDetect = isGare(dep) || isGare(arr);
+    typeLieu = aeroDetect ? 'aeroport' : (gareDetect ? 'gare' : 'standard');
+  }
+  const departAeroport = (typeLieu === 'aeroport'); // conservé pour compat affichage
+  const departGare = (typeLieu === 'gare');
 
-  // ★ Récupération des paramètres SPÉCIFIQUES à ce client (via grille tarifaire).
-  // Si un champ est vide → fallback sur la règle par défaut historique.
+  // ★ Paramètres SPÉCIFIQUES à ce client (via grille tarifaire).
+  // Chaque champ vide → fallback sur la règle par défaut historique.
   const att = getClientAttenteParams(course.client);
 
-  // Franchises
-  const defaultFreeStd = 15, defaultFreeAero = 45, defaultFreeStdCh = 25, defaultFreeAeroCh = 60;
-  const clientFreeMin = departAeroport
-    ? (att.franchiseAeroMin != null ? att.franchiseAeroMin : defaultFreeAero)
-    : (att.franchiseMin != null ? att.franchiseMin : defaultFreeStd);
-  // Pour le chauffeur : on applique la même franchise que celle fixée pour le
-  // client (si configurée), sinon on garde l'ancienne règle (franchise plus
-  // longue côté chauffeur).
-  const chauffeurFreeMin = departAeroport
-    ? (att.franchiseAeroMin != null ? att.franchiseAeroMin : defaultFreeAeroCh)
-    : (att.franchiseMin != null ? att.franchiseMin : defaultFreeStdCh);
+  // Défauts historiques (si le client n'a rien configuré)
+  const DEF = {
+    frStdClient: 15,  frStdChauff: 25,
+    frGareClient: 20, frGareChauff: 30,
+    frAeroClient: 45, frAeroChauff: 60,
+  };
+
+  // Franchise CLIENT selon type de lieu + fallback ancien schéma (franchiseMin / franchiseAeroMin)
+  let clientFreeMin;
+  if (typeLieu === 'aeroport') {
+    clientFreeMin = att.frAeroClient != null ? att.frAeroClient
+                   : (att.franchiseAeroMin != null ? att.franchiseAeroMin : DEF.frAeroClient);
+  } else if (typeLieu === 'gare') {
+    clientFreeMin = att.frGareClient != null ? att.frGareClient : DEF.frGareClient;
+  } else {
+    clientFreeMin = att.frStdClient != null ? att.frStdClient
+                   : (att.franchiseMin != null ? att.franchiseMin : DEF.frStdClient);
+  }
+
+  // Franchise CHAUFFEUR (indépendante de celle du client)
+  let chauffeurFreeMin;
+  if (typeLieu === 'aeroport') {
+    chauffeurFreeMin = att.frAeroChauff != null ? att.frAeroChauff
+                      : (att.franchiseAeroMin != null ? att.franchiseAeroMin : DEF.frAeroChauff);
+  } else if (typeLieu === 'gare') {
+    chauffeurFreeMin = att.frGareChauff != null ? att.frGareChauff : DEF.frGareChauff;
+  } else {
+    chauffeurFreeMin = att.frStdChauff != null ? att.frStdChauff
+                      : (att.franchiseMin != null ? att.franchiseMin : DEF.frStdChauff);
+  }
 
   // CLIENT : si tarif €/min défini → facturation à la minute, sinon tranches 30€/30min
   const clientBillableMin = Math.max(0, waitMin - clientFreeMin);
@@ -18391,7 +18470,7 @@ function calcWaitFees(course) {
     chauffeurFee = chauffeurTranches * 24;
   }
 
-  return { waitMin, clientFee, clientTranches, chauffeurFee, chauffeurTranches, clientFreeMin, chauffeurFreeMin, departAeroport };
+  return { waitMin, clientFee, clientTranches, chauffeurFee, chauffeurTranches, clientFreeMin, chauffeurFreeMin, departAeroport, departGare, typeLieu };
 }
 
 // ★ Récupère les paramètres d'attente & majorations spécifiques à un client.
