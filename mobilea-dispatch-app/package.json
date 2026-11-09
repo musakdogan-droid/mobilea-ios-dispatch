@@ -1,7 +1,7 @@
 {
-  "name": "mobilea-dispatch-app",
+  "name": "mobilea-driver-app",
   "version": "1.0.0",
-  "description": "MOBILEA Dispatch — application native (Capacitor)",
+  "description": "MOBILEA Driver — application native (Capacitor)",
   "private": true,
   "scripts": {
     "sync": "npx cap sync",
@@ -16,6 +16,8 @@
     "@capacitor/app": "^6.0.1",
     "@capacitor/splash-screen": "^6.0.2",
     "@capacitor/status-bar": "^6.0.1",
+    "@capacitor/geolocation": "^6.0.1",
+    "@capacitor-community/background-geolocation": "^1.2.26"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.1.2"
