@@ -10623,40 +10623,68 @@ window.renderGerantNouveau = async function(){
       D.chauffeurs = Object.keys(chObj||{}).map(function(k){ var v=chObj[k]; v._id=k; return v; });
     }
   } catch(e){}
+  // ★ Brancher l'affichage de la liste réseau MOBILEA au focus sur le champ de recherche.
+  // Permet de parcourir tout le réseau sans avoir à taper un nom.
+  try {
+    var _searchInput = document.getElementById('gn-autre-ch-search');
+    if(_searchInput && !_searchInput._focusHooked) {
+      _searchInput.addEventListener('focus', window.gnAutreChOnFocus);
+      _searchInput._focusHooked = true;
+    }
+  } catch(e){}
   gerantMajMarge();
 };
 
 // ★ RECHERCHE CHAUFFEUR RÉSEAU MOBILEA (dans le bloc "Nouveau transfert" du gérant)
 // Filtre tous les chauffeurs MOBILEA par nom, prénom ou téléphone.
+// Si le champ est vide → affiche TOUTE la liste (max 100) pour parcourir le réseau.
 window.gnAutreChSearch = function(q) {
   var drop = document.getElementById('gn-autre-ch-drop');
   if(!drop) return;
   var queryRaw = String(q||'').trim();
   var query = queryRaw.toLowerCase();
-  // Si vide → cacher le dropdown
-  if(!query) { drop.style.display = 'none'; drop.innerHTML = ''; return; }
   // Récupérer tous les chauffeurs MOBILEA (actifs, non bloqués, non archivés)
   var tous = (D.chauffeurs||[]).filter(function(ch){
     return !ch.archived && !ch.blocked;
   });
-  // Filtrer par nom / prenom / tel (on nettoie les espaces, +, tirets du tel)
-  var cleanTel = function(t){ return String(t||'').replace(/[\s+\-().]/g,''); };
-  var queryTel = cleanTel(queryRaw);
-  var res = tous.filter(function(ch){
-    var nom = ((ch.prenom||'') + ' ' + (ch.nom||'')).toLowerCase().trim();
-    var nomInv = ((ch.nom||'') + ' ' + (ch.prenom||'')).toLowerCase().trim();
-    var tel = cleanTel(ch.tel);
-    if(nom.indexOf(query) !== -1) return true;
-    if(nomInv.indexOf(query) !== -1) return true;
-    if(queryTel.length >= 3 && tel.indexOf(queryTel) !== -1) return true;
-    return false;
-  }).slice(0, 30);
+  // ★ Si vide → on affiche toute la liste (triée par nom) au lieu de cacher.
+  // Permet de parcourir le réseau MOBILEA sans avoir à connaître un nom.
+  var res;
+  if(!query) {
+    res = tous.slice().sort(function(a,b){
+      var na = ((a.prenom||'') + ' ' + (a.nom||'')).trim().toLowerCase();
+      var nb = ((b.prenom||'') + ' ' + (b.nom||'')).trim().toLowerCase();
+      return na.localeCompare(nb, 'fr');
+    }).slice(0, 100);
+  } else {
+    // Filtrer par nom / prenom / tel (on nettoie les espaces, +, tirets du tel)
+    var cleanTel = function(t){ return String(t||'').replace(/[\s+\-().]/g,''); };
+    var queryTel = cleanTel(queryRaw);
+    res = tous.filter(function(ch){
+      var nom = ((ch.prenom||'') + ' ' + (ch.nom||'')).toLowerCase().trim();
+      var nomInv = ((ch.nom||'') + ' ' + (ch.prenom||'')).toLowerCase().trim();
+      var tel = cleanTel(ch.tel);
+      if(nom.indexOf(query) !== -1) return true;
+      if(nomInv.indexOf(query) !== -1) return true;
+      if(queryTel.length >= 3 && tel.indexOf(queryTel) !== -1) return true;
+      return false;
+    }).slice(0, 30);
+  }
   if(!res.length) {
-    drop.innerHTML = '<div style="padding:12px 14px;font-size:13px;color:var(--muted)">Aucun chauffeur trouvé pour « ' + E(queryRaw) + ' »</div>';
+    drop.innerHTML = '<div style="padding:12px 14px;font-size:13px;color:var(--muted)">'+
+      (queryRaw ? 'Aucun chauffeur trouvé pour « ' + E(queryRaw) + ' »' : 'Aucun chauffeur dans le réseau MOBILEA') +
+      '</div>';
     drop.style.display = 'block';
     return;
   }
-  drop.innerHTML = res.map(function(ch){
+  // En-tête du nombre total quand on affiche la liste complète
+  var entete = '';
+  if(!query) {
+    entete = '<div style="padding:8px 14px;font-size:11px;color:var(--muted);background:var(--card2);border-bottom:1px solid var(--border);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">'+
+      '🚕 Réseau MOBILEA — '+res.length+' chauffeur'+(res.length>1?'s':'')+(tous.length>res.length?' (sur '+tous.length+')':'')+
+      '</div>';
+  }
+  drop.innerHTML = entete + res.map(function(ch){
     var nom = (ch.prenom||'') + ((ch.nom)?' '+ch.nom:'');
     var tel = ch.tel || '';
     var soc = ch.soc_nom ? ' · ' + E(ch.soc_nom) : '';
@@ -10669,6 +10697,13 @@ window.gnAutreChSearch = function(q) {
       + '</div>';
   }).join('');
   drop.style.display = 'block';
+};
+
+// ★ Au focus sur le champ de recherche réseau MOBILEA, afficher la liste complète.
+// Branché dynamiquement à chaque rendu de la page "gerant-nouveau" (le HTML du
+// champ est généré statiquement, on attache le handler ici).
+window.gnAutreChOnFocus = function() {
+  try { window.gnAutreChSearch(''); } catch(e){}
 };
 
 window.gnAutreChPick = function(id) {
@@ -11401,13 +11436,46 @@ function renderMesCourses() {
           const prixLine = (canSeePrix && c.prixChauffeur) ? '<div style="font-size:14px;font-weight:800;color:#16a34a;margin-top:4px">'+parseFloat(c.prixChauffeur).toFixed(0)+'€</div>' : '';
           const estPrio = c.statut === 'offre_prioritaire';
           const badgePrio = estPrio ? '<div style="display:inline-block;font-size:10px;font-weight:700;color:#b45309;background:rgba(245,158,11,0.15);padding:2px 8px;border-radius:8px;margin-bottom:6px">⭐ Offre prioritaire</div>' : '';
+          // ★ Nom du gérant / origine du transfert — important pour que le chauffeur
+          // sache qui lui propose le transfert (collègue d'un autre dispatch, pas MOBILEA).
+          let origineLine = '';
+          if (c.creePar === 'gerant') {
+            const nomGerant = (c.donneurOrdre && c.donneurOrdre.nom) || c.createdBy || c.ouvertePar || '';
+            const soc = c.soc_nom || (c.donneurOrdre && c.donneurOrdre.soc_nom) || '';
+            if (nomGerant) {
+              origineLine = '<div style="display:inline-block;font-size:10px;font-weight:700;color:#1e40af;background:rgba(37,99,235,0.1);padding:2px 8px;border-radius:8px;margin-bottom:6px;margin-left:4px">👔 Proposé par '+E(nomGerant)+(soc?' ('+E(soc)+')':'')+'</div>';
+            }
+          }
+          // ★ Boutons contact passager — numéro récupéré depuis passagers[0] ou tel direct
+          let contactBtns = '';
+          const paxTel = (c.passagers && c.passagers[0] && c.passagers[0].tel) || c.tel || '';
+          const paxNom = (c.passagers && c.passagers[0] && (c.passagers[0].prenom || c.passagers[0].nom))
+            ? ((c.passagers[0].prenom||'')+' '+(c.passagers[0].nom||'')).trim()
+            : (c.passager || c.client || '');
+          if (paxTel) {
+            const telNettoye = String(paxTel).replace(/[\s.()-]/g,'');
+            let telIntl = telNettoye;
+            if (telIntl.startsWith('00')) telIntl = '+' + telIntl.slice(2);
+            else if (telIntl.startsWith('0')) telIntl = '+33' + telIntl.slice(1);
+            else if (!telIntl.startsWith('+')) telIntl = '+' + telIntl;
+            const telWA = telIntl.replace(/[^0-9]/g,'');
+            contactBtns = '<div style="display:flex;gap:6px;margin-top:8px">'
+              + '<a href="tel:'+telIntl+'" onclick="event.stopPropagation()" style="flex:1;background:#22c55e;color:#fff;border-radius:8px;padding:8px;text-align:center;text-decoration:none;font-size:12px;font-weight:700">📞 Appeler</a>'
+              + '<a href="sms:'+telIntl+'" onclick="event.stopPropagation()" style="flex:1;background:#2563eb;color:#fff;border-radius:8px;padding:8px;text-align:center;text-decoration:none;font-size:12px;font-weight:700">💬 SMS</a>'
+              + '<a href="https://wa.me/'+telWA+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="flex:1;background:#25d366;color:#fff;border-radius:8px;padding:8px;text-align:center;text-decoration:none;font-size:12px;font-weight:700">📱 WhatsApp</a>'
+              + '</div>';
+          }
+          const paxLine = paxNom
+            ? '<div style="font-size:11px;color:#6b7280;margin-top:4px">👤 '+E(paxNom)+(paxTel?' · '+E(paxTel):'')+'</div>'
+            : '';
           return '<div style="background:linear-gradient(135deg,#fffbeb,#fef3c7);border:2px solid #f59e0b;border-radius:14px;padding:14px;margin-bottom:10px">'
-            + badgePrio
+            + badgePrio + origineLine
             + '<div style="font-size:12px;color:#92400e;font-weight:700">📅 '+dt+'</div>'
             + '<div style="font-size:14px;font-weight:700;color:#111;margin-top:6px">'+E(c.depart||c.lieu||'?')+'</div>'
             + '<div style="font-size:13px;color:#555;margin-top:2px">→ '+E(c.arrivee||'?')+'</div>'
             + (c.vehicule?'<div style="font-size:11px;color:#999;margin-top:4px">'+vI(c.vehicule)+(c.pax?' · '+c.pax+' pax':'')+'</div>':'')
-            + prixLine
+            + paxLine + prixLine
+            + contactBtns
             + '<button onclick="accepterOffreOuverte(\''+c._id+'\')" style="width:100%;margin-top:10px;background:#f59e0b;border:none;border-radius:10px;padding:12px;color:#fff;font-size:14px;font-weight:800;cursor:pointer">✋ Accepter ce transfert</button>'
             + '</div>';
         }).join('')
@@ -13018,9 +13086,10 @@ window.openConv = async function(convId, name, role) {
     if(existing) existing.remove();
   }
 
-  await loadMessages(convId);
-  // Démarrage du rafraîchissement temps réel (type WhatsApp) : toutes les 3 s
-  // tant que la conversation est ouverte — récupère nouveaux messages et accusés de lecture.
+  // ★ OPTI : ne pas BLOQUER sur le chargement des messages — on affiche l'UI
+  // immédiatement, le contenu se remplit dès qu'il arrive (quasi-instantané vu
+  // qu'on lit D.messages du listener). Évite le freeze au tap sur une conv.
+  loadMessages(convId).catch(e => console.warn('loadMessages:', e));
   startConvPolling(convId);
 };
 
@@ -13049,28 +13118,33 @@ let _convPollInterval = null;
 let _convLastMsgIds = '';
 
 async function loadMessages(convId) {
-  const allMsgs = await fbGet('messages');
-  // ★ PROTECTION ANTI-DISPARITION DES CONVERSATIONS :
-  // Si fbGet renvoie un tableau vide alors qu'on en avait, c'est probablement
-  // une erreur réseau silencieuse ou un token d'auth expiré (fréquent sur iOS
-  // quand l'app sort de la veille après 10-20 min). On garde l'ancien état
-  // plutôt que d'archiver toutes les conversations à tort.
-  if (Array.isArray(allMsgs) && allMsgs.length === 0
-      && Array.isArray(D.messages) && D.messages.length > 0) {
-    console.warn('[loadMessages] fbGet renvoie vide alors qu\'on avait des messages — on garde l\'ancien état');
-    // Déclencher une ré-authentification pour rattraper le coup
-    try {
-      if (typeof fbInvalidate === 'function') fbInvalidate('messages');
-      if (typeof getAuthToken === 'function') await getAuthToken(true);
-    } catch(e){}
-    // Ré-essayer une fois tout de suite avec un token frais
-    const retry = await fbGet('messages');
-    if (Array.isArray(retry) && retry.length > 0) {
-      D.messages = retry;
-    }
-    // Sinon on ne touche à rien (on garde D.messages précédent) et on repart
+  // ★ OPTI : si le listener temps réel est actif (startMessagesListener), on
+  // utilise directement le cache D.messages — zéro requête Firebase.
+  // Sinon seulement on refetch. Gain : rendu quasi-instantané, pas de freeze
+  // à chaque ouverture et à chaque polling.
+  let allMsgs;
+  if (_messagesListenerRef && Array.isArray(D.messages) && D.messages.length) {
+    allMsgs = D.messages;
   } else {
-    D.messages = allMsgs;
+    allMsgs = await fbGet('messages');
+    // Protection anti-disparition : si fbGet renvoie vide mais qu'on avait un cache,
+    // on retente avec un token frais, sinon on garde l'ancien état.
+    if (Array.isArray(allMsgs) && allMsgs.length === 0
+        && Array.isArray(D.messages) && D.messages.length > 0) {
+      try {
+        if (typeof fbInvalidate === 'function') fbInvalidate('messages');
+        if (typeof getAuthToken === 'function') await getAuthToken(true);
+      } catch(e){}
+      const retry = await fbGet('messages');
+      if (Array.isArray(retry) && retry.length > 0) {
+        D.messages = retry;
+        allMsgs = retry;
+      } else {
+        allMsgs = D.messages; // garde l'ancien plutôt que d'archiver à tort
+      }
+    } else {
+      D.messages = allMsgs;
+    }
   }
   const msgs = allMsgs.filter(m=>m.conv===convId).sort((a,b)=>new Date(a.at)-new Date(b.at));
   const box = document.getElementById('chat-messages');
@@ -13134,26 +13208,48 @@ async function loadMessages(convId) {
     box.scrollTop = box.scrollHeight;
   }
 
-  // Marquer comme lus les messages reçus (le destinataire verra tes ✓✓ bleu)
+  // ★ OPTI : marquer comme lus EN BATCH (une seule requête Firebase pour N messages).
+  // Avant : N appels fbUpdate séquentiels (1 message = 1 round-trip).
+  // Maintenant : un seul PATCH multi-path → 10× plus rapide pour 20 non-lus.
+  // Et surtout non-bloquant : on lance sans attendre.
   const nonLus = msgs.filter(m => !m.read && m.from && m.from !== SESSION.uid && m.from !== SESSION.name);
   if (nonLus.length) {
-    for (const m of nonLus) {
-      try { await fbUpdate('messages', m._id, { read: true, readAt: new Date().toISOString() }); } catch(e){}
-    }
+    (async () => {
+      try {
+        const nowIso = new Date().toISOString();
+        if (window.fbDB) {
+          const updates = {};
+          nonLus.forEach(m => {
+            updates['messages/' + m._id + '/read'] = true;
+            updates['messages/' + m._id + '/readAt'] = nowIso;
+          });
+          await window.fbDB.ref().update(updates);
+          // Mise à jour locale immédiate pour éviter un flicker au prochain rendu
+          nonLus.forEach(m => { m.read = true; m.readAt = nowIso; });
+        } else {
+          for (const m of nonLus) {
+            try { await fbUpdate('messages', m._id, { read: true, readAt: nowIso }); } catch(e){}
+          }
+        }
+      } catch(e){ console.warn('mark read batch:', e); }
+    })();
   }
 }
 
 function _capitalizeFirst(s){ return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
-// Rafraîchissement automatique du fil ouvert (type WhatsApp) : toutes les 3 s on
-// vérifie s'il y a de nouveaux messages ou des accusés de lecture à afficher.
-// S'arrête dès qu'on quitte la conversation (backToConvList) ou qu'on en ouvre une autre.
+// ★ OPTI : avec le listener Firebase actif (startMessagesListener), les
+// nouveaux messages arrivent AUTOMATIQUEMENT via .on('value') — pas besoin de
+// poller. On garde juste un filet de sécurité toutes les 20 s au cas où le
+// listener aurait été interrompu (session expirée, etc.).
 function startConvPolling(convId) {
   stopConvPolling();
   _convPollInterval = setInterval(async () => {
     if (!currentConv || currentConv !== convId) { stopConvPolling(); return; }
+    // Si le listener temps réel marche, rien à faire : il a déjà rafraîchi.
+    if (_messagesListenerRef) return;
     try { await loadMessages(convId); } catch(e){}
-  }, 3000);
+  }, 20000);
 }
 function stopConvPolling() {
   if (_convPollInterval) { clearInterval(_convPollInterval); _convPollInterval = null; }
@@ -13193,6 +13289,10 @@ window.sendMsg = async function() {
     displayName = 'MOBILEA Support';
   }
 
+  // ★ On stocke aussi fromExtId = l'external_id OneSignal de l'expéditeur.
+  // Ça permet aux réponses futures de notifier directement cette personne
+  // (plutôt que de broadcaster à tout le staff).
+  const myExtId = _getMyMsgExtId();
   await fbPush('messages', {
     conv: convId,
     text,
@@ -13200,6 +13300,7 @@ window.sendMsg = async function() {
     fromName: displayName,
     fromRole: SESSION.role,
     fromRealName: SESSION.name || '',   // nom réel de l'agent (usage interne)
+    fromExtId: myExtId || null,          // ★ identifiant push du sender
     clientName: SESSION.societe || SESSION.name,
     at: new Date().toISOString(),
     read: false
@@ -13207,36 +13308,119 @@ window.sendMsg = async function() {
   await loadMessages(convId);
 
   // ── NOTIFICATION CIBLÉE ────────────────────────────────────────────────
-  // Avant, la notification partait SANS cible : tout le monde (chauffeurs +
-  // staff) recevait le message de tout le monde. On cible maintenant le vrai
-  // destinataire du fil.
+  // Chaque fil a un vrai destinataire : un chauffeur précis, un dispatch
+  // précis, un client/partenaire précis. On notifie CETTE personne, pas tout
+  // le staff. En parallèle, si l'expéditeur est un chauffeur/client/partenaire,
+  // on notifie aussi le staff (tag) pour que n'importe quel dispatch voie
+  // arriver une demande en attente de réponse.
   try {
     const apercu = text.length > 120 ? text.slice(0,117) + '…' : text;
-    // ★ H : Détection message urgent — mots-clés critiques
     const txtLow = text.toLowerCase();
     const motsUrgence = ['urgent','probleme','problème','accident','panne','grave','police','blesse','blessé','ambulance','danger','agression','vol'];
     const estUrgent = motsUrgence.some(mot => txtLow.includes(mot));
-    if(SESSION.role === 'admin' || SESSION.role === 'dispatch') {
-      // Le staff répond : notifier UNIQUEMENT le chauffeur concerné par ce fil.
-      const m = convId.match(/^(?:support_drv_|drv_)(.+)$/);
-      if(m && m[1]) {
-        await sendPushNotification(`💬 MOBILEA Support`, apercu, null, [m[1]]);
-      }
-      // Fils client/partenaire : ces comptes ne sont pas abonnés au push,
-      // ils verront le message en ouvrant leur espace.
-    } else {
-      // Chauffeur, client ou partenaire écrit : notifier le staff (tag staff).
-      const qui = SESSION.name || SESSION.societe || 'Message';
-      if(estUrgent) {
-        // ★ H : message urgent — titre spécial pour sonnerie plus voyante
-        await sendPushNotification(`🚨 URGENT — ${E(qui)}`, '⚠️ ' + apercu + ' ⚠️', null, null, { key:'role', value:'staff' });
-        try { await addLog(`🚨 Message urgent de ${E(qui)} : « ${apercu} »`); } catch(e){}
-      } else {
-        await sendPushNotification(`💬 ${E(qui)}`, apercu, null, null, { key:'role', value:'staff' });
-      }
+    const qui = SESSION.name || SESSION.societe || 'Message';
+
+    // 1) Trouver le destinataire principal depuis convId
+    const cibles = _getMsgRecipientExtIds(convId);
+
+    // 2) Notifier le(s) destinataire(s)
+    const titreBase = (SESSION.role === 'admin' || SESSION.role === 'dispatch')
+      ? '💬 MOBILEA Support'
+      : (estUrgent ? `🚨 URGENT — ${E(qui)}` : `💬 ${E(qui)}`);
+    const corps = estUrgent ? ('⚠️ ' + apercu + ' ⚠️') : apercu;
+    if (cibles.length) {
+      await sendPushNotification(titreBase, corps, null, cibles);
+    }
+
+    // 3) Si c'est un non-staff qui écrit → notifier aussi le tag staff (dispatch
+    // + admin), pour que quelqu'un prenne la main même si le destinataire
+    // précis n'est pas en ligne.
+    if (SESSION.role !== 'admin' && SESSION.role !== 'dispatch') {
+      await sendPushNotification(titreBase, corps, null, null, { key:'role', value:'staff' });
+      if (estUrgent) { try { await addLog(`🚨 Message urgent de ${E(qui)} : « ${apercu} »`); } catch(e){} }
     }
   } catch(e) { console.warn('notif message:', e); }
 };
+
+// ──────────────────────────────────────────────────────────────────────────
+// Helpers notifications messagerie
+// ──────────────────────────────────────────────────────────────────────────
+
+// Retourne l'external_id OneSignal de la personne actuellement connectée.
+// Ce sera stocké sur chaque message qu'elle envoie (fromExtId), pour que les
+// réponses futures puissent la notifier directement.
+function _getMyMsgExtId() {
+  if (!SESSION) return null;
+  if (SESSION.role === 'chauffeur') return SESSION.chauffeurId || null;
+  if (SESSION.role === 'admin' || SESSION.role === 'dispatch') return 'staff_' + (SESSION.uid || SESSION.role);
+  if (SESSION.role === 'client' || SESSION.role === 'partenaire') return SESSION.clientUser || SESSION.email || null;
+  return null;
+}
+
+// Calcule les external_ids à notifier pour une conversation donnée.
+// Routage selon le préfixe du convId :
+//   - drv_X ou support_drv_X  → le chauffeur X
+//   - dsp_X                   → le dispatch X (via staff_<uid>)
+//   - client_X                → le client (external_id retrouvé via le dernier
+//                               message qu'il a écrit dans ce fil)
+//   - support_<key>           → l'expéditeur original (même méthode)
+//   - admin_support           → tous les staff (géré via le tag, pas ici)
+// Si aucune règle ne matche, retourne un tableau vide (pas de cible directe,
+// seulement le tag staff si applicable).
+function _getMsgRecipientExtIds(convId) {
+  if (!convId) return [];
+  const out = [];
+
+  // Fil chauffeur (support ou direct)
+  let m = convId.match(/^(?:support_drv_|drv_)(.+)$/);
+  if (m && m[1]) {
+    // Ne pas se notifier soi-même
+    const myId = _getMyMsgExtId();
+    if (m[1] !== myId) out.push(m[1]);
+    return out;
+  }
+
+  // Fil dispatch direct (dsp_<_id>)
+  m = convId.match(/^dsp_(.+)$/);
+  if (m && m[1]) {
+    const dsp = (D.dispatch_accounts || []).find(d => d._id === m[1]);
+    if (dsp && dsp.uid) {
+      const target = 'staff_' + dsp.uid;
+      const myId = _getMyMsgExtId();
+      if (target !== myId) out.push(target);
+    }
+    return out;
+  }
+
+  // Fil client (client_<key>) — on retrouve l'external_id réel via le
+  // dernier message écrit par le client (fromExtId stocké).
+  m = convId.match(/^client_(.+)$/);
+  if (m && m[1]) {
+    const dernierMsgClient = [...(D.messages || [])]
+      .reverse()
+      .find(mm => mm.conv === convId && mm.fromExtId && mm.fromRole !== 'admin' && mm.fromRole !== 'dispatch');
+    if (dernierMsgClient && dernierMsgClient.fromExtId) {
+      const myId = _getMyMsgExtId();
+      if (dernierMsgClient.fromExtId !== myId) out.push(dernierMsgClient.fromExtId);
+    }
+    return out;
+  }
+
+  // Fil support (support_<key>) — on notifie l'expéditeur original
+  m = convId.match(/^support_(?!drv_)(.+)$/);
+  if (m && m[1]) {
+    const dernierSender = [...(D.messages || [])]
+      .reverse()
+      .find(mm => mm.conv === convId && mm.fromExtId && mm.fromRole !== 'admin');
+    if (dernierSender && dernierSender.fromExtId) {
+      const myId = _getMyMsgExtId();
+      if (dernierSender.fromExtId !== myId) out.push(dernierSender.fromExtId);
+    }
+    return out;
+  }
+
+  return out;
+}
 
 // ── ATTRIBUTION AUTOMATIQUE DE SECOURS ──────────────────────────────────────
 // Si une demande client reste sans chauffeur assigné 1 minute après sa création
@@ -13277,15 +13461,24 @@ async function checkAutoDispatchFallback(courses) {
   }
 }
 
-// Refresh messages every 5 seconds when on messagerie page
+// ★ OPTI : filet de sécurité très lent (60 s). Le listener Firebase temps réel
+// (startMessagesListener) gère déjà toutes les mises à jour instantanément —
+// cette boucle ne sert qu'au cas où le listener aurait été interrompu.
+// Avant : fbGet('messages') toutes les 15 s (téléchargement COMPLET à chaque fois).
+// Maintenant : zéro fetch si le listener tourne, sinon un fetch toutes les 60 s.
 function startMsgRefresh() {
   if(msgRefreshInterval) return;
   msgRefreshInterval = setInterval(async()=>{
-    // La messagerie n'a pas besoin d'un rafraichissement a la seconde : 15 s
-    // suffisent largement, et rien du tout quand l'app est en arriere-plan.
     if(!cycleActif('msg', 120000)) return;
+    // Si le listener temps réel marche, il a déjà tout à jour → zéro requête.
+    if(_messagesListenerRef) {
+      const unread = (D.messages||[]).filter(m=>!m.read&&m.from!==SESSION.uid).length;
+      const nb = document.getElementById('nb-msg');
+      if(nb) nb.textContent = unread||'0';
+      return;
+    }
+    // Fallback : listener KO → on refetch
     if(currentConv) await loadMessages(currentConv);
-    // Update unread badge — garde l'ancien état si fbGet renvoie vide (pas d'archivage à tort)
     const allMsgs = await fbGet('messages');
     if (Array.isArray(allMsgs) && (allMsgs.length > 0 || !D.messages || D.messages.length === 0)) {
       D.messages = allMsgs;
@@ -13305,7 +13498,7 @@ function startMsgRefresh() {
         badge.style.display = unreadClient > 0 ? 'inline' : 'none';
       }
     }
-  }, 15000);
+  }, 60000);
 
   // Rafraîchir position chauffeur pour l'espace client (suivi temps réel)
   if(SESSION.role === 'client' && !window._clientGpsInterval) {
@@ -17347,12 +17540,24 @@ async function notifyOfferToDriver(courseId, chauffeurId, sendSms) {
   const course = allCourses.find(c=>c._id===courseId);
   const drv = allChauffeurs.find(c=>c._id===chauffeurId);
   if(!course || !drv) return;
+  // ★ Si c'est un gérant qui propose, on mentionne son nom dans le titre
+  // pour que le chauffeur identifie l'expéditeur.
+  let titrePush = '🚨 Course urgente à confirmer !';
+  if (course.creePar === 'gerant') {
+    const nomGer = (course.donneurOrdre && course.donneurOrdre.nom) || course.createdBy || '';
+    if (nomGer) titrePush = `🚨 ${nomGer} propose une course urgente`;
+  }
   await sendPushNotification(
-    '🚨 Course urgente à confirmer !',
+    titrePush,
     `${course.client||''} | ${course.depart||course.lieu||''} → ${course.arrivee||course.duree||''} — Répondez sous 60s`,
     'https://musakdogan-droid.github.io/Simplycab-',
     [chauffeurId]
   );
+  // SMS Twilio : uniquement pour les offres créées par admin/dispatch.
+  // Les gérants qui proposent à leur propre réseau n'envoient PAS de SMS auto
+  // (économies, et ils peuvent contacter directement si besoin).
+  if (course.creePar === 'gerant') return;
+
   // SMS : uniquement si demandé ET si ce chauffeur n'en a pas déjà reçu un pour
   // cette course (anti-spam).
   const alreadySmsed = course.offerSmsedIds || [];
