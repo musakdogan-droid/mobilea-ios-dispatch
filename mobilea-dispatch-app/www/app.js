@@ -14490,8 +14490,14 @@ window.doClientLogin = async function() {
   startApp();
 };
 
-// Basculer entre connexion et inscription client
+// Basculer entre connexion et inscription client.
+// ★ Pour les PARTENAIRES, l'inscription est désactivée : les comptes partenaire
+// sont créés manuellement par MOBILEA (sécurité + relation commerciale). Si on
+// est en mode partenaire, on force le panneau login et on affiche une note.
 window.clShowTab = function(tab) {
+  const estPartenaire = window._clientType === 'partner';
+  // Partenaire : ignore la demande "signup", on reste sur login
+  if (estPartenaire) tab = 'login';
   const isLogin = tab === 'login';
   document.getElementById('cl-panel-login').style.display = isLogin ? '' : 'none';
   document.getElementById('cl-panel-signup').style.display = isLogin ? 'none' : '';
@@ -14500,11 +14506,45 @@ window.clShowTab = function(tab) {
   const btnLogin = document.getElementById('cl-tab-login');
   const btnSignup = document.getElementById('cl-tab-signup');
   if(btnLogin){btnLogin.style.background=isLogin?'var(--gold)':'transparent';btnLogin.style.color=isLogin?'var(--black)':'var(--muted)';btnLogin.style.border=isLogin?'none':'1px solid var(--border)';}
-  if(btnSignup){btnSignup.style.background=isLogin?'transparent':'var(--gold)';btnSignup.style.color=isLogin?'var(--muted)':'var(--black)';btnSignup.style.border=isLogin?'1px solid var(--border)':'none';}
+  if(btnSignup){
+    if (estPartenaire) {
+      btnSignup.style.display = 'none'; // masquer complètement l'onglet "Créer un compte"
+    } else {
+      btnSignup.style.display = '';
+      btnSignup.style.background=isLogin?'transparent':'var(--gold)';
+      btnSignup.style.color=isLogin?'var(--muted)':'var(--black)';
+      btnSignup.style.border=isLogin?'1px solid var(--border)':'none';
+    }
+  }
+  // Note "contacter MOBILEA" affichée sous le formulaire de connexion partenaire
+  let note = document.getElementById('cl-partenaire-note');
+  if (estPartenaire) {
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'cl-partenaire-note';
+      note.style.cssText = 'margin-top:14px;padding:12px 14px;background:rgba(200,169,110,0.08);border-left:3px solid var(--gold);border-radius:6px;font-size:12px;color:var(--white);line-height:1.5';
+      note.innerHTML = '📝 <b>Nouveau partenaire ?</b><br>'
+        + 'La création d\'un compte partenaire se fait par MOBILEA directement. '
+        + 'Contactez-nous pour ouvrir votre accès : '
+        + '<a href="mailto:contact@mobilea.fr" style="color:var(--gold);text-decoration:underline">contact@mobilea.fr</a>.';
+      const panel = document.getElementById('cl-panel-login');
+      if (panel) panel.appendChild(note);
+    }
+  } else if (note) {
+    note.remove();
+  }
 };
 
-// Inscription client particulier avec email de vérification
+// Inscription client particulier avec email de vérification.
+// ★ Les PARTENAIRES ne peuvent pas s'auto-inscrire (compte créé manuellement
+// par MOBILEA). Si on tombe sur ce formulaire en mode partenaire, on refuse.
 window.doClientSignup = async function() {
+  if (window._clientType === 'partner') {
+    const err = document.getElementById('cl-err');
+    if (err) { err.style.color = ''; err.textContent = 'Inscription partenaire non disponible. Contactez MOBILEA pour ouvrir votre compte.'; }
+    try { window.clShowTab('login'); } catch(e){}
+    return;
+  }
   const prenom=(document.getElementById('cl-reg-prenom')?.value||'').trim();
   const nom=(document.getElementById('cl-reg-nom')?.value||'').trim();
   const tel=(document.getElementById('cl-reg-tel')?.value||'').trim();
