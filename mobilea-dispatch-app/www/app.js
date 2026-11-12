@@ -4393,6 +4393,8 @@ function renderAgenda() {
       <div class="drv-drop" id="drv-drop-agenda-drv"></div>
     </div>
     <button class="btn btn-p btn-sm" onclick="assignAgendaGroupe()"><i class="fas fa-user-check"></i> Assigner le groupe</button>
+    <button class="btn btn-sm" onclick="proposerGroupeAuxPrioritaires()" style="background:linear-gradient(135deg,#fef3c7,#fde68a);border:1px solid #d97706;color:#92400e;font-weight:700" title="Envoyer les courses sélectionnées aux chauffeurs ⭐ prioritaires">⭐ Prioritaires</button>
+    <button class="btn btn-sm" onclick="proposerGroupeATous()" style="background:linear-gradient(135deg,#fffbeb,#fef3c7);border:1px solid #f59e0b;color:#b45309;font-weight:700" title="Envoyer les courses sélectionnées à TOUS les chauffeurs — le premier qui accepte garde">🙋 À tous</button>
     <button class="btn btn-ghost btn-sm" onclick="clearAgendaSelection()"><i class="fas fa-times"></i> Annuler</button>
   </div>
   <!-- Légende + sélection tout -->
@@ -5191,6 +5193,32 @@ window.genererLienExterne = async function(id) {
   const arr = c.arrivee||'';
   const smsTxt = `Bonjour, course MOBILEA le ${d} : ${dep} vers ${arr}. Suivez et validez ici : ${lien}`;
 
+  // Si un chauffeur est assigné et qu'on a son numéro, on pré-remplit le destinataire.
+  // Format international nettoyé (sans espaces) requis par wa.me et sms:.
+  let telDest = '';
+  try {
+    if (c.chauffeur) {
+      const info = getChauffeurByName ? getChauffeurByName(c.chauffeur) : null;
+      if (info && info.tel) telDest = String(info.tel).replace(/[^0-9+]/g,'');
+    }
+  } catch(e){}
+
+  // iOS et Android ont des syntaxes SMS légèrement différentes :
+  //  - iOS 8+ :  sms:NUMERO&body=TEXTE        (pas de "?")
+  //  - Android : sms:NUMERO?body=TEXTE        (ou smsto:NUMERO?body=...)
+  // Syntaxe qui marche sur les deux : sms:NUMERO?body= (iOS tolère "?body=" depuis iOS 11).
+  // Sans numéro, iOS accepte "sms:?body=..." → l'utilisateur choisit le contact.
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent || '');
+  const smsSep = isIOS ? '&' : '?';
+  const smsUrl = telDest
+    ? `sms:${telDest}${smsSep}body=${encodeURIComponent(smsTxt)}`
+    : `sms:${smsSep}body=${encodeURIComponent(smsTxt)}`;
+  const waUrl = telDest
+    ? `https://wa.me/${telDest.replace(/^\+/,'')}?text=${encodeURIComponent(smsTxt)}`
+    : `https://wa.me/?text=${encodeURIComponent(smsTxt)}`;
+
+  const telInfo = telDest ? `<div style="font-size:12px;color:#166534;background:#dcfce7;padding:8px 10px;border-radius:6px;margin-bottom:10px">📱 Envoi direct à <strong>${E(c.chauffeur||'')}</strong> (${E(telDest)})</div>` : '';
+
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:20px';
   ov.innerHTML = `
@@ -5200,13 +5228,14 @@ window.genererLienExterne = async function(id) {
         <button onclick="this.closest('div[style*=fixed]').remove()" style="background:#f1f3f5;border:none;border-radius:50%;width:30px;height:30px;cursor:pointer">✕</button>
       </div>
       <div style="font-size:12px;color:#666;margin-bottom:6px">Course : ${E(dep)} → ${E(arr)}</div>
+      ${telInfo}
       <div style="background:#f8f9fa;border:1px solid #e8eaed;border-radius:10px;padding:10px;font-size:12px;color:#333;word-break:break-all;margin-bottom:14px">${E(lien)}</div>
       <div style="display:flex;flex-direction:column;gap:8px">
         <button onclick="navigator.clipboard.writeText('${lien.replace(/'/g,"\\'")}').then(()=>showToast('Lien copié ✓'))" style="width:100%;background:#111;border:none;border-radius:10px;padding:13px;color:#fff;font-size:14px;font-weight:700;cursor:pointer">📋 Copier le lien</button>
-        <a href="sms:?&body=${encodeURIComponent(smsTxt)}" style="display:block;text-align:center;width:100%;background:linear-gradient(135deg,#b8860b,#d4a933);border-radius:10px;padding:13px;color:#fff;font-size:14px;font-weight:700;text-decoration:none;box-sizing:border-box">💬 Envoyer par SMS</a>
-        <a href="https://wa.me/?text=${encodeURIComponent(smsTxt)}" target="_blank" style="display:block;text-align:center;width:100%;background:#25d366;border-radius:10px;padding:13px;color:#fff;font-size:14px;font-weight:700;text-decoration:none;box-sizing:border-box">📱 Envoyer par WhatsApp</a>
+        <a href="${smsUrl}" style="display:block;text-align:center;width:100%;background:linear-gradient(135deg,#b8860b,#d4a933);border-radius:10px;padding:13px;color:#fff;font-size:14px;font-weight:700;text-decoration:none;box-sizing:border-box">💬 Envoyer par SMS${telDest?' (direct)':''}</a>
+        <a href="${waUrl}" target="_blank" rel="noopener" style="display:block;text-align:center;width:100%;background:#25d366;border-radius:10px;padding:13px;color:#fff;font-size:14px;font-weight:700;text-decoration:none;box-sizing:border-box">📱 Envoyer par WhatsApp${telDest?' (direct)':''}</a>
       </div>
-      <div style="font-size:11px;color:#999;margin-top:14px;text-align:center">Le chauffeur saisira son nom et téléphone, puis suivra la course. Tout remonte ici automatiquement.</div>
+      <div style="font-size:11px;color:#999;margin-top:14px;text-align:center">Le lien ouvre l'app MOBILEA Driver si installée, sinon la page web de suivi. Le chauffeur saisit son nom et téléphone et tout remonte ici.</div>
     </div>`;
   document.body.appendChild(ov);
   ov.onclick = e => { if(e.target===ov) ov.remove(); };
@@ -14045,6 +14074,101 @@ window.assignAgendaGroupe = async function() {
   showToast(`${ids.length} course(s) assignées à ${drv} ✓`);
 };
 
+// ─── BULK : proposer les courses sélectionnées aux chauffeurs PRIORITAIRES ───
+// Comme proposerAuxPrioritaires mais pour un groupe de courses à la fois.
+// Le premier chauffeur prioritaire qui accepte CHAQUE course la garde.
+window.proposerGroupeAuxPrioritaires = async function() {
+  if(!SESSION || !['admin','dispatch'].includes(SESSION.role)) {
+    showToast('Réservé à l\'admin/dispatch', true); return;
+  }
+  const ids = [...document.querySelectorAll('.agenda-chk:checked')].map(c=>c.dataset.id);
+  if(!ids.length){ showToast('Sélectionner au moins une course',true); return; }
+  const prioritaires = (D.chauffeurs||[]).filter(ch => ch.prioritaire === true && !ch.archived && !ch.blocked);
+  if(prioritaires.length === 0) {
+    showToast('Aucun chauffeur prioritaire défini. Cochez ⭐ sur une fiche chauffeur.', true);
+    return;
+  }
+  // Filtrer les courses éligibles (non attribuées, non terminées, non annulées)
+  const eligibles = ids.map(id => D.courses.find(c => c._id === id)).filter(c => {
+    if(!c) return false;
+    if(c.chauffeur) return false;
+    if(['offre_prioritaire','offre_ouverte','terminee','payee','annulee'].includes(c.statut)) return false;
+    return true;
+  });
+  if(eligibles.length === 0) {
+    showToast('Aucune course éligible (déjà attribuées, déjà proposées ou terminées)', true);
+    return;
+  }
+  const noms = prioritaires.map(ch=>(ch.prenom||'')+(ch.nom?' '+ch.nom:'')).join(', ');
+  if(!confirm(`Proposer ${eligibles.length} transfert(s) à ${prioritaires.length} chauffeur(s) prioritaire(s) ?\n\n${noms}\n\nLe premier qui accepte CHAQUE course la garde. Ne s'ouvre PAS automatiquement aux autres.`)) return;
+  showToast(`Envoi à ${prioritaires.length} prioritaire(s)...`);
+  let ok = 0;
+  for(const c of eligibles) {
+    try {
+      await fbUpdate('courses', c._id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
+      ok++;
+    } catch(e) {}
+  }
+  await addLog(`⭐ ${ok} transfert(s) proposé(s) en groupe aux prioritaires (par ${SESSION.name})`);
+  try { await notifierOffreChauffeurs(eligibles, 'prio'); } catch(e){}
+  clearAgendaSelection();
+  await loadAll();
+  showToast(`⭐ ${ok} transfert(s) proposé(s) aux prioritaires ✓`);
+};
+
+// ─── BULK : proposer les courses sélectionnées à TOUS les chauffeurs ───
+// Comme ouvrirCourseATous mais pour un groupe de courses à la fois.
+// Si des prioritaires existent, les notifier d'abord ; sinon ouvrir à tous.
+window.proposerGroupeATous = async function() {
+  if(!SESSION || !['admin','dispatch'].includes(SESSION.role)) {
+    showToast('Réservé à l\'admin/dispatch', true); return;
+  }
+  const ids = [...document.querySelectorAll('.agenda-chk:checked')].map(c=>c.dataset.id);
+  if(!ids.length){ showToast('Sélectionner au moins une course',true); return; }
+  const eligibles = ids.map(id => D.courses.find(c => c._id === id)).filter(c => {
+    if(!c) return false;
+    if(c.chauffeur) return false;
+    if(['offre_prioritaire','offre_ouverte','terminee','payee','annulee'].includes(c.statut)) return false;
+    return true;
+  });
+  if(eligibles.length === 0) {
+    showToast('Aucune course éligible (déjà attribuées, déjà proposées ou terminées)', true);
+    return;
+  }
+  const prioritaires = (D.chauffeurs||[]).filter(ch => ch.prioritaire === true);
+  if(prioritaires.length > 0) {
+    if(!confirm(`Proposer ${eligibles.length} transfert(s) ?\n\nD'abord aux ${prioritaires.length} prioritaire(s), puis ouvert à TOUS si personne n'accepte dans ${DELAI_PRIORITAIRE_MIN} min.`)) return;
+    const expire = new Date(Date.now() + DELAI_PRIORITAIRE_MIN*60000).toISOString();
+    let ok = 0;
+    for(const c of eligibles) {
+      try {
+        await fbUpdate('courses', c._id, { statut:'offre_prioritaire', chauffeur:'', offerChauffeurId:null, prioritaireExpire:expire, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
+        ok++;
+      } catch(e) {}
+    }
+    await addLog(`⭐ ${ok} transfert(s) proposé(s) aux prioritaires en groupe (par ${SESSION.name})`);
+    try { await notifierOffreChauffeurs(eligibles, 'prio'); } catch(e){}
+    clearAgendaSelection();
+    await loadAll();
+    showToast(`⭐ ${ok} transfert(s) proposé(s) ✓`);
+  } else {
+    // Pas de prioritaires → directement ouvert à tous
+    if(!confirm(`Proposer ${eligibles.length} transfert(s) à TOUS les chauffeurs ?\n\nLe premier qui accepte chaque course la garde.`)) return;
+    let ok = 0;
+    for(const c of eligibles) {
+      try {
+        await fbUpdate('courses', c._id, { statut:'offre_ouverte', chauffeur:'', offerChauffeurId:null, ouverteLe:new Date().toISOString(), ouvertePar:SESSION.name });
+        ok++;
+      } catch(e) {}
+    }
+    await addLog(`🙋 ${ok} transfert(s) ouvert(s) à tous en groupe (par ${SESSION.name})`);
+    try { await notifierOffreChauffeurs(eligibles, 'tous'); } catch(e){}
+    clearAgendaSelection();
+    await loadAll();
+    showToast(`🙋 ${ok} transfert(s) proposé(s) à tous ✓`);
+  }
+};
+
 // ══════════════════════════════════════════
 // PORTAIL CLIENT
 // ══════════════════════════════════════════
@@ -17924,6 +18048,7 @@ window._ccRenderList = function() {
     const centerBtn = (c.gps && c.gps.lat)
       ? `<button onclick="_ccCenterOn('${c._id}', ${c.gps.lat}, ${c.gps.lng})" title="Centrer la carte" style="background:#3b82f6;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer">📍 Centrer</button>`
       : '';
+    const trajetsBtn = `<button onclick="openCarteTrajets('${c._id}')" title="Voir trajets et arrêts du jour" style="background:#8b5cf6;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer">🗺️ Trajets</button>`;
     const telBtns = telIntl ? `
       <a href="tel:${telIntl}" title="Appeler" style="background:#22c55e;color:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;text-decoration:none">📞</a>
       <a href="sms:${telIntl}" title="SMS" style="background:#2563eb;color:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;text-decoration:none">💬</a>
@@ -17950,12 +18075,394 @@ window._ccRenderList = function() {
         </div>
         <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
           ${centerBtn}
+          ${trajetsBtn}
           ${telBtns}
         </div>
       </div>
       ${courseHtml}
     </div>`;
   }).join('');
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// 🗺️ CARTE DÉTAILLÉE DES TRAJETS D'UN CHAUFFEUR SUR 1 JOURNÉE
+// Lit le trail GPS enregistré dans Firebase (gps_trails/{driverId}/{YYYYMMDD})
+// puis le segmente automatiquement :
+//   - un ARRÊT = GPS statique pendant ≥ 5 min (rayon < 80 m)
+//   - un TRAJET = tout mouvement continu entre 2 arrêts
+// Interface : modal plein écran avec carte Leaflet + carrousel en bas pour
+// naviguer entre trajets (boutons ← / → ou swipe gauche/droite).
+// ═══════════════════════════════════════════════════════════════════
+
+// Constantes de segmentation (seuils ajustables)
+const _CT_STOP_MIN_MS      = 5 * 60 * 1000;   // 5 min minimum pour un arrêt
+const _CT_STOP_RADIUS_KM   = 0.08;            // 80 m de rayon
+const _CT_MIN_TRIP_DIST_KM = 0.2;             // trajet < 200 m ignoré (bruit GPS)
+
+window._ctState = window._ctState || { driverId:null, date:null, points:[], trips:[], currentIndex:0 };
+
+// Formate une durée en secondes → "1 h 23 min" ou "7 min" ou "35 s"
+function _ctFormatDuration(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return s + ' s';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + ' min';
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return h + ' h' + (r ? ' ' + r + ' min' : '');
+}
+
+function _ctFormatHMS(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+
+// Calcule la distance totale (en km) d'un tableau de points {lat, lng}
+function _ctTotalDistance(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += distanceKm(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng);
+  }
+  return total;
+}
+
+// Segmente une liste chronologique de points GPS en trajets + arrêts.
+// Retourne un tableau alterné : [trip, stop, trip, stop, ...] avec type='trip'|'stop'.
+function _ctSegmentTrips(points) {
+  if (!points.length) return [];
+
+  const segments = [];
+  let currentPoints = [points[0]];
+  let stopCandidateStart = null;      // indice où un arrêt potentiel a commencé
+  let stopCandidateCenter = null;
+
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i];
+    const pTime = new Date(p.at).getTime();
+
+    if (stopCandidateCenter) {
+      // On est en train d'évaluer un arrêt potentiel
+      const dist = distanceKm(stopCandidateCenter.lat, stopCandidateCenter.lng, p.lat, p.lng);
+      if (dist <= _CT_STOP_RADIUS_KM) {
+        // Toujours dans le rayon → l'arrêt continue
+        const stopDuration = pTime - new Date(points[stopCandidateStart].at).getTime();
+        if (stopDuration >= _CT_STOP_MIN_MS) {
+          // ★ C'est un vrai arrêt : couper le trajet en cours ici
+          const tripPoints = currentPoints.slice();
+          const tripDist = _ctTotalDistance(tripPoints);
+          if (tripPoints.length >= 2 && tripDist >= _CT_MIN_TRIP_DIST_KM) {
+            segments.push({ type:'trip', points: tripPoints, start: tripPoints[0].at, end: tripPoints[tripPoints.length-1].at, distKm: tripDist });
+          }
+          // Attendre que le chauffeur reparte (sort du rayon)
+          let endIdx = i;
+          for (let j = i + 1; j < points.length; j++) {
+            const pj = points[j];
+            const dj = distanceKm(stopCandidateCenter.lat, stopCandidateCenter.lng, pj.lat, pj.lng);
+            if (dj > _CT_STOP_RADIUS_KM) break;
+            endIdx = j;
+          }
+          segments.push({
+            type: 'stop',
+            lat: stopCandidateCenter.lat, lng: stopCandidateCenter.lng,
+            start: points[stopCandidateStart].at,
+            end: points[endIdx].at,
+            durationMs: new Date(points[endIdx].at).getTime() - new Date(points[stopCandidateStart].at).getTime()
+          });
+          currentPoints = [points[endIdx]];
+          i = endIdx;
+          stopCandidateStart = null;
+          stopCandidateCenter = null;
+          continue;
+        }
+        // Pas encore 5 min → on attend
+      } else {
+        // Le chauffeur a bougé avant d'atteindre 5 min → l'arrêt était un faux positif
+        stopCandidateStart = null;
+        stopCandidateCenter = null;
+        currentPoints.push(p);
+        continue;
+      }
+    } else {
+      // Pas d'arrêt en cours — vérifie si un arrêt commence maintenant
+      const prev = points[i-1];
+      const ecoule = pTime - new Date(prev.at).getTime();
+      const d = distanceKm(prev.lat, prev.lng, p.lat, p.lng);
+      // Si point proche du précédent → possible début d'arrêt
+      if (d < _CT_STOP_RADIUS_KM && ecoule >= 30000) {
+        stopCandidateStart = i - 1;
+        stopCandidateCenter = { lat: prev.lat, lng: prev.lng };
+      }
+      currentPoints.push(p);
+    }
+  }
+
+  // Dernier trajet (pas suivi d'arrêt)
+  if (currentPoints.length >= 2) {
+    const d = _ctTotalDistance(currentPoints);
+    if (d >= _CT_MIN_TRIP_DIST_KM) {
+      segments.push({ type:'trip', points: currentPoints.slice(), start: currentPoints[0].at, end: currentPoints[currentPoints.length-1].at, distKm: d });
+    }
+  }
+
+  return segments;
+}
+
+// Classifie un trajet comme "Professionnel" (associé à une course du jour) ou "Privé"
+function _ctClassifyTrip(trip, driverName, driverId, courses) {
+  if (!courses || !courses.length) return { kind:'Privé', color:'#6b7280' };
+  const start = new Date(trip.start).getTime();
+  const end   = new Date(trip.end).getTime();
+  // Un trajet est "Professionnel" si on trouve une course du même chauffeur
+  // dont l'heure prévue ou l'heure sur place tombe dans la fenêtre.
+  const match = courses.find(c => {
+    if (c.chauffeur !== driverName && c.chauffeurId !== driverId) return false;
+    const refTs = c.heureOnboard ? new Date(c.heureOnboard).getTime()
+                 : c.heureSurPlace ? new Date(c.heureSurPlace).getTime()
+                 : c.datetime ? new Date(c.datetime).getTime() : null;
+    if (!refTs) return false;
+    return refTs >= start - 30*60*1000 && refTs <= end + 30*60*1000;
+  });
+  if (match) return { kind:'Professionnel', color:'#2563eb', course: match };
+  return { kind:'Privé', color:'#6b7280' };
+}
+
+// Charge le trail GPS d'un chauffeur pour un jour (AAAAMMJJ) depuis Firebase.
+// Retourne un tableau de {lat, lng, at} triés chronologiquement.
+async function _ctLoadTrail(driverId, dateStr) {
+  try {
+    const token = await getAuthToken();
+    const r = await fetch(`${FB_URL}/gps_trails/${driverId}/${dateStr}.json${authParam(token)}`);
+    if (!r.ok) return [];
+    const data = await r.json();
+    if (!data || typeof data !== 'object') return [];
+    const pts = Object.values(data).filter(p => p && p.lat != null && p.lng != null && p.at);
+    pts.sort((a,b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+    return pts;
+  } catch(e) {
+    console.warn('_ctLoadTrail:', e);
+    return [];
+  }
+}
+
+// Ouvre la modal plein écran avec carte + carrousel des trajets du jour.
+window.openCarteTrajets = async function(driverId, dateStr) {
+  const ch = (D.chauffeurs || []).find(x => x._id === driverId);
+  if (!ch) { showToast('Chauffeur introuvable', true); return; }
+  const chName = ch.prenom + (ch.nom ? ' ' + ch.nom : '');
+  const vehLabel = ch.vehicule ? ({berline:'Berline',van:'Van',sprinter:'Sprinter',bus:'Bus',pmr:'PMR',limousine:'Limousine',classes:'Classe S'}[ch.vehicule] || ch.vehicule) : '';
+  const immat = ch.immat || ch.immatriculation || '';
+
+  // Date par défaut : aujourd'hui (YYYYMMDD)
+  const now = new Date();
+  const p2 = n => String(n).padStart(2,'0');
+  const todayStr = '' + now.getFullYear() + p2(now.getMonth()+1) + p2(now.getDate());
+  dateStr = dateStr || todayStr;
+
+  // Assure que Leaflet est chargé (on réutilise le loader de la Carte chauffeurs)
+  if (!window.L) {
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.onload = () => openCarteTrajets(driverId, dateStr);
+    document.head.appendChild(script);
+    if (!document.querySelector('link[href*="leaflet@1.9.4"]')) {
+      const css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(css);
+    }
+    return;
+  }
+
+  // Overlay plein écran
+  const ov = document.createElement('div');
+  ov.id = 'ct-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:999999;background:#f3f4f6;display:flex;flex-direction:column';
+  ov.innerHTML = `
+    <div style="background:#6b7280;color:#fff;padding:14px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0">
+      <button onclick="document.getElementById('ct-overlay').remove()" style="background:none;border:none;color:#fff;font-size:22px;cursor:pointer;padding:0 6px">‹</button>
+      <div style="flex:1">
+        <div style="font-size:16px;font-weight:800">Trajets</div>
+        <div style="font-size:12px;opacity:0.85">${E(chName)}${immat?' · '+E(immat):''}${vehLabel?' · '+E(vehLabel):''}</div>
+      </div>
+      <input type="date" id="ct-date" value="${dateStr.slice(0,4)}-${dateStr.slice(4,6)}-${dateStr.slice(6,8)}"
+        onchange="openCarteTrajets('${driverId}', this.value.replace(/-/g,''))"
+        style="background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);border-radius:8px;padding:6px 10px;color:#fff;font-size:13px;font-weight:600">
+    </div>
+    <div id="ct-map" style="flex:1;min-height:200px;background:#e5e7eb"></div>
+    <div id="ct-panel" style="flex-shrink:0;background:#fff;border-top:1px solid #e5e7eb;padding:14px 16px;max-height:40vh;overflow-y:auto">
+      <div style="text-align:center;color:#9ca3af;padding:20px">⏳ Chargement du trail GPS…</div>
+    </div>
+  `;
+  document.body.appendChild(ov);
+
+  // Init map Leaflet
+  const map = window.L.map('ct-map', { zoomControl: true, attributionControl: false }).setView([48.86, 2.35], 10);
+  window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+  setTimeout(() => map.invalidateSize(), 100);
+
+  // Charge et segmente
+  const points = await _ctLoadTrail(driverId, dateStr);
+  if (!points.length) {
+    document.getElementById('ct-panel').innerHTML = `
+      <div style="text-align:center;padding:30px 20px;color:#6b7280">
+        <div style="font-size:30px;margin-bottom:8px">📭</div>
+        <div style="font-weight:700;color:#111;margin-bottom:4px">Aucun déplacement enregistré</div>
+        <div style="font-size:12px">Le chauffeur n'a pas de trace GPS pour cette journée.</div>
+      </div>`;
+    return;
+  }
+
+  const segments = _ctSegmentTrips(points);
+  const trips = segments.filter(s => s.type === 'trip');
+  const stops = segments.filter(s => s.type === 'stop');
+
+  window._ctState = { driverId, dateStr, points, segments, trips, stops, currentIndex: 0, map, layers: [] };
+
+  if (!trips.length) {
+    document.getElementById('ct-panel').innerHTML = `
+      <div style="text-align:center;padding:30px 20px;color:#6b7280">
+        <div style="font-size:30px;margin-bottom:8px">🅿️</div>
+        <div style="font-weight:700;color:#111;margin-bottom:4px">Pas de trajet exploitable</div>
+        <div style="font-size:12px">Points GPS reçus mais aucun déplacement > 200 m.</div>
+      </div>`;
+    // Affiche tout de même les points en bleu clair
+    if (points.length) {
+      window.L.polyline(points.map(p => [p.lat, p.lng]), { color:'#93c5fd', weight:3, opacity:0.6 }).addTo(map);
+      map.fitBounds(points.map(p => [p.lat, p.lng]), { padding:[30,30] });
+    }
+    return;
+  }
+
+  _ctRenderTrip(0);
+};
+
+// Affiche le trajet d'index donné sur la carte + panel du bas
+window._ctRenderTrip = function(idx) {
+  const st = window._ctState;
+  if (!st || !st.trips || !st.trips[idx]) return;
+  st.currentIndex = idx;
+  const trip = st.trips[idx];
+  const map = st.map;
+
+  // Nettoie les layers précédents
+  (st.layers || []).forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  st.layers = [];
+
+  // Trace le trajet actuel en bleu épais
+  const latlngs = trip.points.map(p => [p.lat, p.lng]);
+  const poly = window.L.polyline(latlngs, { color:'#2563eb', weight:5, opacity:0.95 }).addTo(map);
+  st.layers.push(poly);
+
+  // Marqueurs début (vert) / fin (damier)
+  const startIcon = window.L.divIcon({ className:'', html:'<div style="width:22px;height:22px;background:#16a34a;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.3)"></div>', iconSize:[22,22], iconAnchor:[11,11] });
+  const endIcon   = window.L.divIcon({ className:'', html:'<div style="width:22px;height:22px;background:#111;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px">🏁</div>', iconSize:[22,22], iconAnchor:[11,11] });
+  const start = window.L.marker(latlngs[0], { icon:startIcon }).addTo(map);
+  const end   = window.L.marker(latlngs[latlngs.length-1], { icon:endIcon }).addTo(map);
+  st.layers.push(start, end);
+
+  // Affiche TOUS les arrêts (points jaunes) pour voir le contexte
+  (st.stops || []).forEach(stop => {
+    const stopIcon = window.L.divIcon({ className:'', html:'<div style="width:16px;height:16px;background:#f59e0b;border:2px solid #fff;border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,0.25)"></div>', iconSize:[16,16], iconAnchor:[8,8] });
+    const m = window.L.marker([stop.lat, stop.lng], { icon:stopIcon })
+      .bindPopup('🅿️ Arrêt<br>' + _ctFormatHMS(stop.start) + ' → ' + _ctFormatHMS(stop.end) + '<br>Durée : <b>' + _ctFormatDuration(stop.durationMs) + '</b>');
+    m.addTo(map);
+    st.layers.push(m);
+  });
+
+  map.fitBounds(latlngs, { padding:[40,40] });
+
+  // Classification Pro / Privé
+  const ch = (D.chauffeurs||[]).find(x => x._id === st.driverId);
+  const chName = ch ? (ch.prenom + (ch.nom?' '+ch.nom:'')) : '';
+  const cls = _ctClassifyTrip(trip, chName, st.driverId, D.courses || []);
+
+  const durationMs = new Date(trip.end).getTime() - new Date(trip.start).getTime();
+  const nbStopsEntourants = (st.stops || []).filter(s =>
+    new Date(s.end).getTime() <= new Date(trip.start).getTime() ||
+    new Date(s.start).getTime() >= new Date(trip.end).getTime()
+  ).length;
+
+  const startAddr = cls.course ? (cls.course.depart || cls.course.lieu || 'Départ') : ('Point GPS ' + latlngs[0][0].toFixed(5) + ', ' + latlngs[0][1].toFixed(5));
+  const endAddr   = cls.course ? (cls.course.arrivee || 'Arrivée') : ('Point GPS ' + latlngs[latlngs.length-1][0].toFixed(5) + ', ' + latlngs[latlngs.length-1][1].toFixed(5));
+
+  const panel = document.getElementById('ct-panel');
+  if (!panel) return;
+
+  // Liste des arrêts entre ce trajet et le suivant (si présent)
+  const nextTrip = st.trips[idx + 1];
+  const stopsBetween = nextTrip ? (st.stops || []).filter(s =>
+    new Date(s.start).getTime() >= new Date(trip.end).getTime() &&
+    new Date(s.end).getTime() <= new Date(nextTrip.start).getTime()
+  ) : [];
+
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <button onclick="_ctRenderTrip(${idx-1})" ${idx<=0?'disabled':''} style="background:${idx<=0?'#e5e7eb':'#111'};color:${idx<=0?'#9ca3af':'#fff'};border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:${idx<=0?'not-allowed':'pointer'}">← Précédent</button>
+      <div style="text-align:center">
+        <div style="font-size:15px;font-weight:800;color:#111">Trajet ${idx+1}/${st.trips.length}</div>
+        <span style="display:inline-block;background:${cls.color}20;color:${cls.color};border:1px solid ${cls.color};border-radius:12px;padding:2px 10px;font-size:11px;font-weight:700;margin-top:4px">${cls.kind}</span>
+      </div>
+      <button onclick="_ctRenderTrip(${idx+1})" ${idx>=st.trips.length-1?'disabled':''} style="background:${idx>=st.trips.length-1?'#e5e7eb':'#111'};color:${idx>=st.trips.length-1?'#9ca3af':'#fff'};border:none;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:${idx>=st.trips.length-1?'not-allowed':'pointer'}">Suivant →</button>
+    </div>
+
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <span style="width:10px;height:10px;background:#16a34a;border-radius:50%;flex-shrink:0"></span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:11px;color:#6b7280">${_ctFormatHMS(trip.start)}</div>
+          <div style="font-size:13px;color:#111;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(startAddr)}</div>
+        </div>
+      </div>
+      <div style="padding-left:4px;border-left:2px dashed #d1d5db;margin-left:4px;padding-bottom:8px;padding-top:4px">
+        <div style="font-size:11px;color:#6b7280;padding-left:14px">
+          🚗 <b>${_ctFormatDuration(durationMs)}</b> · ${trip.distKm.toFixed(1)} km
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="width:10px;height:10px;background:#111;border-radius:50%;flex-shrink:0"></span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:11px;color:#6b7280">${_ctFormatHMS(trip.end)}</div>
+          <div style="font-size:13px;color:#111;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(endAddr)}</div>
+        </div>
+      </div>
+    </div>
+
+    ${stopsBetween.length ? `
+      <div style="margin-top:10px">
+        <div style="font-size:11px;color:#6b7280;font-weight:700;text-transform:uppercase;margin-bottom:6px">Arrêt${stopsBetween.length>1?'s':''} avant le trajet suivant</div>
+        ${stopsBetween.map(s => `
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;margin-bottom:4px">
+            <span style="font-size:16px">🅿️</span>
+            <div style="flex:1">
+              <div style="font-size:12px;color:#92400e;font-weight:700">${_ctFormatHMS(s.start)} → ${_ctFormatHMS(s.end)}</div>
+              <div style="font-size:11px;color:#b45309">Arrêt de <b>${_ctFormatDuration(s.durationMs)}</b></div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
+
+    ${cls.course ? `
+      <div style="margin-top:10px;padding:10px;background:#dbeafe;border-left:3px solid #2563eb;border-radius:4px;font-size:11px;color:#1e3a8a">
+        Associé à la course : <b>${E(cls.course.client||'')}</b>${cls.course.ref?' (réf. '+E(cls.course.ref)+')':''}
+      </div>
+    ` : ''}
+  `;
+
+  // Gestes swipe sur le panel pour naviguer
+  if (!panel._swipeInit) {
+    panel._swipeInit = true;
+    let touchX = 0;
+    panel.addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive:true });
+    panel.addEventListener('touchend', e => {
+      const dx = e.changedTouches[0].clientX - touchX;
+      const st2 = window._ctState;
+      if (Math.abs(dx) < 60 || !st2) return;
+      if (dx < 0 && st2.currentIndex < st2.trips.length-1) _ctRenderTrip(st2.currentIndex+1);
+      else if (dx > 0 && st2.currentIndex > 0) _ctRenderTrip(st2.currentIndex-1);
+    }, { passive:true });
+  }
 };
 
 // Centre la carte sur un chauffeur depuis la liste
