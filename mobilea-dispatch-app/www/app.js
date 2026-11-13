@@ -3445,7 +3445,20 @@ function renderDash() {
   const e1=document.getElementById('sd-courses');const e2=document.getElementById('sd-ca');const e3=document.getElementById('sd-chauff');const e4=document.getElementById('sd-wait');
   if(e1)e1.textContent=mC.length; if(e2)e2.textContent=ca.toFixed(0)+'€'; if(e3)e3.textContent=D.chauffeurs.length; if(e4)e4.textContent=w.length;
   const tl=document.getElementById('tl-dash');
-  if(tl){const dc=['g','gr','b','r','o'];tl.innerHTML=D.logs.slice(0,7).map((l,i)=>`<div class="tl-item"><div class="tl-dot ${dc[i%5]}"></div><div class="tl-time">${fdt(l.at)}</div><div class="tl-text">${E(l.text)}</div></div>`).join('')||'<div style="color:var(--muted);font-size:12px">Aucune activité</div>';}
+  if(tl){
+    const dc=['g','gr','b','r','o'];
+    // ★ Texte des logs : on tronque court (90 car.) et on force word-break pour
+    // éviter que chaque mot casse sur sa propre ligne quand la colonne est étroite.
+    tl.innerHTML=D.logs.slice(0,7).map((l,i)=>{
+      const txt = String(l.text||'');
+      const court = txt.length > 90 ? txt.slice(0,87) + '…' : txt;
+      return '<div class="tl-item" style="margin-bottom:10px">'
+        + '<div class="tl-dot '+dc[i%5]+'"></div>'
+        + '<div class="tl-time" style="font-size:10px;color:#999;white-space:nowrap">'+fdt(l.at)+'</div>'
+        + '<div class="tl-text" style="font-size:12px;line-height:1.35;word-break:normal;overflow-wrap:anywhere" title="'+E(txt)+'">'+E(court)+'</div>'
+        + '</div>';
+    }).join('')||'<div style="color:var(--muted);font-size:12px">Aucune activité</div>';
+  }
   const tb=document.getElementById('tb-dash');
   if(!tb)return;
   const active=D.courses.filter(c=>!['terminee','annulee','noshow','payee','facturee'].includes(c.statut)).slice(0,8);
@@ -3504,47 +3517,61 @@ function renderDashFinance() {
   const topCh = Object.entries(parCh).sort((a,b)=>b[1]-a[1]).slice(0,5);
 
   const evoBadge = evo === null ? '<span style="color:#999;font-size:12px">—</span>'
-    : `<span style="color:${evo>=0?'#16a34a':'#dc2626'};font-size:13px;font-weight:700">${evo>=0?'▲':'▼'} ${Math.abs(evo)}%</span>`;
+    : `<span style="color:${evo>=0?'#16a34a':'#dc2626'};font-size:12px;font-weight:700;white-space:nowrap">${evo>=0?'▲':'▼'} ${Math.abs(evo)}%</span>`;
+
+  // ★ Format compact des gros montants : 8352 → "8.4 k€" pour ne pas déborder
+  // des cartes KPI étroites sur mobile. Au-delà de 100k → "127 k€". En dessous
+  // de 1000 → "835€" brut.
+  const fmtMontant = (n) => {
+    const v = Math.round(n || 0);
+    if (Math.abs(v) >= 100000) return Math.round(v/1000) + ' k€';
+    if (Math.abs(v) >= 10000)  return (v/1000).toFixed(1) + ' k€';
+    return v + '€';
+  };
 
   const ligneListe = (arr, unite) => arr.length
     ? arr.map(([nom,val],i)=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f4f4f5">
         <div style="width:22px;height:22px;border-radius:50%;background:${i===0?'#fef3c7':'#f4f4f5'};color:${i===0?'#b8860b':'#666'};font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0">${i+1}</div>
-        <div style="flex:1;font-size:13px;font-weight:600;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(nom)}</div>
-        <div style="font-size:13px;font-weight:800;color:#b8860b">${Math.round(val)}${unite}</div>
+        <div style="flex:1;min-width:0;font-size:13px;font-weight:600;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(nom)}</div>
+        <div style="font-size:13px;font-weight:800;color:#b8860b;flex-shrink:0">${fmtMontant(val)}</div>
       </div>`).join('')
     : '<div style="color:#999;font-size:12px;padding:8px 0">Aucune donnée ce mois</div>';
 
   box.innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:18px">
-      <div class="sec" style="padding:16px">
-        <div style="font-size:12px;color:#777;font-weight:600;margin-bottom:6px">CA vs mois dernier</div>
-        <div style="display:flex;align-items:baseline;gap:10px">
-          <div style="font-family:'Syne',sans-serif;font-size:26px;font-weight:800;color:#111">${caCour.toFixed(0)}€</div>
+    <!-- 3 KPI responsive : auto-fit → se réorganisent selon la largeur dispo.
+         Sur mobile étroit elles s'empilent, sur desktop elles tiennent en ligne. -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:18px">
+      <div class="sec" style="padding:14px 16px;min-width:0">
+        <div style="font-size:11px;color:#777;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.3px">CA vs mois dernier</div>
+        <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+          <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:#111;line-height:1.1;word-break:keep-all">${fmtMontant(caCour)}</div>
           ${evoBadge}
         </div>
-        <div style="font-size:11px;color:#999;margin-top:4px">Mois dernier : ${caPrec.toFixed(0)}€</div>
+        <div style="font-size:11px;color:#999;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Mois dernier : ${fmtMontant(caPrec)}</div>
       </div>
-      <div class="sec" style="padding:16px">
-        <div style="font-size:12px;color:#777;font-weight:600;margin-bottom:6px">Panier moyen</div>
-        <div style="font-family:'Syne',sans-serif;font-size:26px;font-weight:800;color:#111">${panier.toFixed(0)}€</div>
+      <div class="sec" style="padding:14px 16px;min-width:0">
+        <div style="font-size:11px;color:#777;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.3px">Panier moyen</div>
+        <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:#111;line-height:1.1">${fmtMontant(panier)}</div>
         <div style="font-size:11px;color:#999;margin-top:4px">${termCour.length} course(s) terminée(s)</div>
       </div>
-      <div class="sec" style="padding:16px">
-        <div style="font-size:12px;color:#777;font-weight:600;margin-bottom:6px">No-show / Annulations</div>
-        <div style="display:flex;align-items:baseline;gap:8px">
-          <div style="font-family:'Syne',sans-serif;font-size:26px;font-weight:800;color:${tauxNoshow>10?'#dc2626':'#111'}">${tauxNoshow}%</div>
-          <div style="font-size:12px;color:#999">no-show</div>
+      <div class="sec" style="padding:14px 16px;min-width:0">
+        <div style="font-size:11px;color:#777;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.3px">No-show / Annulations</div>
+        <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
+          <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:${tauxNoshow>10?'#dc2626':'#111'};line-height:1.1">${tauxNoshow}%</div>
+          <div style="font-size:11px;color:#999">no-show</div>
         </div>
-        <div style="font-size:11px;color:#999;margin-top:4px">${noshow} no-show • ${annul} annulée(s)</div>
+        <div style="font-size:11px;color:#999;margin-top:4px">${noshow} no-show · ${annul} annulée${annul>1?'s':''}</div>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px">
-      <div class="sec" style="padding:16px">
-        <div class="sec-t" style="margin-bottom:10px"><i class="fas fa-crown" style="color:#b8860b"></i> Top clients ce mois</div>
+    <!-- Top clients + Top chauffeurs : se place sur 2 colonnes si place dispo,
+         sinon sur 1 colonne (empilés sur mobile). -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:18px">
+      <div class="sec" style="padding:14px 16px;min-width:0">
+        <div class="sec-t" style="margin-bottom:10px;font-size:14px"><i class="fas fa-crown" style="color:#b8860b"></i> Top clients ce mois</div>
         ${ligneListe(topClients,'€')}
       </div>
-      <div class="sec" style="padding:16px">
-        <div class="sec-t" style="margin-bottom:10px"><i class="fas fa-id-card" style="color:#b8860b"></i> Top chauffeurs ce mois</div>
+      <div class="sec" style="padding:14px 16px;min-width:0">
+        <div class="sec-t" style="margin-bottom:10px;font-size:14px"><i class="fas fa-id-card" style="color:#b8860b"></i> Top chauffeurs ce mois</div>
         ${ligneListe(topCh,'€')}
       </div>
     </div>`;
@@ -4347,6 +4374,21 @@ function renderAgenda() {
       renderAgenda();
     };
     cnt.insertAdjacentElement('afterend', btn);
+  }
+  // ★ Bouton SUPPRIMER (injecté une seule fois à côté de "À attribuer") —
+  // supprime les courses sélectionnées via les cases à cocher. Double
+  // confirmation obligatoire pour éviter toute erreur irréversible.
+  if (cnt && !document.getElementById('agenda-delete-btn')) {
+    const btnDel = document.createElement('button');
+    btnDel.id = 'agenda-delete-btn';
+    btnDel.className = 'btn btn-sm';
+    btnDel.style.cssText = 'margin-left:4px;font-size:12px;padding:6px 12px;background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;font-weight:700;cursor:pointer';
+    btnDel.setAttribute('title', 'Supprimer les courses sélectionnées (double confirmation)');
+    btnDel.innerHTML = '<i class="fas fa-trash"></i> Supprimer';
+    btnDel.onclick = function(){ try { supprimerCoursesSelectionnees(); } catch(e){ console.warn(e); } };
+    const filterBtn = document.getElementById('agenda-filter-btn');
+    if (filterBtn) filterBtn.insertAdjacentElement('afterend', btnDel);
+    else cnt.insertAdjacentElement('afterend', btnDel);
   }
   // Mise à jour du texte et style du bouton (reflet de l'état)
   const btnF = document.getElementById('agenda-filter-btn');
@@ -8832,18 +8874,45 @@ window.setInvoiceRange = function(type) {
   if(start && end) { ds.value = iso(start); de.value = iso(end); }
 };
 
-function getInvoiceCourses(clientName, dateStart, dateEnd) {
-  // Filtre les courses terminées d'un client entre deux dates (incluses).
+function getInvoiceCourses(clientName, dateStart, dateEnd, opts) {
+  // Filtre les courses facturables d'un client entre deux dates (incluses).
+  // Par défaut : UNIQUEMENT les courses "terminee" et "noshow" non encore
+  // facturées. Si opts.includeAlreadyBilled = true, on inclut aussi
+  // "facturee" et "payee" (utile pour réimprimer une ancienne facture).
+  opts = opts || {};
   const startTs = dateStart ? new Date(dateStart+'T00:00:00').getTime() : 0;
   const endTs = dateEnd ? new Date(dateEnd+'T23:59:59').getTime() : Infinity;
+  const statutsOK = opts.includeAlreadyBilled
+    ? ['terminee','facturee','payee','noshow']
+    : ['terminee','noshow'];
   return D.courses.filter(c => {
     if(c.client !== clientName) return false;
-    // Le no-show est FACTURE au client : il figure sur la facture.
-    if(!['terminee','facturee','payee','noshow'].includes(c.statut)) return false;
+    if(!statutsOK.includes(c.statut)) return false;
     if(!c.datetime) return false;
     const t = new Date(c.datetime).getTime();
     return t >= startTs && t <= endTs;
   }).sort((a,b)=>new Date(a.datetime)-new Date(b.datetime));
+}
+
+// Compte les courses DÉJÀ facturées (facturee/payee) d'un client sur une période.
+// Sert à alerter l'utilisateur quand il essaie de refacturer une période.
+function countAlreadyBilledInPeriod(clientName, dateStart, dateEnd) {
+  const startTs = dateStart ? new Date(dateStart+'T00:00:00').getTime() : 0;
+  const endTs = dateEnd ? new Date(dateEnd+'T23:59:59').getTime() : Infinity;
+  const dejaFact = D.courses.filter(c => {
+    if(c.client !== clientName) return false;
+    if(!['facturee','payee'].includes(c.statut)) return false;
+    if(!c.datetime) return false;
+    const t = new Date(c.datetime).getTime();
+    return t >= startTs && t <= endTs;
+  });
+  // Grouper par numéro de facture pour afficher les différentes factures
+  const parFacture = {};
+  dejaFact.forEach(c => {
+    const ref = c.factureRef || '(sans référence)';
+    parFacture[ref] = (parFacture[ref]||0) + 1;
+  });
+  return { total: dejaFact.length, parFacture };
 }
 
 function buildInvoiceData() {
@@ -8854,8 +8923,30 @@ function buildInvoiceData() {
   if(!dateStart || !dateEnd) { showToast('Choisir la période (date début et date fin)', true); return null; }
   if(dateStart > dateEnd) { showToast('La date de début doit être avant la date de fin', true); return null; }
 
+  // ★ Courses NON ENCORE facturées (statut terminee/noshow) sur la période
   const courses = getInvoiceCourses(clientName, dateStart, dateEnd);
-  if(!courses.length) { showToast('Aucune course terminée sur cette période', true); return null; }
+
+  // Vérifier s'il existe déjà des courses facturées sur ce créneau
+  const deja = countAlreadyBilledInPeriod(clientName, dateStart, dateEnd);
+
+  if(!courses.length) {
+    // Aucune course à facturer — soit vraiment rien, soit tout est déjà facturé
+    if(deja.total > 0) {
+      const refs = Object.keys(deja.parFacture).map(ref => `• ${ref} (${deja.parFacture[ref]} course${deja.parFacture[ref]>1?'s':''})`).join('\n');
+      alert(`⚠️ Aucune nouvelle course à facturer sur cette période.\n\n`
+        + `${deja.total} course(s) sont déjà facturée(s) :\n${refs}\n\n`
+        + `Pour réimprimer une ancienne facture, utilisez le menu "Factures" dans l'historique.`);
+    } else {
+      showToast('Aucune course terminée sur cette période', true);
+    }
+    return null;
+  }
+
+  // Avertir si certaines courses ont déjà été facturées (on les exclut automatiquement)
+  if(deja.total > 0) {
+    const refs = Object.keys(deja.parFacture).join(', ');
+    showToast(`ℹ️ ${deja.total} course(s) déjà facturée(s) ignorée(s) — facture(s) : ${refs}`);
+  }
 
   const clientObj = D.clients.find(c => (c.commercial===clientName) || (c.nom===clientName));
   const fmtD = d => { const p=d.split('-'); return p[2]+'/'+p[1]+'/'+p[0]; };
@@ -9106,7 +9197,67 @@ window.generateInvoicePDF = function() {
       TVA sur les encaissements. Règlement à réception de facture. En cas de retard de paiement, des pénalités au taux légal seront appliquées (art. L441-10 du Code de commerce).
     </div>
   </body></html>`);
+
+  // Après génération du PDF, proposer de "sceller" la facture pour éviter
+  // qu'elle soit régénérée par erreur plus tard.
+  setTimeout(() => _proposerMarquerFacturees(inv), 1500);
 };
+
+// ═══════════════════════════════════════════════════════════════════
+// MARQUER LES COURSES COMME FACTURÉES (sceller la facture)
+// Propose à l'utilisateur, après génération du PDF, de passer les courses
+// de "terminee" à "facturee" + stocker la référence de facture. Cela
+// garantit qu'elles ne seront PAS incluses dans une future facturation.
+// ═══════════════════════════════════════════════════════════════════
+function _proposerMarquerFacturees(inv) {
+  if(!inv || !inv.courses || !inv.courses.length) return;
+  // Si tous les courses sont déjà marquées facturée, inutile d'insister
+  const aMarquer = inv.courses.filter(c => c.statut === 'terminee' || c.statut === 'noshow');
+  if(!aMarquer.length) return;
+
+  const msg = `✅ Facture ${inv.numFacture} générée.\n\n`
+    + `Voulez-vous MARQUER les ${aMarquer.length} course(s) comme FACTURÉES ?\n\n`
+    + `Si oui, elles ne pourront plus être incluses dans une future facture (évite les doubles facturations).\n\n`
+    + `• Cliquez OK pour sceller la facture\n`
+    + `• Cliquez Annuler si vous voulez d'abord vérifier le PDF`;
+  if(!confirm(msg)) {
+    showToast('ℹ️ Facture non scellée — les courses restent facturables. Repassez par "Générer PDF" quand vous êtes prêt.');
+    return;
+  }
+
+  // Marquer en batch via Firebase multi-path update (rapide)
+  (async () => {
+    showToast(`Marquage de ${aMarquer.length} course(s)…`);
+    const nowIso = new Date().toISOString();
+    try {
+      if(window.fbDB) {
+        const updates = {};
+        aMarquer.forEach(c => {
+          updates['courses/'+c._id+'/statut'] = 'facturee';
+          updates['courses/'+c._id+'/factureRef'] = inv.numFacture;
+          updates['courses/'+c._id+'/factureAt'] = nowIso;
+        });
+        await window.fbDB.ref().update(updates);
+      } else {
+        for(const c of aMarquer) {
+          await fbUpdate('courses', c._id, { statut:'facturee', factureRef:inv.numFacture, factureAt:nowIso });
+        }
+      }
+      // Mettre à jour localement pour affichage immédiat
+      aMarquer.forEach(c => {
+        const local = D.courses.find(x => x._id === c._id);
+        if(local) { local.statut = 'facturee'; local.factureRef = inv.numFacture; local.factureAt = nowIso; }
+      });
+      try { await addLog(`📄 Facture ${inv.numFacture} scellée — ${aMarquer.length} course(s) marquée(s) facturée(s) (${inv.clientName})`); } catch(e){}
+      showToast(`✅ Facture ${inv.numFacture} scellée (${aMarquer.length} courses)`);
+      await loadAll();
+    } catch(e) {
+      console.warn('Marquage facturée échoué:', e);
+      showToast('Erreur marquage facturée — réessayez', true);
+    }
+  })();
+}
+window._proposerMarquerFacturees = _proposerMarquerFacturees;
 
 function renderFact() {
   // Factures reçues des chauffeurs
@@ -14265,6 +14416,74 @@ window.assignAgendaGroupe = async function() {
   if(drvInfo?.tel) await sendTwilioSMS(drvInfo.tel, `🚗 MOBILEA — ${ids.length} nouvelle(s) course(s) vous ont été assignées. Ouvrez l'app pour voir les détails.`, true);
   await loadAll();
   showToast(`${ids.length} course(s) assignées à ${drv} ✓`);
+};
+
+// ─── BULK : SUPPRIMER les courses sélectionnées (double confirmation) ───
+// Sécurité : action irréversible → 2 confirmations obligatoires.
+// 1ère confirmation : nombre + aperçu des courses
+// 2ème confirmation : rappel que c'est définitif
+window.supprimerCoursesSelectionnees = async function() {
+  if(!SESSION || !['admin','dispatch'].includes(SESSION.role)) {
+    showToast('Réservé à l\'admin/dispatch', true); return;
+  }
+  const ids = [...document.querySelectorAll('.agenda-chk:checked')].map(c=>c.dataset.id);
+  if(!ids.length){
+    showToast('Cochez d\'abord les courses à supprimer', true);
+    return;
+  }
+  const courses = ids.map(id => D.courses.find(c => c._id === id)).filter(Boolean);
+  if(!courses.length) { showToast('Aucune course trouvée', true); return; }
+
+  // Aperçu court pour la 1ère confirmation
+  const apercu = courses.slice(0, 5).map(c => {
+    const h = c.datetime ? c.datetime.slice(11,16) : '--:--';
+    const dep = (c.depart||c.lieu||'?').slice(0,30);
+    const arr = (c.arrivee||'?').slice(0,30);
+    return `• ${h} · ${dep} → ${arr}${c.chauffeur?` (${c.chauffeur})`:''}`;
+  }).join('\n');
+  const plus = courses.length > 5 ? `\n… et ${courses.length - 5} autre(s)` : '';
+
+  // ─── 1ÈRE CONFIRMATION ────────────────────────────────────────────
+  if(!confirm(
+    `⚠️ SUPPRIMER ${courses.length} course${courses.length>1?'s':''} ?\n\n`
+    + apercu + plus
+    + `\n\nCette action supprime définitivement ces courses de la base.`
+  )) return;
+
+  // ─── 2ÈME CONFIRMATION ────────────────────────────────────────────
+  // On demande au user de retaper un mot pour être SÛR.
+  const motCle = courses.length >= 5 ? 'SUPPRIMER' : 'OUI';
+  const rep = prompt(
+    `🚨 CONFIRMATION FINALE\n\n`
+    + `Tape "${motCle}" (en majuscules) pour confirmer la suppression définitive de ${courses.length} course${courses.length>1?'s':''}.\n\n`
+    + `Cette action est IRRÉVERSIBLE.`,
+    ''
+  );
+  if(rep === null) return; // annulé
+  if(String(rep).trim().toUpperCase() !== motCle) {
+    showToast(`Suppression annulée — le mot "${motCle}" n'a pas été tapé correctement`, true);
+    return;
+  }
+
+  showToast(`Suppression de ${courses.length} course(s)…`);
+  let ok = 0, ko = 0;
+  for(const c of courses) {
+    try {
+      await fbDelete('courses', c._id);
+      ok++;
+    } catch(e) {
+      console.warn('Suppression course', c._id, e);
+      ko++;
+    }
+  }
+  try { await addLog(`🗑️ ${ok} course(s) supprimée(s) en groupe par ${SESSION.name}${ko?` (${ko} échec${ko>1?'s':''})`:''}`); } catch(e){}
+  clearAgendaSelection();
+  await loadAll();
+  if(ko === 0) {
+    showToast(`✅ ${ok} course(s) supprimée(s)`);
+  } else {
+    showToast(`${ok} supprimée(s), ${ko} échec(s)`, true);
+  }
 };
 
 // ─── BULK : proposer les courses sélectionnées aux chauffeurs PRIORITAIRES ───
