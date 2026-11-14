@@ -3219,7 +3219,7 @@ window.searchClientDrop = function(val) {
     const av=(c.nom||'?').split(' ').map(n=>n[0]||'').join('').slice(0,2).toUpperCase();
     const courses = D.courses.filter(x=>x.client===c.nom).length;
     return `<div onclick="pickClient('${c._id}')" style="padding:10px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);transition:background 0.15s" onmouseover="this.style.background='var(--gold-dim)'" onmouseout="this.style.background=''">
-      <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-family:'Syne',sans-serif;color:#fff;flex-shrink:0">${av}</div>
+      <div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-family:'Inter',sans-serif;color:#fff;flex-shrink:0">${av}</div>
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;font-weight:600">${E(c.nom)}</div>
         <div style="font-size:10px;color:var(--muted2)">${E(c.tel||'—')} ${c.email?'• '+c.email:''}</div>
@@ -3544,20 +3544,20 @@ function renderDashFinance() {
       <div class="sec" style="padding:14px 16px;min-width:0">
         <div style="font-size:11px;color:#777;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.3px">CA vs mois dernier</div>
         <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
-          <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:#111;line-height:1.1;word-break:keep-all">${fmtMontant(caCour)}</div>
+          <div style="font-family:'Inter',sans-serif;font-size:22px;font-weight:800;color:#111;line-height:1.1;word-break:keep-all">${fmtMontant(caCour)}</div>
           ${evoBadge}
         </div>
         <div style="font-size:11px;color:#999;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Mois dernier : ${fmtMontant(caPrec)}</div>
       </div>
       <div class="sec" style="padding:14px 16px;min-width:0">
         <div style="font-size:11px;color:#777;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.3px">Panier moyen</div>
-        <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:#111;line-height:1.1">${fmtMontant(panier)}</div>
+        <div style="font-family:'Inter',sans-serif;font-size:22px;font-weight:800;color:#111;line-height:1.1">${fmtMontant(panier)}</div>
         <div style="font-size:11px;color:#999;margin-top:4px">${termCour.length} course(s) terminée(s)</div>
       </div>
       <div class="sec" style="padding:14px 16px;min-width:0">
         <div style="font-size:11px;color:#777;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.3px">No-show / Annulations</div>
         <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
-          <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:${tauxNoshow>10?'#dc2626':'#111'};line-height:1.1">${tauxNoshow}%</div>
+          <div style="font-family:'Inter',sans-serif;font-size:22px;font-weight:800;color:${tauxNoshow>10?'#dc2626':'#111'};line-height:1.1">${tauxNoshow}%</div>
           <div style="font-size:11px;color:#999">no-show</div>
         </div>
         <div style="font-size:11px;color:#999;margin-top:4px">${noshow} no-show · ${annul} annulée${annul>1?'s':''}</div>
@@ -3652,7 +3652,23 @@ function renderDispatch() {
       <td class="col-chauff" style="font-size:11px">${c.chauffeur ? E(c.chauffeur) : '<span style="color:var(--muted)">—</span>'}</td>
       <td class="col-term" style="font-size:10px;color:var(--blue)">${(c.terminaux||'—').replace(/CDG/g,'').replace(/ORY/g,'ORY')}</td>
       <td class="col-client"><strong style="font-size:12px">${E(c.client||'—')}</strong>
-        ${c.passagers&&c.passagers.length?`<br><span style="font-size:10px;color:var(--blue)">${c.passagers.filter(p=>p.present!==false).length}/${c.passagers.length} pax <button onclick="viewPax('${c._id}')" style="background:none;border:none;color:var(--gold);cursor:pointer;font-size:10px;padding:0">👥 voir</button></span>`:''}</td>
+        ${c.passagers&&c.passagers.length?(() => {
+          const presents = c.passagers.filter(p=>p.present!==false).length;
+          // ★ Pastilles ✓/✗ par passager — visible directement dans Dispatch pour
+          // que le dispatch sache qui le chauffeur a récupéré sans ouvrir le modal.
+          // Un petit carré vert ✓ = présent, rouge ✗ = absent.
+          const pastilles = c.passagers.map((p,i) => {
+            const isPresent = p.present !== false;
+            const nom = ((p.prenom||'')+' '+(p.nom||'')).trim() || ('Pax '+(i+1));
+            const titre = nom + ' — ' + (isPresent ? 'présent ✓' : 'ABSENT ✗');
+            return '<span title="'+E(titre)+'" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;background:'+(isPresent?'#16a34a':'#dc2626')+';color:#fff;border-radius:3px;font-size:10px;font-weight:800;line-height:1;margin-right:2px">'+(isPresent?'✓':'✗')+'</span>';
+          }).join('');
+          return '<br><span style="font-size:10px;color:var(--blue);display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap">'
+            + '<span>'+presents+'/'+c.passagers.length+' pax</span>'
+            + pastilles
+            + '<button onclick="viewPax(\''+c._id+'\')" style="background:none;border:none;color:var(--gold);cursor:pointer;font-size:10px;padding:0">👥 voir</button>'
+            + '</span>';
+        })():''}</td>
       <td class="col-pax" style="font-size:11px">${c.pax||1}</td>
       <td class="col-ttc text-gold fw7" style="font-size:11px">
         ${fp(c.prix)}
@@ -4415,7 +4431,7 @@ function renderAgenda() {
   if(!courses.length) {
     list.innerHTML = `<div style="text-align:center;padding:60px 20px;color:var(--muted)">
       <i class="fas fa-calendar-check" style="font-size:48px;opacity:0.3;display:block;margin-bottom:12px"></i>
-      <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:700;margin-bottom:4px">Aucune course</div>
+      <div style="font-family:'Inter',sans-serif;font-size:16px;font-weight:700;margin-bottom:4px">Aucune course</div>
       <div style="font-size:12px">Pas de transfert planifié pour cette journée</div>
       <button class="btn btn-p btn-sm" style="margin-top:16px" onclick="openCourseModal()"><i class="fas fa-plus"></i> Ajouter une course</button>
     </div>`;
@@ -4472,16 +4488,29 @@ function renderAgenda() {
     const txtColor = texteLisible(color);
     const bgContrast = badgeContraste(color);
     const vehBadge = '<span style="display:inline-block;background:'+bgContrast+';border-radius:5px;padding:2px 8px;font-weight:800;margin-right:6px;font-size:11.5px;color:'+txtColor+'">'+vehNom+' \u00b7 '+pax+' pax</span>';
+    // Pastilles de presence des passagers (vert \u2713 = present, rouge \u2717 = absent)
+    // permet au dispatch de voir d'un coup d'oeil qui le chauffeur a recupere
+    let paxPastilles = '';
+    if (c.passagers && c.passagers.length) {
+      paxPastilles = '<span style="display:inline-flex;align-items:center;gap:1px;margin-right:6px;vertical-align:middle">' +
+        c.passagers.map(function(p, i){
+          const isPresent = p.present !== false;
+          const nom = ((p.prenom||'')+' '+(p.nom||'')).trim() || ('Pax '+(i+1));
+          const titre = nom + ' \u2014 ' + (isPresent ? 'present \u2713' : 'ABSENT \u2717');
+          return '<span title="'+E(titre)+'" style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;background:'+(isPresent?'#16a34a':'#dc2626')+';color:#fff;border-radius:2px;font-size:9px;font-weight:800;line-height:1">'+(isPresent?'\u2713':'\u2717')+'</span>';
+        }).join('') +
+        '</span>';
+    }
     const codeFactPart = codeFact ? '<span style="opacity:0.85;color:'+txtColor+'">'+E(codeFact)+'</span> \u00b7 ' : '';
     return `<div style="position:relative;margin-bottom:8px">
       <input type="checkbox" class="agenda-chk" data-id="${c._id}" onchange="onAgendaChkChange()" onclick="event.stopPropagation()"
         style="position:absolute;left:12px;top:14px;width:22px;height:22px;cursor:pointer;z-index:2;accent-color:${txtColor}">
       <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:12px;padding:12px 14px 12px 44px;cursor:pointer;color:${txtColor};position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
         <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;padding-right:70px">
-          <span style="font-family:'Syne',sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.5px;line-height:1;flex-shrink:0;color:${txtColor}">${time}</span>
-          <span style="font-size:14.5px;font-weight:700;line-height:1.25;flex:1;min-width:0;word-break:break-word;color:${txtColor}">${dirIcon} ${ligne1}</span>
+          <span style="font-family:'Inter',sans-serif;font-size:24px;font-weight:800;letter-spacing:-0.5px;line-height:1;flex-shrink:0;color:${txtColor}">${time}</span>
+          <span style="font-size:15px;font-weight:600;line-height:1.25;flex:1;min-width:0;word-break:break-word;color:${txtColor}">${dirIcon} ${ligne1}</span>
         </div>
-        <div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px;color:${txtColor}">${vehBadge}${codeFactPart}${c.chauffeur||'<em style="opacity:0.75;color:'+txtColor+'">À assigner</em>'}</div>
+        <div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px;color:${txtColor}">${vehBadge}${paxPastilles}${codeFactPart}${c.chauffeur?'<span style="font-weight:500">'+c.chauffeur+'</span>':'<em style="opacity:0.75;color:'+txtColor+'">À assigner</em>'}</div>
         <div style="position:absolute;right:8px;top:8px;display:flex;gap:4px">
           <button onclick="event.stopPropagation();genererLienExterne('${c._id}')" title="Lien chauffeur externe"
             style="background:${bgContrast};border:none;border-radius:8px;padding:5px 8px;color:${txtColor};font-size:12px;font-weight:700;cursor:pointer">🔗</button>
@@ -4978,6 +5007,11 @@ window.saveCourseGoogle = async function(id) {
   }) : [];
 
   const avant = (D.courses||[]).find(x => x._id === id) || null;
+  // Recomputer le champ agrege c.terminaux a partir des terminaux de chaque
+  // passager, sinon les vues qui affichent c.terminaux (tableau dispatch,
+  // carte agenda, liste client) restent coincees sur l'ancienne valeur
+  // apres edition (ex: 2F -> 2E). Deduplique et joint par '-'.
+  const terminauxAgg = [...new Set(passagers.map(p => (p.terminal||'').trim()).filter(Boolean))].join('-');
   const maj = {
     depart, arrivee, datetime,
     codeFact: code,
@@ -4991,6 +5025,7 @@ window.saveCourseGoogle = async function(id) {
     payMode,
     passagers,
     pax: passagers.length||1,
+    terminaux: terminauxAgg,
     notes,
     statut: chauffeur ? 'attribuee' : 'nouvelle',
     updatedAt: new Date().toISOString()
@@ -5266,7 +5301,7 @@ window.genererLienExterne = async function(id) {
   ov.innerHTML = `
     <div style="background:#fff;border-radius:16px;max-width:440px;width:100%;padding:22px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-family:'Syne',sans-serif;font-size:17px;font-weight:800;color:#111">🔗 Lien chauffeur externe</div>
+        <div style="font-family:'Inter',sans-serif;font-size:17px;font-weight:800;color:#111">🔗 Lien chauffeur externe</div>
         <button onclick="this.closest('div[style*=fixed]').remove()" style="background:#f1f3f5;border:none;border-radius:50%;width:30px;height:30px;cursor:pointer">✕</button>
       </div>
       <div style="font-size:12px;color:#666;margin-bottom:6px">Course : ${E(dep)} → ${E(arr)}</div>
@@ -5401,7 +5436,7 @@ function showConflictWarning(conflict, chauffeurName) {
     <div style="background:#fff;border-radius:16px;width:460px;max-width:100%;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
       <div style="background:#dc2626;padding:16px 20px;display:flex;align-items:center;gap:10px">
         <span style="font-size:24px">⚠️</span>
-        <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:800;color:#fff">Conflit de planning détecté</div>
+        <div style="font-family:'Inter',sans-serif;font-size:16px;font-weight:800;color:#fff">Conflit de planning détecté</div>
       </div>
       <div style="padding:20px">
         <div style="font-size:14px;color:#333;margin-bottom:12px">
@@ -5473,7 +5508,7 @@ window.autoDispatch = function(courseId) {
     <div style="background:#fff;border-radius:16px;width:500px;max-width:100%;max-height:80vh;overflow:hidden;display:flex;flex-direction:column">
       <div style="padding:16px 20px;border-bottom:1px solid #f0f2f5;display:flex;align-items:center;justify-content:space-between">
         <div>
-          <div style="font-family:'Syne',sans-serif;font-size:17px;font-weight:800">⚡ Dispatch automatique</div>
+          <div style="font-family:'Inter',sans-serif;font-size:17px;font-weight:800">⚡ Dispatch automatique</div>
           <div style="font-size:12px;color:#777;margin-top:2px">${nbLibres} libre(s) · ${disponibles.length} chauffeur(s) au total</div>
         </div>
         <button onclick="this.closest('div[style*=fixed]').remove()" style="background:#f0f2f5;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px">✕</button>
@@ -5514,7 +5549,7 @@ window.autoDispatch = function(courseId) {
           return `<div data-chname="${name.toLowerCase()}" style="display:flex;align-items:center;gap:12px;padding:12px;background:#f8f9fa;border-radius:12px;margin-bottom:8px;cursor:pointer;border:2px solid transparent;transition:all 0.15s"
             onmouseover="this.style.borderColor='#b8860b'" onmouseout="this.style.borderColor='transparent'"
             onclick="doAutoDispatch('${courseId}','${name}',this.closest('div[style*=fixed]'))">
-            <div style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#b8860b,#d4a017);display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:14px;color:#fff;flex-shrink:0">${av}</div>
+            <div style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#b8860b,#d4a017);display:flex;align-items:center;justify-content:center;font-family:'Inter',sans-serif;font-weight:800;font-size:14px;color:#fff;flex-shrink:0">${av}</div>
             <div style="flex:1">
               <div style="font-size:14px;font-weight:700;color:#111">${name}</div>
               <div style="font-size:11px;color:#777">${vehIco} ${ch.vehicule||'berline'} • ${todayCourses} course(s) aujourd'hui${hint}</div>
@@ -5818,9 +5853,9 @@ window.addPax = function() {
   row.dataset.pax = JSON.stringify({prenom:'',nom:'',tel:'',vol:'',terminal:'',harrivee:'',refClient:'',present:true});
   row.style.cssText = 'background:var(--card2);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 12px;margin-bottom:7px;display:flex;align-items:center;gap:8px';
   row.innerHTML = `
-    <div style="font-size:11px;color:var(--gold);font-family:'Syne',sans-serif;font-weight:700;flex-shrink:0;width:22px">${id}</div>
+    <div style="font-size:11px;color:var(--gold);font-family:'Inter',sans-serif;font-weight:700;flex-shrink:0;width:22px">${id}</div>
     <input type="text" id="pax-line-${id}" placeholder="07:20 / TO3910 / 3 / R4N7XF3F5KF / Angela Bruciafreddo Italy +393491972346"
-      style="flex:1;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-xs);padding:9px 12px;color:var(--white);font-size:12px;outline:none;font-family:'DM Sans',sans-serif"
+      style="flex:1;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-xs);padding:9px 12px;color:var(--white);font-size:12px;outline:none;font-family:'Inter',sans-serif"
       oninput="previewPax(${id})" onpaste="setTimeout(()= maxlength="200">previewPax(${id}),50)">
     <div id="pax-preview-${id}" style="font-size:10px;color:var(--muted2);white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis"></div>
     <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;flex-shrink:0">
@@ -6641,6 +6676,25 @@ async function _saveCourseForce(data, clientName, paxCount) {
     if(assigned) showToast(`✓ Course attribuée à ${assigned} (le plus proche)`);
     else showToast('Aucun chauffeur disponible immédiatement', true);
   }
+  // Transfert groupe en cours : marquer les passagers deplaces comme absents
+  // dans la course d'origine (Point 3 — option B "creer nouveau transfert").
+  // On attend que la nouvelle course soit bien creee avant de modifier la
+  // source, pour que l'utilisateur ne perde pas les donnees si il annule.
+  try {
+    if(window._pendingBulkTransferPax && newId) {
+      const { fromId, paxIndexes } = window._pendingBulkTransferPax;
+      const src = D.courses.find(x => x._id === fromId);
+      if(src && src.passagers) {
+        const newPax = src.passagers.map((p, i) =>
+          paxIndexes.includes(i) ? { ...p, present: false } : p
+        );
+        const newTerms = [...new Set(newPax.filter(p => p.present !== false).map(p => (p.terminal||'').trim()).filter(Boolean))].join('-');
+        await fbUpdate('courses', fromId, { passagers: newPax, terminaux: newTerms, updatedAt: new Date().toISOString() });
+        await addLog(`${paxIndexes.length} passager(s) déplacé(s) de "${src.client}" vers un nouveau transfert`);
+      }
+      window._pendingBulkTransferPax = null;
+    }
+  } catch(e){ console.warn('bulk-transfer post-save error:', e); window._pendingBulkTransferPax = null; }
   await loadAll();
   showToast(`Course créée — ${paxCount} passager(s) ✓`);
 }
@@ -6671,7 +6725,7 @@ function renderChauffeurs() {
     const av=name.split(' ').map(n=>n[0]||'').join('').slice(0,2).toUpperCase();
     return`<div class="ic" style="cursor:pointer" onclick="viewChauffeurCourses('${c._id}')">
       <div class="ic-h">
-        <div style="width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,${c.vehicule==='van'||c.vehicule==='sprinter'?'var(--blue),var(--purple)':'var(--gold),var(--orange)'});display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:700;font-size:14px;color:var(--black);flex-shrink:0">${av}</div>
+        <div style="width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,${c.vehicule==='van'||c.vehicule==='sprinter'?'var(--blue),var(--purple)':'var(--gold),var(--orange)'});display:flex;align-items:center;justify-content:center;font-family:'Inter',sans-serif;font-weight:700;font-size:14px;color:var(--black);flex-shrink:0">${av}</div>
         <div style="flex:1;min-width:0">
           <div class="ic-t">${name}</div>
           <div class="ic-s">${vI(c.vehicule)}</div>
@@ -6740,16 +6794,16 @@ window.viewChauffeurCourses = function(id) {
   ov.innerHTML = `
     <div style="background:#fff;border-radius:16px;width:560px;max-width:100%;max-height:85vh;overflow:hidden;display:flex;flex-direction:column">
       <div style="padding:16px 20px;border-bottom:1px solid #f0f2f5;display:flex;align-items:center;gap:12px">
-        <div style="width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--orange));display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:16px;color:#fff;flex-shrink:0">${name.split(' ').map(n=>n[0]||'').join('').slice(0,2).toUpperCase()}</div>
+        <div style="width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--orange));display:flex;align-items:center;justify-content:center;font-family:'Inter',sans-serif;font-weight:800;font-size:16px;color:#fff;flex-shrink:0">${name.split(' ').map(n=>n[0]||'').join('').slice(0,2).toUpperCase()}</div>
         <div>
-          <div style="font-family:'Syne',sans-serif;font-size:17px;font-weight:800">${name}</div>
+          <div style="font-family:'Inter',sans-serif;font-size:17px;font-weight:800">${name}</div>
           <div style="font-size:12px;color:#777">${vI(ch.vehicule)} • ${courses.length} course(s) au total</div>
         </div>
         <button onclick="this.closest('div[style*=fixed]').remove()" style="margin-left:auto;background:#f0f2f5;border:none;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>
       </div>
       <div style="overflow-y:auto;padding:16px;flex:1">
-        ${active.length?`<div style="font-family:'Syne',sans-serif;font-size:12px;font-weight:700;color:#b8860b;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">En cours (${active.length})</div>${rows(active,'')}`:''}
-        ${done.length?`<div style="font-family:'Syne',sans-serif;font-size:12px;font-weight:700;color:#777;text-transform:uppercase;letter-spacing:1px;margin:12px 0 8px">Terminées (${done.length})</div>${rows(done.slice(0,10),'Aucune course terminée')}`:''}
+        ${active.length?`<div style="font-family:'Inter',sans-serif;font-size:12px;font-weight:700;color:#b8860b;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">En cours (${active.length})</div>${rows(active,'')}`:''}
+        ${done.length?`<div style="font-family:'Inter',sans-serif;font-size:12px;font-weight:700;color:#777;text-transform:uppercase;letter-spacing:1px;margin:12px 0 8px">Terminées (${done.length})</div>${rows(done.slice(0,10),'Aucune course terminée')}`:''}
         ${!courses.length?'<div style="text-align:center;padding:40px;color:#aaa"><i class="fas fa-route" style="font-size:32px;display:block;margin-bottom:10px;opacity:0.3"></i>Aucune course</div>':''}
       </div>
     </div>`;
@@ -7180,7 +7234,7 @@ function renderSoustraitants() {
     return `<div style="border:1px solid var(--border2);border-radius:var(--r-sm);margin-bottom:14px;overflow:hidden">
       <div style="background:var(--gold-dim);padding:14px 16px;border-bottom:1px solid var(--border2)">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-          <div style="font-family:'Syne',sans-serif;font-size:15px;font-weight:800;color:var(--white)">🏢 ${E(s.nom)}</div>
+          <div style="font-family:'Inter',sans-serif;font-size:15px;font-weight:800;color:var(--white)">🏢 ${E(s.nom)}</div>
           <div style="display:flex;gap:6px">
             <span class="bdg bdg-gold">${s.chauffeurs.length} chauffeur(s)</span>
             <span class="bdg bdg-blue">${s.vehicules.length} véhicule(s)</span>
@@ -7641,7 +7695,7 @@ window.editPointage = async function(cle) {
   ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:16px';
   ov.innerHTML = `
     <div style="background:var(--card,#1a1a2e);border-radius:16px;padding:24px;max-width:420px;width:100%;border:1px solid var(--border2,#333)">
-      <div style="font-family:Syne,sans-serif;font-size:18px;font-weight:800;margin-bottom:4px">✏️ Modifier le pointage</div>
+      <div style="font-family:Inter,sans-serif;font-size:18px;font-weight:800;margin-bottom:4px">✏️ Modifier le pointage</div>
       <div style="font-size:13px;color:var(--muted,#999);margin-bottom:18px">${E(p.chauffeurNom||'')} — ${E(p.date||'')}</div>
       <div class="fld" style="margin-bottom:12px"><label>Heure de début</label>
         <input type="time" id="ep-debut" value="${E(p.heureDebut||'')}" style="width:100%;background:var(--dark,#0f0f1e);border:1px solid var(--border2,#333);border-radius:8px;padding:10px;color:#fff;font-size:15px"></div>
@@ -7916,7 +7970,7 @@ window.histoVehicule = async function(vehId) {
     <div style="background:#fff;border-radius:16px;max-width:640px;width:100%;max-height:82vh;overflow:auto;color:#111">
       <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid #e0e3e8;position:sticky;top:0;background:#fff">
         <div>
-          <div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800">🚗 ${E(label||'Véhicule')}</div>
+          <div style="font-family:Inter,sans-serif;font-size:16px;font-weight:800">🚗 ${E(label||'Véhicule')}</div>
           <div style="font-size:11px;color:#5f6368">${utilisations.length} jour(s) d'utilisation enregistré(s)</div>
         </div>
         <button onclick="document.getElementById('histo-veh-ov').remove()" style="background:#f1f3f5;border:none;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>
@@ -8037,7 +8091,7 @@ function renderClients() {
     return`<tr>
       <td>
         <div style="display:flex;align-items:center;gap:8px">
-          <div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-family:'Syne',sans-serif;color:#fff;flex-shrink:0">${av}</div>
+          <div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;font-family:'Inter',sans-serif;color:#fff;flex-shrink:0">${av}</div>
           <div>
             <div style="font-weight:700;font-size:13px">${E(c.nom)}</div>
             ${c.commercial?`<div style="font-size:10px;color:var(--muted)">${E(c.commercial)}</div>`:''}
@@ -8689,7 +8743,7 @@ function renderTarifs() {
   g.innerHTML=Object.entries(byClient).map(([clientName, tarifs])=>`
     <div style="background:var(--card2);border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden">
       <div style="padding:10px 14px;background:linear-gradient(135deg,rgba(130,50,160,0.3),rgba(130,50,160,0.1));border-bottom:1px solid var(--border)">
-        <div style="font-family:'Syne',sans-serif;font-size:13px;font-weight:800;color:#d4a0f0;letter-spacing:1px">${clientName}</div>
+        <div style="font-family:'Inter',sans-serif;font-size:13px;font-weight:800;color:#d4a0f0;letter-spacing:1px">${clientName}</div>
       </div>
       ${tarifs.map(t=>`
         <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
@@ -9516,7 +9570,7 @@ function renderRapports() {
   const rc=document.getElementById('rap-ch');
   if(rc){rc.innerHTML=top.length?top.map(([name,ca])=>`
     <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
-      <div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--orange));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-family:'Syne',sans-serif;color:var(--black)">${name.slice(0,2).toUpperCase()}</div>
+      <div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--orange));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-family:'Inter',sans-serif;color:var(--black)">${name.slice(0,2).toUpperCase()}</div>
       <div style="flex:1"><div style="font-size:12px;font-weight:600">${name}</div>
         <div class="prog"><div class="prog-fill" style="width:${top[0][1]?((ca/top[0][1])*100).toFixed(0):0}%;background:linear-gradient(90deg,var(--gold),var(--orange))"></div></div>
       </div>
@@ -9728,7 +9782,7 @@ function renderRapports() {
 
     const carte = (val, libelle, couleur, detail) =>
       `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-        <div style="width:44px;text-align:center;font-size:22px;font-weight:800;font-family:'Syne',sans-serif;color:${couleur}">${val}</div>
+        <div style="width:44px;text-align:center;font-size:22px;font-weight:800;font-family:'Inter',sans-serif;color:${couleur}">${val}</div>
         <div style="flex:1">
           <div style="font-size:12px;font-weight:600">${libelle}</div>
           ${detail?`<div style="font-size:10px;color:var(--muted)">${detail}</div>`:''}
@@ -9962,7 +10016,7 @@ window.renderRapportsPlus = function(courses, encaissees){
   var boxF = document.getElementById('rap-afacturer');
   if(boxF){
     boxF.innerHTML = aFacturer.length
-      ? '<span style="font-size:24px;font-weight:800;color:var(--orange);font-family:Syne,sans-serif">'+euro(totAF)+'</span> <span style="color:var(--muted);font-size:12px">· '+aFacturer.length+' course'+(aFacturer.length>1?'s':'')+' terminée'+(aFacturer.length>1?'s':'') +' à facturer</span>'
+      ? '<span style="font-size:24px;font-weight:800;color:var(--orange);font-family:Inter,sans-serif">'+euro(totAF)+'</span> <span style="color:var(--muted);font-size:12px">· '+aFacturer.length+' course'+(aFacturer.length>1?'s':'')+' terminée'+(aFacturer.length>1?'s':'') +' à facturer</span>'
       : '<span style="color:var(--green);font-size:13px">✓ Rien en attente de facturation sur la période</span>';
   }
 };
@@ -10063,7 +10117,7 @@ function showMorningRecap(courses) {
     <div style="background:#fff;border-radius:20px;width:420px;max-width:100%;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
       <div style="background:linear-gradient(135deg,#b8860b,#d4a017);padding:22px;color:#fff;text-align:center">
         <div style="font-size:40px;margin-bottom:6px">☀️</div>
-        <div style="font-family:'Syne',sans-serif;font-size:20px;font-weight:800">Votre journée</div>
+        <div style="font-family:'Inter',sans-serif;font-size:20px;font-weight:800">Votre journée</div>
         <div style="font-size:14px;opacity:0.95;margin-top:4px">${courses.length} transfert(s) • 1ère course à ${firstTime}</div>
       </div>
       <div style="overflow-y:auto;padding:16px;flex:1">
@@ -10082,7 +10136,7 @@ function showMorningRecap(courses) {
       </div>
       <div style="padding:16px">
         <button onclick="this.closest('div[style*=fixed]').remove()"
-          style="width:100%;background:#111;border:none;border-radius:12px;padding:15px;font-family:'Syne',sans-serif;font-size:15px;font-weight:700;color:#fff;cursor:pointer">
+          style="width:100%;background:#111;border:none;border-radius:12px;padding:15px;font-family:'Inter',sans-serif;font-size:15px;font-weight:700;color:#fff;cursor:pointer">
           C'est parti ! 🚀
         </button>
       </div>
@@ -10151,14 +10205,14 @@ window.openGerantPanel = async function() {
   ov.innerHTML = `
     <div style="background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:560px;max-height:88vh;overflow-y:auto;padding:22px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <div style="font-family:'Syne',sans-serif;font-size:19px;font-weight:800;color:#111">👔 ${E(socNom)}</div>
+        <div style="font-family:'Inter',sans-serif;font-size:19px;font-weight:800;color:#111">👔 ${E(socNom)}</div>
         <button onclick="document.getElementById('gerant-panel-ov').remove()" style="background:#f1f3f5;border:none;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>
       </div>
       <div style="font-size:12px;color:#888;margin-bottom:16px">Mois en cours • ${mesChauffeurs.length} chauffeur(s)</div>
 
       <div style="background:linear-gradient(135deg,#2563eb,#3b82f6);border-radius:14px;padding:18px;margin-bottom:18px;color:#fff">
         <div style="font-size:12px;opacity:0.9">CA total société</div>
-        <div style="font-size:30px;font-weight:800;font-family:'Syne',sans-serif">${fmt(caTotal)}</div>
+        <div style="font-size:30px;font-weight:800;font-family:'Inter',sans-serif">${fmt(caTotal)}</div>
         <div style="font-size:12px;opacity:0.9;margin-top:2px">${nbTotal} course(s) terminée(s)</div>
       </div>
 
@@ -10241,7 +10295,7 @@ window.gerantEditChauffeur = function(id) {
   ov.innerHTML = `
     <div style="background:#fff;border-radius:16px;max-width:420px;width:100%;padding:22px;max-height:90vh;overflow-y:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-family:'Syne',sans-serif;font-size:17px;font-weight:800;color:#111">${id?'Modifier':'Ajouter'} un chauffeur</div>
+        <div style="font-family:'Inter',sans-serif;font-size:17px;font-weight:800;color:#111">${id?'Modifier':'Ajouter'} un chauffeur</div>
         <button onclick="document.getElementById('gerant-ch-ov').remove()" style="background:#f1f3f5;border:none;border-radius:50%;width:30px;height:30px;cursor:pointer">✕</button>
       </div>
       <div style="font-size:11px;color:#2563eb;background:#eff6ff;border-radius:8px;padding:8px 10px;margin-bottom:14px">👔 Société : <b>${E(g.socNom)}</b> (imposée)</div>
@@ -10412,7 +10466,7 @@ async function renderGerantChauffeurs() {
   cont.innerHTML = `
     <div style="background:linear-gradient(135deg,#2563eb,#3b82f6);border-radius:14px;padding:18px;margin-bottom:16px;color:#fff">
       <div style="font-size:12px;opacity:0.9">CA global société — mois en cours</div>
-      <div style="font-size:30px;font-weight:800;font-family:'Syne',sans-serif">${fmt(caGlobal)}</div>
+      <div style="font-size:30px;font-weight:800;font-family:'Inter',sans-serif">${fmt(caGlobal)}</div>
       <div style="font-size:12px;opacity:0.9;margin-top:2px">${nbGlobal} course(s) • ${g.mesChauffeurs.length} chauffeur(s)</div>
     </div>
     <div style="position:relative;margin-bottom:12px">
@@ -10478,7 +10532,7 @@ window.gerantVoirDetailGains = async function(nom) {
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:600;display:flex;align-items:center;justify-content:center;padding:16px';
   ov.innerHTML = '<div style="background:var(--card);border-radius:18px;width:100%;max-width:560px;max-height:88vh;overflow:hidden;display:flex;flex-direction:column">'
     + '<div style="padding:16px 20px;border-bottom:1px solid var(--border2);display:flex;align-items:center;justify-content:space-between">'
-    + '<div><div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800;color:var(--white)">💰 Gains — '+E(nom)+'</div>'
+    + '<div><div style="font-family:Inter,sans-serif;font-size:16px;font-weight:800;color:var(--white)">💰 Gains — '+E(nom)+'</div>'
     + '<div style="font-size:12px;color:var(--muted);margin-top:2px">Mois en cours</div></div>'
     + '<button onclick="this.closest(\'div[style*=fixed]\').remove()" style="background:var(--card2);border:none;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer;color:var(--white)">✕</button>'
     + '</div>'
@@ -11086,14 +11140,14 @@ window.gerantVoirHeures = async function(chauffeurId, nomChauffeur) {
   ov.innerHTML = `
     <div style="background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:520px;max-height:88vh;overflow-y:auto;padding:22px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:#111">⏱️ Heures — ${E(nomChauffeur)}</div>
+        <div style="font-family:'Inter',sans-serif;font-size:18px;font-weight:800;color:#111">⏱️ Heures — ${E(nomChauffeur)}</div>
         <button onclick="document.getElementById('gerant-heures-ov').remove()" style="background:#f1f3f5;border:none;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>
       </div>
       <div style="font-size:12px;color:#888;margin-bottom:16px">Mois en cours</div>
 
       <div style="background:linear-gradient(135deg,#2563eb,#3b82f6);border-radius:14px;padding:18px;margin-bottom:16px;color:#fff">
         <div style="font-size:12px;opacity:0.9">Total mensuel</div>
-        <div style="font-size:30px;font-weight:800;font-family:'Syne',sans-serif">${hhmm(totalH)}</div>
+        <div style="font-size:30px;font-weight:800;font-family:'Inter',sans-serif">${hhmm(totalH)}</div>
         <div style="font-size:12px;opacity:0.9;margin-top:2px">${jours.length} jour(s) travaillé(s)</div>
       </div>
 
@@ -11196,13 +11250,13 @@ window.openDriverEarnings = function() {
     <div style="background:#f5f6f8;border-radius:20px 20px 0 0;padding:20px;max-width:480px;width:100%;max-height:88vh;overflow-y:auto">
       <div style="width:36px;height:4px;background:#ccc;border-radius:2px;margin:0 auto 16px"></div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-family:'Syne',sans-serif;font-size:19px;font-weight:800;color:#111">💰 Mes gains</div>
+        <div style="font-family:'Inter',sans-serif;font-size:19px;font-weight:800;color:#111">💰 Mes gains</div>
         <button onclick="document.getElementById('driver-earnings-overlay').remove()" style="background:none;border:none;font-size:22px;color:#999;cursor:pointer">✕</button>
       </div>
       <div style="display:flex;gap:8px;margin-bottom:16px">
-        <button onclick="switchEarningsPeriod('day',this)" class="earn-period-btn" style="flex:1;padding:10px;border:2px solid #b8860b;background:#b8860b;border-radius:10px;font-family:'Syne',sans-serif;font-size:13px;font-weight:700;cursor:pointer;color:#fff">Aujourd'hui</button>
-        <button onclick="switchEarningsPeriod('week',this)" class="earn-period-btn" style="flex:1;padding:10px;border:2px solid #e0e3e8;background:#fff;border-radius:10px;font-family:'Syne',sans-serif;font-size:13px;font-weight:700;cursor:pointer;color:#777">Semaine</button>
-        <button onclick="switchEarningsPeriod('month',this)" class="earn-period-btn" style="flex:1;padding:10px;border:2px solid #e0e3e8;background:#fff;border-radius:10px;font-family:'Syne',sans-serif;font-size:13px;font-weight:700;cursor:pointer;color:#777">Mois</button>
+        <button onclick="switchEarningsPeriod('day',this)" class="earn-period-btn" style="flex:1;padding:10px;border:2px solid #b8860b;background:#b8860b;border-radius:10px;font-family:'Inter',sans-serif;font-size:13px;font-weight:700;cursor:pointer;color:#fff">Aujourd'hui</button>
+        <button onclick="switchEarningsPeriod('week',this)" class="earn-period-btn" style="flex:1;padding:10px;border:2px solid #e0e3e8;background:#fff;border-radius:10px;font-family:'Inter',sans-serif;font-size:13px;font-weight:700;cursor:pointer;color:#777">Semaine</button>
+        <button onclick="switchEarningsPeriod('month',this)" class="earn-period-btn" style="flex:1;padding:10px;border:2px solid #e0e3e8;background:#fff;border-radius:10px;font-family:'Inter',sans-serif;font-size:13px;font-weight:700;cursor:pointer;color:#777">Mois</button>
       </div>
       <div id="earnings-content"></div>
     </div>`;
@@ -11351,7 +11405,7 @@ function renderEarningsPeriod(period, offset) {
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <button onclick="navEarnings(-1)" style="width:38px;height:38px;border-radius:10px;border:1px solid #e0e3e8;background:#fff;font-size:18px;color:#b8860b;cursor:pointer;font-weight:800">‹</button>
       <div style="text-align:center">
-        <div style="font-size:14px;font-weight:800;font-family:'Syne',sans-serif;color:#111;text-transform:capitalize">${navLabel}</div>
+        <div style="font-size:14px;font-weight:800;font-family:'Inter',sans-serif;color:#111;text-transform:capitalize">${navLabel}</div>
         <div style="font-size:10px;color:#999;margin-top:1px">${atCurrent?(period==='week'?'Semaine en cours':'Mois en cours'):'Glissez ← → pour naviguer'}</div>
       </div>
       <button onclick="navEarnings(1)" ${atCurrent?'disabled':''} style="width:38px;height:38px;border-radius:10px;border:1px solid #e0e3e8;background:${atCurrent?'#f0f0f0':'#fff'};font-size:18px;color:${atCurrent?'#ccc':'#b8860b'};cursor:${atCurrent?'not-allowed':'pointer'};font-weight:800">›</button>
@@ -11361,21 +11415,21 @@ function renderEarningsPeriod(period, offset) {
     ${navHtml}
     <div style="background:linear-gradient(135deg,#b8860b,#d4a933);border-radius:14px;padding:18px;margin-bottom:16px;text-align:center;box-shadow:0 4px 14px rgba(184,134,11,0.3)">
       <div style="font-size:12px;color:rgba(255,255,255,0.85);margin-bottom:4px">Total ${periodLabel}</div>
-      <div style="font-size:34px;font-weight:800;font-family:'Syne',sans-serif;color:#fff">${fmt(total)}</div>
+      <div style="font-size:34px;font-weight:800;font-family:'Inter',sans-serif;color:#fff">${fmt(total)}</div>
       ${nbCourses?`<div style="font-size:12px;color:rgba(255,255,255,0.9);margin-top:6px">🚗 ${nbTransferts} transfert(s) · ${fmt(caTransferts)}  |  ⏱ ${nbMad} MAD · ${fmt(caMad)}</div>`:''}
     </div>
     ${graphHtml}
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:18px">
       <div style="background:#fff;border:1px solid #e8eaed;border-radius:12px;padding:13px 8px;text-align:center">
-        <div style="font-size:20px;font-weight:800;font-family:'Syne',sans-serif;color:#111">${nbCourses}</div>
+        <div style="font-size:20px;font-weight:800;font-family:'Inter',sans-serif;color:#111">${nbCourses}</div>
         <div style="font-size:10px;color:#777;margin-top:2px">Course${nbCourses>1?'s':''}</div>
       </div>
       <div style="background:#fff;border:1px solid #e8eaed;border-radius:12px;padding:13px 8px;text-align:center">
-        <div style="font-size:20px;font-weight:800;font-family:'Syne',sans-serif;color:#111">${fmt(moyenne)}</div>
+        <div style="font-size:20px;font-weight:800;font-family:'Inter',sans-serif;color:#111">${fmt(moyenne)}</div>
         <div style="font-size:10px;color:#777;margin-top:2px">Moy. / course</div>
       </div>
       <div style="background:#fff;border:1px solid #e8eaed;border-radius:12px;padding:13px 8px;text-align:center">
-        <div style="font-size:20px;font-weight:800;font-family:'Syne',sans-serif;color:#16a34a">${fmt(meilleurJourVal)}</div>
+        <div style="font-size:20px;font-weight:800;font-family:'Inter',sans-serif;color:#16a34a">${fmt(meilleurJourVal)}</div>
         <div style="font-size:10px;color:#777;margin-top:2px">Meilleur jour</div>
       </div>
     </div>
@@ -11579,7 +11633,7 @@ function renderMesCourses() {
   let offresHtml = '';
   if(offresOuvertes.length) {
     offresHtml = '<div style="margin-bottom:20px">'
-      + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span style="font-size:18px">🙋</span><span style="font-family:Syne,sans-serif;font-size:16px;font-weight:800;color:#d97706">Réservations à prendre</span><span style="font-size:11px;background:#d97706;color:#fff;padding:2px 8px;border-radius:10px;font-weight:700">'+offresOuvertes.length+'</span></div>'
+      + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span style="font-size:18px">🙋</span><span style="font-family:Inter,sans-serif;font-size:16px;font-weight:800;color:#d97706">Réservations à prendre</span><span style="font-size:11px;background:#d97706;color:#fff;padding:2px 8px;border-radius:10px;font-weight:700">'+offresOuvertes.length+'</span></div>'
       + '<div style="font-size:11px;color:#999;margin-bottom:10px">Premier arrivé, premier servi — acceptez vite !</div>'
       + offresOuvertes.map(c => {
           const dt = c.datetime ? new Date(c.datetime).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
@@ -11651,7 +11705,7 @@ function renderMesCourses() {
     container.innerHTML = offresHtml + `
       <div style="text-align:center;padding:60px 20px;color:#999">
         <div style="font-size:56px;margin-bottom:16px">✅</div>
-        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700;color:#333;margin-bottom:8px">Aucune course en cours</div>
+        <div style="font-family:'Inter',sans-serif;font-size:18px;font-weight:700;color:#333;margin-bottom:8px">Aucune course en cours</div>
         <div style="font-size:13px">Vos prochaines courses apparaîtront ici</div>
       </div>`;
     return;
@@ -11668,8 +11722,8 @@ function renderMesCourses() {
 
   // Indicateur : nombre de courses, avec invitation à glisser si plusieurs
   const hintGlisser = active.length > 1
-    ? '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><span style="font-family:Syne,sans-serif;font-size:15px;font-weight:800;color:#111">Mes transferts (' + active.length + ')</span><span style="font-size:11px;color:#999">← glissez pour voir les suivants</span></div>'
-    : '<div style="margin-bottom:10px"><span style="font-family:Syne,sans-serif;font-size:15px;font-weight:800;color:#111">Mon transfert</span></div>';
+    ? '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><span style="font-family:Inter,sans-serif;font-size:15px;font-weight:800;color:#111">Mes transferts (' + active.length + ')</span><span style="font-size:11px;color:#999">← glissez pour voir les suivants</span></div>'
+    : '<div style="margin-bottom:10px"><span style="font-family:Inter,sans-serif;font-size:15px;font-weight:800;color:#111">Mon transfert</span></div>';
 
   // Carrousel horizontal : la course actuelle en 1re position, les suivantes
   // accessibles en glissant de droite à gauche. Chaque carte occupe presque
@@ -11714,8 +11768,8 @@ function renderMesCourses() {
     const navBtns = (navAddr||hasCoords) ? '<div style="margin-bottom:14px">'
         + '<div style="font-size:11px;color:#777;margin-bottom:6px;font-weight:600">'+navLabel+' — '+navSubLabel+'</div>'
         + '<div style="display:flex;gap:8px">'
-        + '<button onclick="openNav(\'waze\','+(hasCoords?navLat:'null')+','+(hasCoords?navLng:'null')+',\''+navAddrJs+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;background:#00b4ff;border:none;border-radius:12px;padding:13px;cursor:pointer;box-shadow:0 4px 12px rgba(0,180,255,0.3)"><span style="font-size:20px">&#128507;</span><span style="font-family:Syne,sans-serif;font-size:13px;font-weight:800;color:#fff">Waze</span></button>'
-        + '<button onclick="openNav(\'gmaps\','+(hasCoords?navLat:'null')+','+(hasCoords?navLng:'null')+',\''+navAddrJs+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;background:#34a853;border:none;border-radius:12px;padding:13px;cursor:pointer;box-shadow:0 4px 12px rgba(52,168,83,0.3)"><span style="font-size:20px">&#128506;</span><span style="font-family:Syne,sans-serif;font-size:13px;font-weight:800;color:#fff">Google Maps</span></button>'
+        + '<button onclick="openNav(\'waze\','+(hasCoords?navLat:'null')+','+(hasCoords?navLng:'null')+',\''+navAddrJs+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;background:#00b4ff;border:none;border-radius:12px;padding:13px;cursor:pointer;box-shadow:0 4px 12px rgba(0,180,255,0.3)"><span style="font-size:20px">&#128507;</span><span style="font-family:Inter,sans-serif;font-size:13px;font-weight:800;color:#fff">Waze</span></button>'
+        + '<button onclick="openNav(\'gmaps\','+(hasCoords?navLat:'null')+','+(hasCoords?navLng:'null')+',\''+navAddrJs+'\')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;background:#34a853;border:none;border-radius:12px;padding:13px;cursor:pointer;box-shadow:0 4px 12px rgba(52,168,83,0.3)"><span style="font-size:20px">&#128506;</span><span style="font-family:Inter,sans-serif;font-size:13px;font-weight:800;color:#fff">Google Maps</span></button>'
         + '</div></div>' : '';
     const wazeBtn = navBtns;
 
@@ -11790,10 +11844,10 @@ function renderMesCourses() {
       const _benefComm = (c.creePar==='gerant' && c.donneurOrdre && (c.donneurOrdre.nom||'').trim()) ? c.donneurOrdre.nom : 'MOBILEA';
       if(prixClient > 0) {
         paiementBordHtml = '<div style="background:#ecfdf5;border:2px solid #16a34a;border-radius:12px;padding:14px;margin-bottom:14px">'
-          + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">💵</span><span style="font-family:Syne,sans-serif;font-size:13px;font-weight:800;color:#15803d">Paiement à bord</span></div>'
+          + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="font-size:18px">💵</span><span style="font-family:Inter,sans-serif;font-size:13px;font-weight:800;color:#15803d">Paiement à bord</span></div>'
           + '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #bbf7d0">'
           + '<span style="font-size:13px;color:#111;font-weight:600">À encaisser du client</span>'
-          + '<span style="font-family:Syne,sans-serif;font-size:20px;font-weight:800;color:#15803d">'+prixClient.toFixed(2)+'€</span></div>'
+          + '<span style="font-family:Inter,sans-serif;font-size:20px;font-weight:800;color:#15803d">'+prixClient.toFixed(2)+'€</span></div>'
           + (retro > 0
               ? '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px">'
                 + '<span style="font-size:12px;color:#92400e">dont à reverser à '+E(_benefComm)+'</span>'
@@ -11972,10 +12026,10 @@ function renderMesCourses() {
 
     return '<div class="mc-slide" style="flex:0 0 100%;scroll-snap-align:start;scroll-snap-stop:always"><div style="background:#fff;border:'+(isActiveCourse?'2px solid '+clientColor:'1px solid #e0e3e8')+';border-radius:16px;margin-bottom:4px;overflow:hidden;box-shadow:'+(isActiveCourse?'0 4px 20px '+clientColor+'44':'0 2px 12px rgba(0,0,0,0.08)')+'">'
       // EN COURS banner
-      + (isActiveCourse ? '<div style="background:'+clientColor+';padding:6px 16px;text-align:center;font-family:Syne,sans-serif;font-size:11px;font-weight:800;color:#fff;letter-spacing:2px;text-transform:uppercase">&#9679; COURSE EN COURS</div>' : '')
+      + (isActiveCourse ? '<div style="background:'+clientColor+';padding:6px 16px;text-align:center;font-family:Inter,sans-serif;font-size:11px;font-weight:800;color:#fff;letter-spacing:2px;text-transform:uppercase">&#9679; COURSE EN COURS</div>' : '')
       // Header
       + '<div onclick="openCourseFull(\''+c._id+'\')" style="background:'+clientColor+';padding:12px 16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer">'
-      + '<div style="font-family:Syne,sans-serif;font-size:13px;font-weight:800;color:#fff">'+( nomPassagerChauffeur(c))+'</div>'
+      + '<div style="font-family:Inter,sans-serif;font-size:13px;font-weight:800;color:#fff">'+( nomPassagerChauffeur(c))+'</div>'
       + '<span style="display:flex;align-items:center;gap:6px"><span style="background:rgba(255,255,255,0.25);color:#fff;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px">'+statusLabel+'</span><span style="color:#fff;font-size:16px;font-weight:800">&#9656;</span></span>'
       + '</div>'
       // Body
@@ -12020,7 +12074,7 @@ function renderMesCourses() {
     const isActiveCourse = ['en_route','sur_place','onboard','depose'].includes(c.statut);
     const trajet = E(c.depart||c.lieu||'?') + '  →  ' + E(c.arrivee||c.duree||'?');
     return '<div onclick="openCourseFull(\''+c._id+'\')" style="background:#fff;border:1px solid #e0e3e8;border-left:5px solid '+clientColor+';border-radius:12px;padding:12px 14px;margin-bottom:8px;cursor:pointer;box-shadow:0 1px 5px rgba(0,0,0,0.06)">'
-      + (isActiveCourse?'<div style="font-family:Syne,sans-serif;font-size:10px;font-weight:800;color:'+clientColor+';letter-spacing:1px;margin-bottom:6px">● COURSE EN COURS</div>':'')
+      + (isActiveCourse?'<div style="font-family:Inter,sans-serif;font-size:10px;font-weight:800;color:'+clientColor+';letter-spacing:1px;margin-bottom:6px">● COURSE EN COURS</div>':'')
       + '<div style="display:flex;align-items:center;gap:12px">'
       +   '<div style="background:#f5f6f8;border-radius:8px;padding:6px 8px;text-align:center;min-width:56px"><div style="font-size:16px;font-weight:800;color:#111;letter-spacing:-0.5px">'+time+'</div><div style="font-size:9px;color:#777">'+date+'</div></div>'
       +   '<div style="flex:1;min-width:0">'
@@ -12053,10 +12107,10 @@ function renderMesCourses() {
   const _byDay = {};
   active.forEach(function(c){ const k=(c.datetime||'').slice(0,10)||'zzz'; (_byDay[k]=_byDay[k]||[]).push(c); });
   const lignes = Object.keys(_byDay).sort().map(function(k){
-    return '<div style="font-family:Syne,sans-serif;font-size:12px;font-weight:800;color:#b8860b;text-transform:uppercase;letter-spacing:0.5px;margin:16px 2px 8px;display:flex;align-items:center;gap:8px"><span>📅 '+_dayHeader(k)+'</span><span style="flex:1;height:1px;background:#e8eaed"></span><span style="color:#999;font-weight:700">'+_byDay[k].length+'</span></div>'
+    return '<div style="font-family:Inter,sans-serif;font-size:12px;font-weight:800;color:#b8860b;text-transform:uppercase;letter-spacing:0.5px;margin:16px 2px 8px;display:flex;align-items:center;gap:8px"><span>📅 '+_dayHeader(k)+'</span><span style="flex:1;height:1px;background:#e8eaed"></span><span style="color:#999;font-weight:700">'+_byDay[k].length+'</span></div>'
       + _byDay[k].map(_mkLigne).join('');
   }).join('');
-  const titreListe = '<div style="margin-bottom:4px"><span style="font-family:Syne,sans-serif;font-size:15px;font-weight:800;color:#111">Mes transferts' + (active.length>1?' ('+active.length+')':'') + '</span><div style="font-size:11px;color:#999;margin-top:2px">Touchez un transfert pour le suivi</div></div>';
+  const titreListe = '<div style="margin-bottom:4px"><span style="font-family:Inter,sans-serif;font-size:15px;font-weight:800;color:#111">Mes transferts' + (active.length>1?' ('+active.length+')':'') + '</span><div style="font-size:11px;color:#999;margin-top:2px">Touchez un transfert pour le suivi</div></div>';
   container.innerHTML = offresHtml + blockBanner + titreListe + lignes;
   // Si la page plein ecran d'une course est ouverte, la rafraichir (ou la fermer si terminee).
   if(window._courseFullOpenId){
@@ -12328,7 +12382,7 @@ window.showInvoiceChooser = function(invoices, moisLabel){
   }).join('');
   ov.innerHTML = `<div style="background:#fff;border-radius:18px;max-width:440px;width:100%;max-height:88vh;overflow:auto;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,0.4)">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">
-      <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:#111">Vos factures — ${E(moisLabel)}</div>
+      <div style="font-family:'Inter',sans-serif;font-size:18px;font-weight:800;color:#111">Vos factures — ${E(moisLabel)}</div>
       <button onclick="document.getElementById('invoice-chooser-overlay').remove()" style="background:#f0f0f0;border:none;border-radius:8px;width:32px;height:32px;font-size:16px;cursor:pointer;flex-shrink:0">✕</button>
     </div>
     <div style="font-size:12px;color:#666;margin-bottom:16px">Une facture <b>séparée</b> par société. Touchez « PDF » sur chaque ligne pour l'enregistrer ou l'imprimer individuellement.</div>
@@ -13885,7 +13939,7 @@ function showNewDispatchToast(c, count) {
     <div style="display:flex;align-items:center;gap:14px">
       <div style="font-size:34px">${isClient?'🔔':'📋'}</div>
       <div style="flex:1">
-        <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:800">${count>1?count+' nouvelles courses !':'Nouvelle course à dispatcher !'}</div>
+        <div style="font-family:'Inter',sans-serif;font-size:16px;font-weight:800">${count>1?count+' nouvelles courses !':'Nouvelle course à dispatcher !'}</div>
         <div style="font-size:13px;opacity:0.95;margin-top:2px">${E(c.client||'')} • ${time} • ${E(c.depart||c.lieu||'')} → ${E(c.arrivee||c.duree||'')}</div>
         ${isClient?`<div style="font-size:11px;opacity:0.85;margin-top:3px">👤 Commandé par ${c.createdByClient}</div>`:''}
       </div>
@@ -13938,12 +13992,12 @@ function showNewCourseToast(c, count) {
     <div style="display:flex;align-items:center;gap:14px;max-width:560px;margin:0 auto">
       <div style="font-size:36px;animation:pulse 1s infinite">🚗</div>
       <div style="flex:1;min-width:0">
-        <div style="font-family:'Syne',sans-serif;font-size:17px;font-weight:800">${count>1?count+' nouveaux transferts !':'Nouveau transfert !'}</div>
+        <div style="font-family:'Inter',sans-serif;font-size:17px;font-weight:800">${count>1?count+' nouveaux transferts !':'Nouveau transfert !'}</div>
         <div style="font-size:13px;opacity:0.98;margin-top:3px;font-weight:700">${E(nomPassagerChauffeur(c))} • ${E(time)}</div>
         <div style="font-size:12.5px;opacity:0.95;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(c.depart||c.lieu||'')} → ${E(c.arrivee||c.duree||'')}</div>
         ${ligneExtras ? `<div style="font-size:11.5px;opacity:0.9;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(ligneExtras)}</div>` : ''}
       </div>
-      <button onclick="document.getElementById('new-course-banner').remove();gp('mescourses',null);" style="background:#fff;border:none;border-radius:10px;padding:10px 14px;color:#b8860b;font-size:13px;font-weight:800;cursor:pointer;flex-shrink:0;font-family:'Syne',sans-serif">Voir</button>
+      <button onclick="document.getElementById('new-course-banner').remove();gp('mescourses',null);" style="background:#fff;border:none;border-radius:10px;padding:10px 14px;color:#b8860b;font-size:13px;font-weight:800;cursor:pointer;flex-shrink:0;font-family:'Inter',sans-serif">Voir</button>
       <button onclick="document.getElementById('new-course-banner').remove()" style="background:rgba(255,255,255,0.25);border:none;border-radius:50%;width:32px;height:32px;color:#fff;font-size:16px;cursor:pointer;flex-shrink:0">✕</button>
     </div>`;
   document.body.appendChild(ov);
@@ -14087,7 +14141,7 @@ function renderDirigeant() {
     const cw=w-pad.l-pad.r,ch=h-pad.t-pad.b;
     const max=Math.max(...mData,1);
     ctx.strokeStyle='rgba(255,255,255,0.05)';ctx.lineWidth=1;
-    for(let i=0;i<=4;i++){const y=pad.t+ch-(ch/4)*i;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+cw,y);ctx.stroke();ctx.fillStyle='rgba(90,93,101,0.7)';ctx.font='9px DM Sans';ctx.textAlign='right';ctx.fillText(Math.round(max/4*i)+'€',pad.l-4,y+3);}
+    for(let i=0;i<=4;i++){const y=pad.t+ch-(ch/4)*i;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+cw,y);ctx.stroke();ctx.fillStyle='rgba(90,93,101,0.7)';ctx.font='9px Inter';ctx.textAlign='right';ctx.fillText(Math.round(max/4*i)+'€',pad.l-4,y+3);}
     const bw=cw/12*0.6,gap=cw/12;
     mData.forEach((val,i)=>{
       const x=pad.l+gap*i+gap/2-bw/2;const bh=(val/max)*ch;const y=pad.t+ch-bh;
@@ -14096,8 +14150,8 @@ function renderDirigeant() {
       grad.addColorStop(0,isCur?'rgba(201,168,76,0.95)':'rgba(91,156,246,0.7)');
       grad.addColorStop(1,isCur?'rgba(201,168,76,0.2)':'rgba(91,156,246,0.1)');
       ctx.fillStyle=grad;ctx.fillRect(x,y,bw,bh);
-      ctx.fillStyle='rgba(90,93,101,0.8)';ctx.font='8px DM Sans';ctx.textAlign='center';ctx.fillText(months[i].slice(0,3),x+bw/2,h-pad.b+12);
-      if(val>0){ctx.fillStyle=isCur?'rgba(201,168,76,0.9)':'rgba(91,156,246,0.9)';ctx.font='bold 8px DM Sans';ctx.fillText(val.toFixed(0)+'€',x+bw/2,y-4);}
+      ctx.fillStyle='rgba(90,93,101,0.8)';ctx.font='8px Inter';ctx.textAlign='center';ctx.fillText(months[i].slice(0,3),x+bw/2,h-pad.b+12);
+      if(val>0){ctx.fillStyle=isCur?'rgba(201,168,76,0.9)':'rgba(91,156,246,0.9)';ctx.font='bold 8px Inter';ctx.fillText(val.toFixed(0)+'€',x+bw/2,y-4);}
     });
   }, 150);
 }
@@ -14194,12 +14248,12 @@ function drawRevChart(id, data, prefix) {
   const max=Math.max(...data.map(d=>d.val),1);
   const bw=cw/data.length*0.55,gap=cw/data.length;
   ctx.strokeStyle='rgba(255,255,255,0.05)';ctx.lineWidth=1;
-  for(let i=0;i<=3;i++){const y=pad.t+ch-(ch/3)*i;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+cw,y);ctx.stroke();ctx.fillStyle='rgba(90,93,101,0.6)';ctx.font='8px DM Sans';ctx.textAlign='right';ctx.fillText(Math.round(max/3*i)+'€',pad.l-3,y+3);}
+  for(let i=0;i<=3;i++){const y=pad.t+ch-(ch/3)*i;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+cw,y);ctx.stroke();ctx.fillStyle='rgba(90,93,101,0.6)';ctx.font='8px Inter';ctx.textAlign='right';ctx.fillText(Math.round(max/3*i)+'€',pad.l-3,y+3);}
   data.forEach((d,i)=>{
     const x=pad.l+gap*i+gap/2-bw/2;const bh=(d.val/max)*ch;const y=pad.t+ch-bh;
     const grad=ctx.createLinearGradient(0,y,0,y+bh);grad.addColorStop(0,'rgba(46,204,138,0.85)');grad.addColorStop(1,'rgba(46,204,138,0.1)');
     ctx.fillStyle=grad;ctx.fillRect(x,y,bw,bh);
-    ctx.fillStyle='rgba(90,93,101,0.7)';ctx.font='7px DM Sans';ctx.textAlign='center';ctx.fillText(d.label,x+bw/2,h-pad.b+11);
+    ctx.fillStyle='rgba(90,93,101,0.7)';ctx.font='7px Inter';ctx.textAlign='center';ctx.fillText(d.label,x+bw/2,h-pad.b+11);
   });
 }
 
@@ -14216,7 +14270,7 @@ function renderReservations() {
   list.innerHTML = reservations.map(c=>`
     <div style="background:var(--card2);border:1px solid var(--border);border-radius:var(--r-sm);padding:14px;margin-bottom:10px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:700">${E(c.client||'—')}</div>
+        <div style="font-family:'Inter',sans-serif;font-size:14px;font-weight:700">${E(c.client||'—')}</div>
         <span class="bdg bdg-orange">⏳ En attente</span>
       </div>
       <div style="font-size:12px;color:var(--muted2);margin-bottom:4px">📞 ${E(c.tel||'—')} • 📅 ${fdt(c.datetime)}</div>
@@ -14965,7 +15019,7 @@ window.openCancelCourseModal = function(courseId) {
   overlay.innerHTML = `
     <div style="background:var(--card);border-radius:20px 20px 0 0;padding:20px;max-width:480px;width:100%;max-height:85vh;overflow-y:auto">
       <div style="width:36px;height:4px;background:var(--border2);border-radius:2px;margin:0 auto 16px"></div>
-      <div style="font-family:'Syne',sans-serif;font-size:17px;font-weight:800;margin-bottom:4px">Annuler cette course ?</div>
+      <div style="font-family:'Inter',sans-serif;font-size:17px;font-weight:800;margin-bottom:4px">Annuler cette course ?</div>
       <div style="font-size:12px;color:var(--muted2);margin-bottom:14px">${E(c.depart||c.lieu||'')} → ${E(c.arrivee||c.duree||'')} — ${c.datetime?.slice(11,16)||''}</div>
       ${warning}
       <div style="font-size:12px;color:var(--white2);margin-bottom:8px;font-weight:600">Pourquoi annulez-vous ?</div>
@@ -15172,7 +15226,7 @@ function renderClientPortal() {
   if(activeList){
     if(!activeJour.length){
       activeList.innerHTML = SESSION.isPartenaire
-        ? `<div style="text-align:center;padding:60px 20px;color:var(--muted)"><i class="fas fa-calendar-check" style="font-size:48px;opacity:0.3;display:block;margin-bottom:12px"></i><div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:700;margin-bottom:4px;color:var(--white2)">Aucune course</div><div style="font-size:12px">Pas de transfert planifié pour cette journée</div><button class="btn btn-p btn-sm" style="margin-top:16px" onclick="openClientBooking()"><i class="fas fa-plus"></i> Ajouter une course</button></div>`
+        ? `<div style="text-align:center;padding:60px 20px;color:var(--muted)"><i class="fas fa-calendar-check" style="font-size:48px;opacity:0.3;display:block;margin-bottom:12px"></i><div style="font-family:'Inter',sans-serif;font-size:16px;font-weight:700;margin-bottom:4px;color:var(--white2)">Aucune course</div><div style="font-size:12px">Pas de transfert planifié pour cette journée</div><button class="btn btn-p btn-sm" style="margin-top:16px" onclick="openClientBooking()"><i class="fas fa-plus"></i> Ajouter une course</button></div>`
         : `<div style="text-align:center;padding:20px;color:var(--muted);font-size:12px"><i class="fas fa-check-circle" style="font-size:24px;display:block;margin-bottom:8px;opacity:0.5;color:var(--green)"></i>${joursDispo.length?'Aucun transfert ce jour':t('no_active')}</div>`;
     }
     else {
@@ -15327,7 +15381,7 @@ window.clPourboire = function(id){
   ov.id='tip-overlay';
   ov.style.cssText='position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:20px';
   ov.innerHTML = '<div style="background:#14161b;border:1px solid var(--border2);border-radius:18px;max-width:380px;width:100%;padding:22px;color:var(--white)">'
-    + '<div style="font-family:Syne,sans-serif;font-size:18px;font-weight:800;margin-bottom:4px">💛 Pourboire</div>'
+    + '<div style="font-family:Inter,sans-serif;font-size:18px;font-weight:800;margin-bottom:4px">💛 Pourboire</div>'
     + '<div style="font-size:12px;color:var(--muted);margin-bottom:16px">Pour '+E(c.chauffeur||'votre chauffeur')+' — '+E(c.depart||c.lieu||'')+' → '+E(c.arrivee||'')+'</div>'
     + '<div style="display:flex;gap:8px;margin-bottom:12px">'
     +   [2,5,10].map(function(v){ return '<button onclick="clPourboireValider(\''+id+'\','+v+')" style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:14px;color:var(--white);font-size:16px;font-weight:800;cursor:pointer">'+v+'€</button>'; }).join('')
@@ -15531,7 +15585,7 @@ window.clNoterChauffeur = function(id){
   ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px';
   ov.innerHTML =
       '<div style="background:var(--card);width:100%;max-width:420px;border-radius:16px;padding:22px;text-align:center">'
-    +   '<div style="font-family:Syne,sans-serif;font-size:18px;font-weight:800;color:var(--white);margin-bottom:4px">⭐ Noter votre chauffeur</div>'
+    +   '<div style="font-family:Inter,sans-serif;font-size:18px;font-weight:800;color:var(--white);margin-bottom:4px">⭐ Noter votre chauffeur</div>'
     +   '<div style="font-size:13px;color:var(--muted);margin-bottom:16px">'+(c.chauffeur?E(c.chauffeur):'Course')+(c.ref?' · '+E(c.ref):'')+'</div>'
     +   '<div id="cl-stars" style="display:flex;justify-content:center;gap:8px;margin-bottom:16px">'
     +     [1,2,3,4,5].map(function(n){ return '<span data-n="'+n+'" onclick="clSetStars('+n+')" style="font-size:34px;cursor:pointer;filter:grayscale(1);opacity:.5">⭐</span>'; }).join('')
@@ -15597,7 +15651,7 @@ window.openClientProfil = function(){
     // Parrainage
     +   '<div style="background:linear-gradient(135deg,rgba(200,169,110,0.12),rgba(200,169,110,0.05));border:1px solid rgba(200,169,110,0.3);border-radius:14px;padding:16px;margin-bottom:18px;text-align:center">'
     +     '<div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">🎁 Votre code de parrainage</div>'
-    +     '<div style="font-size:26px;font-weight:800;font-family:Syne,sans-serif;color:var(--gold);letter-spacing:.08em;margin-bottom:10px">'+clReferralCode()+'</div>'
+    +     '<div style="font-size:26px;font-weight:800;font-family:Inter,sans-serif;color:var(--gold);letter-spacing:.08em;margin-bottom:10px">'+clReferralCode()+'</div>'
     +     '<button onclick="clPartagerParrainage()" style="background:var(--gold);border:none;border-radius:10px;padding:10px 18px;color:#111;font-weight:800;cursor:pointer">📤 Partager</button>'
     +   '</div>'
     // Trajets récurrents
@@ -15770,7 +15824,7 @@ window.clRecAdd = function(){
   var J=['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
   ov.innerHTML =
       '<div style="background:var(--card);width:100%;max-width:420px;border-radius:16px;padding:20px">'
-    +   '<div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800;color:var(--white);margin-bottom:14px">🔁 Nouveau trajet récurrent</div>'
+    +   '<div style="font-family:Inter,sans-serif;font-size:16px;font-weight:800;color:var(--white);margin-bottom:14px">🔁 Nouveau trajet récurrent</div>'
     +   '<div class="fld"><label>Départ</label><input type="text" id="clrec-dep" maxlength="200" placeholder="Ex. Domicile" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none;box-sizing:border-box"></div>'
     +   '<div class="fld"><label>Arrivée</label><input type="text" id="clrec-arr" maxlength="200" placeholder="Ex. Bureau" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none;box-sizing:border-box"></div>'
     +   '<div class="fg2" style="gap:10px">'
@@ -16726,7 +16780,7 @@ window.generateCourseReceipt = function(courseId) {
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:40px;color:#1a1a1a;max-width:800px;margin:0 auto;background:#fff}
     .head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #b8860b;padding-bottom:20px;margin-bottom:24px}
-    .logo{font-family:Syne,sans-serif;font-size:28px;font-weight:800;color:#b8860b;letter-spacing:1px}
+    .logo{font-family:Inter,sans-serif;font-size:28px;font-weight:800;color:#b8860b;letter-spacing:1px}
     .head-r{text-align:right;font-size:12px;color:#666;line-height:1.6}
     .recu-title{font-size:20px;font-weight:700;margin-bottom:4px}
     .recu-num{font-size:13px;color:#888}
@@ -16737,7 +16791,7 @@ window.generateCourseReceipt = function(courseId) {
     .row-val{font-weight:600;text-align:right}
     .total-box{background:linear-gradient(135deg,#b8860b,#d4a933);color:#fff;border-radius:12px;padding:18px 22px;display:flex;justify-content:space-between;align-items:center;margin-top:20px}
     .total-label{font-size:14px;opacity:0.9}
-    .total-val{font-size:26px;font-weight:800;font-family:Syne,sans-serif}
+    .total-val{font-size:26px;font-weight:800;font-family:Inter,sans-serif}
     .footer{margin-top:30px;padding-top:18px;border-top:1px solid #eee;font-size:11px;color:#999;text-align:center;line-height:1.6}
     .paid-badge{display:inline-block;background:#d1fae5;color:#065f46;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;margin-top:8px}
     @media print{body{padding:20px}}
@@ -16829,7 +16883,7 @@ window.openClientCourseDetail = function(courseId) {
     <div style="background:#fff;border-radius:20px 20px 0 0;padding:20px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;color:#111">
       <div style="width:36px;height:4px;background:#ccc;border-radius:2px;margin:0 auto 16px"></div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800">Détail de la course</div>
+        <div style="font-family:'Inter',sans-serif;font-size:18px;font-weight:800">Détail de la course</div>
         <button onclick="document.getElementById('client-course-detail-ov').remove()" style="background:none;border:none;font-size:24px;color:#999;cursor:pointer">✕</button>
       </div>
       <div style="margin-bottom:14px">${sBdg(c.statut)}</div>
@@ -17173,7 +17227,7 @@ window.openPromoForm = function(){
   ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:18px';
   ov.innerHTML =
       '<div style="background:var(--card);width:100%;max-width:400px;border-radius:16px;padding:20px">'
-    +   '<div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800;color:var(--white);margin-bottom:14px">🎟️ Nouveau code promo</div>'
+    +   '<div style="font-family:Inter,sans-serif;font-size:16px;font-weight:800;color:var(--white);margin-bottom:14px">🎟️ Nouveau code promo</div>'
     +   '<div class="fld"><label>Code</label><input type="text" id="promo-code" maxlength="40" placeholder="BIENVENUE10" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none;text-transform:uppercase;box-sizing:border-box"></div>'
     +   '<div class="fg2" style="gap:10px">'
     +     '<div class="fld" style="margin:0"><label>Type</label><select id="promo-type" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px;color:var(--white);font-size:13px;outline:none"><option value="eur">Montant (€)</option><option value="pct">Pourcentage (%)</option></select></div>'
@@ -17993,7 +18047,7 @@ function showNewReservationModal(course) {
   ov.innerHTML =
     '<div style="background:#1a1a1a;border:2px solid #b8860b;border-radius:18px;padding:24px;max-width:430px;width:100%;text-align:center">'
     + '<div style="font-size:44px;margin-bottom:6px">🚗</div>'
-    + '<div style="font-family:Syne,sans-serif;font-size:20px;font-weight:800;color:#fff;margin-bottom:12px">Nouvelle réservation !</div>'
+    + '<div style="font-family:Inter,sans-serif;font-size:20px;font-weight:800;color:#fff;margin-bottom:12px">Nouvelle réservation !</div>'
     + '<div style="display:inline-block;background:#b8860b;color:#111;font-weight:800;font-size:13px;padding:5px 14px;border-radius:20px;margin-bottom:14px">'+vI(course.vehicule)+'</div>'
     + '<div style="font-size:15px;color:#fff;font-weight:700;margin-bottom:10px">'+E(nomPassagerChauffeur(course))+'</div>'
     + '<div style="background:#2a2a2a;border-radius:12px;padding:14px;margin-bottom:14px;text-align:left">'
@@ -18032,7 +18086,7 @@ function openCourseFull(id) {
   ov.innerHTML =
     '<div style="background:#111;color:#fff;padding:calc(14px + env(safe-area-inset-top)) 16px 14px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:5">'
     +   '<button onclick="window._courseFullOpenId=null;var o=document.getElementById(\'coursefull-overlay\');if(o)o.remove();" style="background:rgba(255,255,255,0.15);border:none;border-radius:10px;width:38px;height:38px;color:#fff;font-size:18px;cursor:pointer;flex-shrink:0">✕</button>'
-    +   '<div><div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800">Réservation</div><div style="font-size:11px;color:#b8860b;font-weight:700">'+statutLbl+'</div></div>'
+    +   '<div><div style="font-family:Inter,sans-serif;font-size:16px;font-weight:800">Réservation</div><div style="font-size:11px;color:#b8860b;font-weight:700">'+statutLbl+'</div></div>'
     + '</div>'
     + '<div style="max-width:560px;margin:0 auto;padding:14px">'
     +   body
@@ -18064,7 +18118,7 @@ function showOfferModal(course) {
   overlay.innerHTML = `
     <div style="background:#1a1a1a;border:2px solid #b8860b;border-radius:16px;padding:24px;max-width:420px;width:100%;text-align:center">
       <div style="font-size:40px;margin-bottom:8px">🚨</div>
-      <div style="font-family:'Syne',sans-serif;font-size:19px;font-weight:800;color:#fff;margin-bottom:12px">Nouvelle course à confirmer !</div>
+      <div style="font-family:'Inter',sans-serif;font-size:19px;font-weight:800;color:#fff;margin-bottom:12px">Nouvelle course à confirmer !</div>
       <div style="display:inline-block;background:#b8860b;color:#111;font-weight:800;font-size:14px;padding:6px 16px;border-radius:20px;margin-bottom:14px">${vehLabel}</div>
       <div style="font-size:15px;color:#fff;font-weight:700;margin-bottom:6px">${E(nomPassagerChauffeur(course))}</div>
       <div style="background:#2a2a2a;border-radius:10px;padding:12px;margin-bottom:14px;text-align:left">
@@ -18152,7 +18206,7 @@ function buildDriverMarkerHtml(opts) {
   }[vehicule] || '';
 
   return `
-    <div style="display:flex;flex-direction:column;align-items:center;font-family:'Inter','DM Sans',sans-serif">
+    <div style="display:flex;flex-direction:column;align-items:center;font-family:'Inter',sans-serif">
       ${pulse?`<div style="position:absolute;width:46px;height:46px;border-radius:50%;background:${statusColor}33;animation:mapPulse 2s ease-out infinite;top:-2px"></div>`:''}
       <div style="position:relative;width:42px;height:42px;border-radius:50%;background:${statusColor};display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,0.35),0 0 0 3px #fff;z-index:2">
         ${vehSvg}
@@ -18339,7 +18393,7 @@ window.refreshCarteChauffeurs = async function() {
 
     const icon = window.L.divIcon({ html: perime ? `<div style="opacity:0.45;filter:grayscale(1)">${iconHtml}</div>` : iconHtml, className: '', iconSize: [90, 90], iconAnchor: [45, 45], popupAnchor: [0, -40] });
 
-    const popup = `<div style="font-family:'DM Sans',sans-serif;min-width:180px">
+    const popup = `<div style="font-family:'Inter',sans-serif;min-width:180px">
       <div style="font-size:14px;font-weight:700;margin-bottom:6px">${vehIcon} ${name}${perime?' <span style="font-size:10px;color:#9ca3af;font-weight:600">(hors ligne)</span>':''}</div>
       <div style="font-size:11px;color:#666;margin-bottom:3px">${sBdg(c.statut)}</div>
       ${perime
@@ -19286,7 +19340,7 @@ function _renderCpMarkers(tracked) {
       pulse: true
     });
     const icon = window.L.divIcon({html:iconHtml, className:'', iconSize:[90,90], iconAnchor:[45,45], popupAnchor:[0,-40]});
-    const popup = `<div style="font-family:'DM Sans',sans-serif;min-width:170px">
+    const popup = `<div style="font-family:'Inter',sans-serif;min-width:170px">
       <div style="font-size:14px;font-weight:700">${vehIcon} ${name}</div>
       <div style="font-size:12px;color:#00b4ff;font-weight:600;margin:4px 0">${statusLabels[course.statut]||course.statut}</div>
       <div style="font-size:11px;color:#666">${course.depart||''} → ${course.arrivee||''}</div>
@@ -20519,7 +20573,7 @@ window.refreshLiveMap = async function() {
     });
 
     const popupContent = `
-      <div style="font-family:'DM Sans',sans-serif;min-width:180px">
+      <div style="font-family:'Inter',sans-serif;min-width:180px">
         <div style="font-size:14px;font-weight:700;margin-bottom:6px">${vehIcon} ${name}</div>
         ${plaqueM?`<div style="font-size:11px;margin-bottom:4px"><span style="background:#1e3a8a;color:#fff;border-radius:3px;padding:1px 7px;font-weight:700;letter-spacing:0.5px">🇫🇷 ${plaqueM}</span></div>`:''}
         <div style="font-size:11px;color:#666;margin-bottom:3px">📍 ${c.gps.lat.toFixed(5)}, ${c.gps.lng.toFixed(5)}</div>
@@ -20672,7 +20726,7 @@ function renderHistMC() {
     // En-tête du jour : nom du jour + nombre de transferts
     html += `<tr style="background:var(--gold-dim)"><td colspan="5" style="padding:10px 14px">
       <div style="display:flex;align-items:center;justify-content:space-between">
-        <span style="font-family:'Syne',sans-serif;font-size:14px;font-weight:800;color:var(--gold);text-transform:capitalize">${labelJour(cle)}</span>
+        <span style="font-family:'Inter',sans-serif;font-size:14px;font-weight:800;color:var(--gold);text-transform:capitalize">${labelJour(cle)}</span>
         <span style="font-size:12px;color:var(--muted2);font-weight:600">${n} transfert${n>1?'s':''}${term<n?` · ${term} terminé${term>1?'s':''}`:''}</span>
       </div>
     </td></tr>`;
@@ -20911,16 +20965,16 @@ window.askSendSMS = function(c) {
     <div style="background:#fff;border-radius:18px;width:380px;max-width:100%;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
       <div style="padding:24px 22px;text-align:center">
         <div style="font-size:46px;margin-bottom:12px">💬</div>
-        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:#111;margin-bottom:8px">Envoyer un SMS aux passagers ?</div>
+        <div style="font-family:'Inter',sans-serif;font-size:18px;font-weight:800;color:#111;margin-bottom:8px">Envoyer un SMS aux passagers ?</div>
         <div style="font-size:14px;color:#777;line-height:1.4">Prévenir ${present} passager(s) que vous êtes sur place</div>
       </div>
       <div style="display:flex;gap:10px;padding:0 22px 22px">
         <button onclick="this.closest('div[style*=fixed]').remove()"
-          style="flex:1;background:#f0f2f5;border:none;border-radius:12px;padding:15px;font-family:'Syne',sans-serif;font-size:15px;font-weight:700;color:#555;cursor:pointer">
+          style="flex:1;background:#f0f2f5;border:none;border-radius:12px;padding:15px;font-family:'Inter',sans-serif;font-size:15px;font-weight:700;color:#555;cursor:pointer">
           Non, pas maintenant
         </button>
         <button onclick="this.closest('div[style*=fixed]').remove();showSMSPopup(window._smsCourse)"
-          style="flex:1;background:#22c55e;border:none;border-radius:12px;padding:15px;font-family:'Syne',sans-serif;font-size:15px;font-weight:700;color:#fff;cursor:pointer">
+          style="flex:1;background:#22c55e;border:none;border-radius:12px;padding:15px;font-family:'Inter',sans-serif;font-size:15px;font-weight:700;color:#fff;cursor:pointer">
           Oui, envoyer
         </button>
       </div>
@@ -20945,7 +20999,7 @@ window.showSMSPopup = function(c) {
   ov.innerHTML = `
     <div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:560px;max-width:100%;max-height:90vh;overflow:hidden;box-shadow:var(--shadow);display:flex;flex-direction:column">
       <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-        <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:700">💬 Envoyer un message aux passagers</div>
+        <div style="font-family:'Inter',sans-serif;font-size:16px;font-weight:700">💬 Envoyer un message aux passagers</div>
         <button onclick="this.closest('div[style*=fixed]').remove()" style="background:var(--card2);border:1px solid var(--border);border-radius:var(--r-xs);width:30px;height:30px;color:var(--muted2);cursor:pointer">✕</button>
       </div>
       <div style="padding:16px 20px;overflow-y:auto;flex:1">
@@ -21561,12 +21615,12 @@ function drawBarChart() {
     const pad={t:16,r:14,b:34,l:44};const cw=w-pad.l-pad.r,ch=h-pad.t-pad.b;
     const max=Math.max(...data,1);const bw=cw/mois.length*0.55;const gap=cw/mois.length;
     ctx.strokeStyle='rgba(255,255,255,0.05)';ctx.lineWidth=1;
-    for(let i=0;i<=4;i++){const y=pad.t+ch-(ch/4)*i;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+cw,y);ctx.stroke();ctx.fillStyle='rgba(90,93,101,0.7)';ctx.font='9px DM Sans';ctx.textAlign='right';ctx.fillText(Math.round(max/4*i)+'€',pad.l-4,y+3);}
+    for(let i=0;i<=4;i++){const y=pad.t+ch-(ch/4)*i;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+cw,y);ctx.stroke();ctx.fillStyle='rgba(90,93,101,0.7)';ctx.font='9px Inter';ctx.textAlign='right';ctx.fillText(Math.round(max/4*i)+'€',pad.l-4,y+3);}
     mois.forEach((lbl,i)=>{const x=pad.l+gap*i+gap/2-bw/2;const bh=(data[i]/max)*ch;const y=pad.t+ch-bh;
       const grad=ctx.createLinearGradient(0,y,0,y+bh);grad.addColorStop(0,'rgba(201,168,76,0.9)');grad.addColorStop(1,'rgba(201,168,76,0.2)');
       ctx.fillStyle=grad;ctx.fillRect(x,y,bw,bh);
-      ctx.fillStyle='rgba(90,93,101,0.8)';ctx.font='9px DM Sans';ctx.textAlign='center';ctx.fillText(lbl,pad.l+gap*i+gap/2,h-pad.b+12);
-      if(data[i]>0){ctx.fillStyle='rgba(201,168,76,0.9)';ctx.font='bold 9px DM Sans';ctx.fillText(data[i].toFixed(0)+'€',x+bw/2,y-4);}
+      ctx.fillStyle='rgba(90,93,101,0.8)';ctx.font='9px Inter';ctx.textAlign='center';ctx.fillText(lbl,pad.l+gap*i+gap/2,h-pad.b+12);
+      if(data[i]>0){ctx.fillStyle='rgba(201,168,76,0.9)';ctx.font='bold 9px Inter';ctx.fillText(data[i].toFixed(0)+'€',x+bw/2,y-4);}
     });
   });
 }
@@ -22212,7 +22266,7 @@ window.viewPax = function(id) {
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000001;display:flex;align-items:center;justify-content:center;padding:20px';
     ov.innerHTML = '<div style="background:#fff;border-radius:20px;width:100%;max-width:500px;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3)">'
       + '<div style="padding:16px 20px;border-bottom:1px solid #f0f2f5;display:flex;align-items:center;justify-content:space-between">'
-      + '<div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800">&#128101; Passagers</div>'
+      + '<div style="font-family:Inter,sans-serif;font-size:16px;font-weight:800">&#128101; Passagers</div>'
       + '<button onclick="this.closest(\'div[style*=fixed]\').remove()" style="background:#f0f2f5;border:none;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>'
       + '</div>'
       + '<div style="overflow-y:auto;padding:16px;flex:1">'
@@ -22247,7 +22301,7 @@ window.viewPax = function(id) {
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px';
   ov.innerHTML = '<div style="background:#fff;border-radius:20px;width:100%;max-width:520px;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3)">'
     + '<div style="padding:16px 20px;border-bottom:1px solid #f0f2f5;display:flex;align-items:center;justify-content:space-between">'
-    + '<div><div style="font-family:Syne,sans-serif;font-size:16px;font-weight:800">&#128101; Présence passagers</div>'
+    + '<div><div style="font-family:Inter,sans-serif;font-size:16px;font-weight:800">&#128101; Présence passagers</div>'
     + '<div style="font-size:12px;color:#777;margin-top:2px">'+presents+'/'+total+' présent'+(presents>1?'s':'')+' dans le véhicule</div></div>'
     + '<button onclick="this.closest(\'div[style*=fixed]\').remove()" style="background:#f0f2f5;border:none;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer">✕</button>'
     + '</div>'
@@ -22301,9 +22355,12 @@ window.editCourse = function(id) {
   const absent = (c.passagers||[]).length - present;
 
   // Build passenger rows
+  // Ajout d'une case a cocher par passager pour les actions groupees :
+  // deplacer vers un transfert existant OU creer un nouveau transfert
   const paxRows = (c.passagers||[]).map((p,i)=>{
     const copyText = `${E(p.prenom||'')}/${E(p.nom||'')}/${E(p.tel||'')}/${E(p.vol||'')}/${E(p.terminal||'')}/${E(p.harrivee||'')}/${E(p.refClient||'')}`;
     return `<tr id="edit-pax-row-${i}" style="background:${p.present===false?'var(--red-dim)':''};transition:background 0.2s">
+      <td style="width:28px;text-align:center"><input type="checkbox" class="pax-select-chk" data-idx="${i}" onchange="onPaxSelectChange()" style="width:18px;height:18px;cursor:pointer;accent-color:var(--gold)"></td>
       <td style="font-size:12px;font-weight:600">${E(p.prenom||'')} ${E(p.nom||'')}</td>
       <td style="font-size:11px">${E(p.tel||'—')}</td>
       <td style="font-size:11px">${E(p.vol||'—')}</td>
@@ -22329,7 +22386,7 @@ window.editCourse = function(id) {
     <!-- INFOS COURSE -->
     <div style="background:var(--card2);border:1px solid var(--border);border-radius:var(--r-sm);padding:14px;margin-bottom:16px">
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px">
-        <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">RÉFÉRENCE</div><div style="font-family:'Syne',sans-serif;font-weight:700;color:var(--gold)">${E(c.ref||'—')}</div></div>
+        <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">RÉFÉRENCE</div><div style="font-family:'Inter',sans-serif;font-weight:700;color:var(--gold)">${E(c.ref||'—')}</div></div>
         <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">DATE / HEURE</div><div style="font-size:13px;font-weight:600">${fdt(c.datetime)}</div></div>
         <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">CHAUFFEUR</div><div style="font-size:13px;font-weight:600;color:var(--blue)">${E(c.chauffeur||'Non assigné')}</div></div>
         <div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">DÉPART</div><div style="font-size:12px">${E(c.depart||c.lieu||'—')}</div></div>
@@ -22344,7 +22401,7 @@ window.editCourse = function(id) {
 
     <!-- PASSAGERS -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-      <div style="font-family:'Syne',sans-serif;font-size:13px;font-weight:700">
+      <div style="font-family:'Inter',sans-serif;font-size:13px;font-weight:700">
         <i class="fas fa-users" style="color:var(--gold)"></i> Passagers
         <span class="bdg bdg-green" style="margin-left:6px">✓ ${present}</span>
         ${absent>0?`<span class="bdg bdg-red" style="margin-left:4px">✗ ${absent}</span>`:''}
@@ -22352,11 +22409,37 @@ window.editCourse = function(id) {
       <button onclick="addPaxToExistingCourse('${id}')" class="btn btn-p btn-sm"><i class="fas fa-plus"></i> Ajouter passager</button>
     </div>
 
-    <div class="tw" style="margin-bottom:14px">
+    <div class="tw" style="margin-bottom:10px">
       <table>
-        <thead><tr><th>Nom</th><th>Tél</th><th>Vol</th><th>Terminal</th><th>H. Arr.</th><th>Réf. client</th><th>Actions</th></tr></thead>
-        <tbody id="edit-pax-tbody">${paxRows||'<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--muted)">Aucun passager</td></tr>'}</tbody>
+        <thead><tr><th style="width:28px;text-align:center"><input type="checkbox" id="pax-select-all" onchange="togglePaxSelectAll()" style="width:18px;height:18px;cursor:pointer;accent-color:var(--gold)"></th><th>Nom</th><th>Tél</th><th>Vol</th><th>Terminal</th><th>H. Arr.</th><th>Réf. client</th><th>Actions</th></tr></thead>
+        <tbody id="edit-pax-tbody">${paxRows||'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--muted)">Aucun passager</td></tr>'}</tbody>
       </table>
+    </div>
+
+    <!-- BARRE D'ACTIONS GROUPEES POUR LES PAX COCHES -->
+    <div id="pax-bulk-bar" style="display:none;background:linear-gradient(135deg,rgba(184,134,11,0.12),rgba(217,119,6,0.08));border:1px solid rgba(184,134,11,0.4);border-radius:var(--r-sm);padding:12px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+        <div style="font-size:12px;font-weight:700;color:var(--gold)">
+          <i class="fas fa-check-square"></i> <span id="pax-selected-count">0</span> passager(s) sélectionné(s)
+        </div>
+        <button onclick="clearPaxSelection()" style="background:none;border:none;color:var(--muted2);cursor:pointer;font-size:11px;text-decoration:underline">Tout décocher</button>
+      </div>
+
+      <!-- Option A : Deplacer vers un transfert existant -->
+      <div style="margin-bottom:10px">
+        <div style="font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px"><i class="fas fa-arrow-right"></i> Déplacer vers un transfert existant</div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="pax-move-search" placeholder="Rechercher un transfert (client, lieu, chauffeur, date...)" oninput="filterMoveDest('${id}')" style="flex:1;background:var(--card2);border:1px solid var(--border2);border-radius:var(--r-xs);padding:8px 10px;color:var(--white);font-size:12px;outline:none" maxlength="200">
+          <button onclick="doBulkMovePax('${id}')" class="btn btn-b btn-sm"><i class="fas fa-paper-plane"></i> Déplacer</button>
+        </div>
+        <select id="pax-move-dest" size="4" style="width:100%;margin-top:6px;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-xs);padding:4px;color:var(--white);font-size:12px;outline:none;max-height:140px"></select>
+      </div>
+
+      <!-- Option B : Creer un nouveau transfert -->
+      <div style="padding-top:10px;border-top:1px dashed rgba(184,134,11,0.3)">
+        <div style="font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px"><i class="fas fa-plus"></i> Ou créer un nouveau transfert avec ces passagers</div>
+        <button onclick="createCourseFromSelectedPax('${id}')" class="btn btn-p btn-sm" style="width:100%;justify-content:center"><i class="fas fa-plus-circle"></i> Créer un nouveau transfert</button>
+      </div>
     </div>
 
     <!-- AJOUTER PAX RAPIDE (copier-coller) -->
@@ -22373,7 +22456,7 @@ window.editCourse = function(id) {
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:300;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px)';
   ov.innerHTML=`<div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:860px;max-width:100%;max-height:92vh;overflow:hidden;box-shadow:var(--shadow);display:flex;flex-direction:column">
     <div style="padding:16px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
-      <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:700"><i class="fas fa-route" style="color:var(--gold)"></i> ${E(c.client)} <span style="font-size:12px;color:var(--muted);font-family:'DM Sans',sans-serif;font-weight:400">— ${fdt(c.datetime)}</span></div>
+      <div style="font-family:'Inter',sans-serif;font-size:16px;font-weight:700"><i class="fas fa-route" style="color:var(--gold)"></i> ${E(c.client)} <span style="font-size:12px;color:var(--muted);font-family:'Inter',sans-serif;font-weight:400">— ${fdt(c.datetime)}</span></div>
       <button onclick="document.getElementById('edit-course-ov').remove()" style="background:var(--card2);border:1px solid var(--border);border-radius:var(--r-xs);width:30px;height:30px;color:var(--muted2);cursor:pointer;font-size:12px">✕</button>
     </div>
     <div style="padding:18px 22px;overflow-y:auto;flex:1">${html}</div>
@@ -22435,7 +22518,7 @@ window.transferPax = function(courseId, paxIndex) {
   ov2.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:400;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px)';
   ov2.innerHTML=`<div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:520px;max-width:100%;box-shadow:var(--shadow)">
     <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-      <div style="font-family:'Syne',sans-serif;font-size:15px;font-weight:700">➡️ Transférer ${pax.prenom} ${pax.nom}</div>
+      <div style="font-family:'Inter',sans-serif;font-size:15px;font-weight:700">➡️ Transférer ${pax.prenom} ${pax.nom}</div>
       <button onclick="this.closest('div[style*=fixed]').remove()" style="background:var(--card2);border:1px solid var(--border);border-radius:var(--r-xs);width:28px;height:28px;color:var(--muted2);cursor:pointer;font-size:11px">✕</button>
     </div>
     <div style="padding:18px 20px">
@@ -22501,6 +22584,160 @@ window.createNewCourseForPax = function(fromId, paxIndex) {
   showToast('Créez la nouvelle course — le passager sera transféré automatiquement');
 };
 
+// ============================================================================
+// SELECTION GROUPEE DES PASSAGERS (Point 3)
+// Cases a cocher par passager + actions :
+//   A) Deplacer vers un transfert existant (recherche)
+//   B) Creer un nouveau transfert pre-rempli avec les passagers selectionnes
+// ============================================================================
+
+function _getSelectedPaxIndexes(){
+  return [...document.querySelectorAll('.pax-select-chk:checked')]
+    .map(cb => parseInt(cb.dataset.idx, 10))
+    .filter(n => !isNaN(n));
+}
+
+window.onPaxSelectChange = function(){
+  const sel = _getSelectedPaxIndexes();
+  const bar = document.getElementById('pax-bulk-bar');
+  const count = document.getElementById('pax-selected-count');
+  if(count) count.textContent = sel.length;
+  if(bar) bar.style.display = sel.length ? 'block' : 'none';
+  // Synchro case "tout selectionner"
+  const all = document.querySelectorAll('.pax-select-chk');
+  const master = document.getElementById('pax-select-all');
+  if(master && all.length){
+    master.checked = sel.length === all.length;
+    master.indeterminate = sel.length > 0 && sel.length < all.length;
+  }
+  // Mettre a jour la liste des destinations si la section est visible
+  const search = document.getElementById('pax-move-search');
+  if(search && sel.length){
+    const courseId = window.currentEditCourse;
+    if(courseId) filterMoveDest(courseId);
+  }
+};
+
+window.togglePaxSelectAll = function(){
+  const master = document.getElementById('pax-select-all');
+  if(!master) return;
+  document.querySelectorAll('.pax-select-chk').forEach(cb => { cb.checked = master.checked; });
+  onPaxSelectChange();
+};
+
+window.clearPaxSelection = function(){
+  document.querySelectorAll('.pax-select-chk').forEach(cb => { cb.checked = false; });
+  const master = document.getElementById('pax-select-all');
+  if(master){ master.checked = false; master.indeterminate = false; }
+  onPaxSelectChange();
+};
+
+window.filterMoveDest = function(currentId){
+  const select = document.getElementById('pax-move-dest');
+  const q = (document.getElementById('pax-move-search')?.value||'').toLowerCase().trim();
+  if(!select) return;
+  const candidates = (D.courses||[])
+    .filter(x => x._id !== currentId && !['terminee','annulee','payee'].includes(x.statut))
+    .filter(x => {
+      if(!q) return true;
+      const hay = [
+        x.client, x.chauffeur, x.ref, x.depart, x.arrivee, x.lieu,
+        x.datetime, x.vehicule, x.codeFact
+      ].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    })
+    .sort((a,b) => (a.datetime||'').localeCompare(b.datetime||''))
+    .slice(0, 50);
+  select.innerHTML = candidates.length
+    ? candidates.map(x => `<option value="${x._id}">${fdt(x.datetime)} — ${E(x.client||'?')} (${vI(x.vehicule)}) · ${(x.passagers||[]).length} pax${x.chauffeur?' → '+E(x.chauffeur):''}</option>`).join('')
+    : '<option value="" disabled>Aucun transfert correspondant</option>';
+};
+
+window.doBulkMovePax = async function(fromId){
+  const sel = _getSelectedPaxIndexes();
+  if(!sel.length){ showToast('Aucun passager coché', true); return; }
+  const destId = document.getElementById('pax-move-dest')?.value;
+  if(!destId){ showToast('Choisir un transfert de destination', true); return; }
+  const fromCourse = D.courses.find(x => x._id === fromId);
+  const toCourse = D.courses.find(x => x._id === destId);
+  if(!fromCourse || !toCourse){ showToast('Transfert introuvable', true); return; }
+
+  // Recuperer les passagers deplacables
+  const movedPax = sel.map(i => fromCourse.passagers[i]).filter(Boolean);
+  if(!movedPax.length){ showToast('Passagers introuvables', true); return; }
+
+  // Source : marquer les deplaces absent (preserve l'historique)
+  const fromPax = fromCourse.passagers.map((p, i) =>
+    sel.includes(i) ? { ...p, present: false } : p
+  );
+  // Destination : ajouter en present=true
+  const toPax = [...(toCourse.passagers||[]), ...movedPax.map(p => ({ ...p, present: true }))];
+
+  // Recomputer les terminaux agreges sur les deux cotes
+  const fromTerms = [...new Set(fromPax.filter(p => p.present !== false).map(p => (p.terminal||'').trim()).filter(Boolean))].join('-');
+  const toTerms   = [...new Set(toPax.map(p => (p.terminal||'').trim()).filter(Boolean))].join('-');
+
+  try {
+    await fbUpdate('courses', fromId, { passagers: fromPax, terminaux: fromTerms, updatedAt: new Date().toISOString() });
+    await fbUpdate('courses', destId, { passagers: toPax, pax: toPax.length, terminaux: toTerms, updatedAt: new Date().toISOString() });
+    const noms = movedPax.map(p => ((p.prenom||'')+' '+(p.nom||'')).trim()).filter(Boolean).join(', ');
+    await addLog(`${movedPax.length} passager(s) déplacé(s) de "${fromCourse.client}" vers "${toCourse.client}" : ${noms}`);
+    document.getElementById('edit-course-ov')?.remove();
+    await loadAll();
+    setTimeout(() => editCourse(fromId), 350);
+    showToast(`✓ ${movedPax.length} passager(s) déplacé(s) vers ${toCourse.client}`);
+  } catch(e){
+    console.warn('doBulkMovePax error:', e);
+    showToast('Erreur lors du déplacement', true);
+  }
+};
+
+window.createCourseFromSelectedPax = function(fromId){
+  const sel = _getSelectedPaxIndexes();
+  if(!sel.length){ showToast('Aucun passager coché', true); return; }
+  const fromCourse = D.courses.find(x => x._id === fromId);
+  if(!fromCourse){ showToast('Transfert introuvable', true); return; }
+  const chosen = sel.map(i => fromCourse.passagers[i]).filter(Boolean);
+  if(!chosen.length){ showToast('Passagers introuvables', true); return; }
+
+  // Stocke pour marquage "absent" dans la course d'origine apres creation
+  window._pendingBulkTransferPax = { fromId, paxIndexes: [...sel] };
+
+  // Ferme le modal d'edition et ouvre un nouveau transfert pre-rempli
+  document.getElementById('edit-course-ov')?.remove();
+  openCourseModal();
+  setTimeout(() => {
+    try {
+      const depEl = document.getElementById('fc-dep');
+      const arrEl = document.getElementById('fc-arr');
+      if(depEl) depEl.value = fromCourse.depart || '';
+      if(arrEl) arrEl.value = fromCourse.arrivee || '';
+      if(fromCourse.cat){
+        const catEl = document.getElementById('fc-cat');
+        if(catEl){ catEl.value = fromCourse.cat; window._catManuelle = true; }
+      }
+      if(fromCourse.vehicule){
+        const vEl = document.getElementById('fc-veh');
+        if(vEl) vEl.value = fromCourse.vehicule;
+      }
+      if(fromCourse.datetime){
+        const dtEl = document.getElementById('fc-dt');
+        if(dtEl) dtEl.value = fromCourse.datetime;
+      }
+      // Pre-remplit la liste des passagers (zone pax copier-coller)
+      const paxTxt = chosen.map(p => [
+        p.harrivee||'', p.vol||'', p.terminal||'', p.refClient||'',
+        ((p.prenom||'')+' '+(p.nom||'')).trim() + (p.tel?' '+p.tel:'')
+      ].filter(x=>x).join(' / ')).join('\n');
+      const ta = document.getElementById('fc-pax-paste') || document.getElementById('fc-pax');
+      if(ta){ ta.value = paxTxt; try { ta.dispatchEvent(new Event('input')); } catch(e){} }
+      try { if(typeof parsePaxPaste === 'function') parsePaxPaste(); } catch(e){}
+    } catch(e){ console.warn('pre-fill new course error:', e); }
+  }, 150);
+
+  showToast(`✓ ${chosen.length} passager(s) prêt(s) — complétez le nouveau transfert puis enregistrez`);
+};
+
 window.mergeCourse = function(id) {
   const c = D.courses.find(x=>x._id===id);
   if(!c) return;
@@ -22511,7 +22748,7 @@ window.mergeCourse = function(id) {
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:400;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px)';
   ov.innerHTML=`<div style="background:var(--card);border:1px solid var(--border2);border-radius:var(--r);width:560px;max-width:100%;box-shadow:var(--shadow)">
     <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
-      <div style="font-family:'Syne',sans-serif;font-size:15px;font-weight:700"><i class="fas fa-object-group" style="color:var(--purple)"></i> Fusionner avec une autre course</div>
+      <div style="font-family:'Inter',sans-serif;font-size:15px;font-weight:700"><i class="fas fa-object-group" style="color:var(--purple)"></i> Fusionner avec une autre course</div>
     </div>
     <div style="padding:18px 20px">
       <div style="font-size:12px;color:var(--muted2);margin-bottom:12px">Les passagers de la course sélectionnée seront ajoutés à <strong style="color:var(--white)">${E(c.client)}</strong>. La course fusionnée sera marquée comme annulée.</div>
