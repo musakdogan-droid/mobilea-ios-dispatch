@@ -18519,7 +18519,7 @@ async function _fillOfferDistance(course){
 
 // ── MARQUEUR MODERNE STYLE UBER/WAZE ──
 function buildDriverMarkerHtml(opts) {
-  const { prenom, vehicule, statusColor, clientLabel, pulse, heading } = opts;
+  const { prenom, vehicule, statusColor, clientLabel, pulse, heading, ageLabel, ageColor } = opts;
   // SVG icônes véhicules modernes (style flat)
   const vehSvg = {
     berline: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M5 11l1.5-4.5A2 2 0 0 1 8.4 5h7.2a2 2 0 0 1 1.9 1.5L19 11M5 11h14M5 11a2 2 0 0 0-2 2v3h2m14-5a2 2 0 0 1 2 2v3h-2M7 16h10M7 16v1a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1m13 0v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="7.5" cy="13.5" r="1" fill="#fff"/><circle cx="16.5" cy="13.5" r="1" fill="#fff"/></svg>',
@@ -18538,6 +18538,7 @@ function buildDriverMarkerHtml(opts) {
       </div>
       <div style="position:relative;width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid ${statusColor};margin-top:-1px;z-index:1;filter:drop-shadow(0 2px 1px rgba(0,0,0,0.2))"></div>
       <div style="background:#fff;color:#1a1a1a;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.2);margin-top:3px;letter-spacing:0.2px">${prenom}</div>
+      ${ageLabel?`<div style="background:#fff;color:#374151;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:10px;white-space:nowrap;margin-top:2px;box-shadow:0 1px 4px rgba(0,0,0,0.18);display:flex;align-items:center;gap:4px"><span style="width:7px;height:7px;border-radius:50%;background:${ageColor||'#9ca3af'};display:inline-block"></span>${ageLabel}</div>`:''}
       ${clientLabel?`<div style="background:${statusColor};color:#fff;font-size:9px;font-weight:700;padding:2px 8px;border-radius:12px;white-space:nowrap;margin-top:3px;max-width:110px;overflow:hidden;text-overflow:ellipsis;box-shadow:0 2px 6px rgba(0,0,0,0.2)">${clientLabel}</div>`:''}
     </div>`;
 }
@@ -18580,6 +18581,8 @@ function createCC() {
 }
 
 window.refreshCarteChauffeurs = async function() {
+  // Positions FRAÎCHES : sans cela la carte relisait une copie vieille de 30 s.
+  try { fbInvalidate('chauffeurs'); } catch(e){}
   let chauffeurs = await fbGet('chauffeurs');
   const courses = await fbGet('courses');
   D.chauffeurs = chauffeurs;
@@ -18675,7 +18678,9 @@ window.refreshCarteChauffeurs = async function() {
   active.forEach(c=>{
     const name = c.prenom+(c.nom?' '+c.nom:'');
     const vehIcon = {berline:'🚗',van:'🚐',sprinter:'🚌',bus:'🚍',pmr:'♿',limousine:'🥂',classes:'🖤'}[c.vehicule]||'🚗';
-    const course = D.courses.find(x=>x.chauffeur===name&&['en_route','sur_place','onboard','acceptee'].includes(x.statut));
+    // Transfert en cours : celui réellement commencé d'abord, sinon un transfert accepté.
+    const _mesC = D.courses.filter(x=>x.chauffeur===name);
+    const course = _mesC.find(x=>['en_route','sur_place','onboard'].includes(x.statut)) || _mesC.find(x=>x.statut==='acceptee');
     const perime = estPerimee(c);
 
     // ★ Accumulation des points pour le tracé en direct
@@ -18705,14 +18710,21 @@ window.refreshCarteChauffeurs = async function() {
     // indisponible, vert si dispo).
     const statusColor = perime ? '#9ca3af' : (course ? '#f0934a' : (c.statut==='indisponible'?'#e74c3c':'#2ecc8a'));
     const gpsAge = c.gps.at ? Math.round((Date.now()-new Date(c.gps.at).getTime())/60000) : null;
+    // Âge de la position, vitesse et direction (affichés sur le marqueur et dans la bulle)
+    const _ageInfo = formatGpsAge(gpsTime(c));
+    const _ageCourt = !_ageInfo ? '' : (_ageInfo.minutes < 1 ? 'en direct' : (_ageInfo.minutes < 60 ? _ageInfo.minutes + ' min' : Math.floor(_ageInfo.minutes/60) + ' h' + (_ageInfo.minutes%60 ? String(_ageInfo.minutes%60).padStart(2,'0') : '')));
+    const _kmh = (c.gps.speed != null && !isNaN(c.gps.speed)) ? Math.round(c.gps.speed * 3.6) : 0;
+    const _cap = (c.gps.heading != null && !isNaN(c.gps.heading)) ? ['Nord','Nord-Est','Est','Sud-Est','Sud','Sud-Ouest','Ouest','Nord-Ouest'][Math.round(c.gps.heading / 45) % 8] : '';
 
     const iconHtml = buildDriverMarkerHtml({
       prenom: c.prenom,
       vehicule: c.vehicule||'berline',
       statusColor: statusColor,
-      clientLabel: course ? course.client : '',
+      clientLabel: course ? ((HT_ST[course.statut] || '') + (course.client ? ' · ' + course.client : '')) : '',
       pulse: !!course,
-      heading: (!perime && c.gps && c.gps.heading!=null) ? c.gps.heading : null
+      heading: (!perime && c.gps && c.gps.heading!=null) ? c.gps.heading : null,
+      ageLabel: _ageCourt + ((!perime && _kmh >= 3) ? ' · ' + _kmh + ' km/h' : ''),
+      ageColor: _ageInfo ? (_ageInfo.minutes < 2 ? '#22c55e' : (_ageInfo.minutes < 10 ? '#f0934a' : '#9ca3af')) : '#9ca3af'
     });
 
     const icon = window.L.divIcon({ html: perime ? `<div style="opacity:0.45;filter:grayscale(1)">${iconHtml}</div>` : iconHtml, className: '', iconSize: [90, 90], iconAnchor: [45, 45], popupAnchor: [0, -40] });
@@ -18722,7 +18734,8 @@ window.refreshCarteChauffeurs = async function() {
       <div style="font-size:11px;color:#666;margin-bottom:3px">${sBdg(c.statut)}</div>
       ${perime
         ? `${(()=>{ const a=formatGpsAge(gpsTime(c)); return `<div style="font-size:11px;color:#9ca3af;font-weight:600;margin:4px 0">⚫ Hors ligne — dernière position ${a?a.texte:''}</div>`; })()}`
-        : (course?`<div style="font-size:11px;color:#c9a84c;font-weight:600;margin:4px 0">▶ ${course.client} • ${course.depart||''} → ${course.arrivee||''}</div>`:'<div style="font-size:11px;color:#2ecc8a;margin:4px 0">● Disponible</div>')}
+        : (course?`<div style="font-size:11px;color:#c9a84c;font-weight:600;margin:4px 0">▶ ${E(HT_ST[course.statut]||'En course')} — ${E(course.client||'')}<br>${E((course.datetime||'').slice(11,16))} · ${E(course.depart||course.lieu||'')} → ${E(course.arrivee||'')}</div>`:'<div style="font-size:11px;color:#2ecc8a;margin:4px 0">● Disponible</div>')}
+      ${!perime ? `<div style="font-size:11px;color:#374151;margin:2px 0">${_kmh >= 3 ? '🚘 ' + _kmh + ' km/h' + (_cap ? ' · direction ' + _cap : '') : '🅿️ À l\'arrêt'}${c.gps.acc ? ' · précision ±' + c.gps.acc + ' m' : ''}</div>` : ''}
       ${!perime ? (()=>{ const a=formatGpsAge(gpsTime(c)); return a?`<div style="font-size:10px;color:${a.couleur};font-weight:600">📍 Position ${a.texte}</div>`:''; })() : ''}
       <a href="https://www.google.com/maps?q=${c.gps.lat},${c.gps.lng}" target="_blank" style="display:block;margin-top:6px;font-size:11px;color:#00b4ff;text-decoration:none">Ouvrir dans Google Maps →</a>
     </div>`;
@@ -19444,125 +19457,253 @@ window.ccHistCloseDrop = function(){
   const drop = document.getElementById('cc-hist-drop');
   if(drop) drop.style.display = 'none';
 };
+// ═══════════════════════════════════════════════════════════════════════════
+//  HISTORIQUE DE DÉPLACEMENT v2 — tracé nettoyé, résumé de journée, arrêts
+//  avec adresse, lecture animée du trajet, lien avec les transferts.
+// ═══════════════════════════════════════════════════════════════════════════
+const HT = { pts:[], stops:[], courses:[], layers:[], mk:null, timer:null, sim:0, vit:60, nom:'', jour:'', adr:{} };
+const HT_ST = { acceptee:'Accepté', en_route:'En route', sur_place:'Sur place', onboard:'Client à bord', depose:'Déposé' };
+function htH(ms) { try { return new Date(ms).toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }); } catch(e) { return '--:--'; } }
+function htDur(min) { min = Math.max(0, Math.round(min)); return min >= 60 ? Math.floor(min/60) + ' h ' + String(min % 60).padStart(2,'0') : min + ' min'; }
+
+// Nettoie la trace brute : points sans heure, GPS imprécis, sauts impossibles.
+function htNettoyer(data, dateStr) {
+  const brut = [];
+  Object.keys(data || {}).sort().forEach(function(k){
+    const p = data[k]; if (!p || !p.lat || !p.lng) return;
+    let t = p.at ? new Date(p.at).getTime() : NaN;
+    if (isNaN(t) && /^\d{6}$/.test(k)) t = new Date(dateStr + 'T' + k.slice(0,2) + ':' + k.slice(2,4) + ':' + k.slice(4,6)).getTime();
+    if (isNaN(t)) return;
+    if (p.a != null && p.a > 150) return;                       // GPS trop imprécis
+    brut.push({ lat:p.lat, lng:p.lng, t:t, a:p.a, s:p.s, c:p.c || '', st:p.st || '', i:p.i ? 1 : 0 });
+  });
+  brut.sort(function(a,b){ return a.t - b.t; });
+  const out = [];
+  for (let k = 0; k < brut.length; k++) {
+    const p = brut[k], prec = out[out.length - 1], suiv = brut[k + 1];
+    if (prec) {
+      const d = distanceKm(prec.lat, prec.lng, p.lat, p.lng), dh = (p.t - prec.t) / 3600000;
+      if (dh > 0 && d / dh > 170) continue;                     // saut impossible (> 170 km/h)
+      // Pic isolé : loin du point d'avant ET d'après alors que ceux-ci sont proches
+      if (suiv && d > 0.4 && distanceKm(p.lat, p.lng, suiv.lat, suiv.lng) > 0.4 && distanceKm(prec.lat, prec.lng, suiv.lat, suiv.lng) < 0.15) continue;
+    }
+    out.push(p);
+  }
+  return out;
+}
+// Arrêt = le véhicule reste dans un rayon de 100 m pendant au moins 3 minutes.
+function htArrets(pts) {
+  const stops = []; let i = 0;
+  while (i < pts.length) {
+    let j = i;
+    while (j + 1 < pts.length && distanceKm(pts[i].lat, pts[i].lng, pts[j + 1].lat, pts[j + 1].lng) <= 0.1) j++;
+    let fin = pts[j].t;
+    // Aucun point n'est enregistré à l'arrêt : l'arrêt dure jusqu'au point suivant s'il est tout proche.
+    if (j + 1 < pts.length && distanceKm(pts[j].lat, pts[j].lng, pts[j + 1].lat, pts[j + 1].lng) <= 0.25) fin = pts[j + 1].t;
+    if (fin - pts[i].t >= 180000) stops.push({ lat:pts[i].lat, lng:pts[i].lng, debut:pts[i].t, fin:fin, i0:i, i1:j });
+    i = j + 1;
+  }
+  return stops;
+}
+// Trou de signal : plus de 5 min sans point ET le véhicule a bougé de plus de 250 m.
+function htTrou(a, b) { return (b.t - a.t) >= 300000 && distanceKm(a.lat, a.lng, b.lat, b.lng) > 0.25; }
+async function htAdresse(lat, lng) {
+  const k = lat.toFixed(4) + ',' + lng.toFixed(4);
+  if (HT.adr[k] !== undefined) return HT.adr[k];
+  try {
+    const r = await fetch('https://api.maptiler.com/geocoding/' + lng + ',' + lat + '.json?key=McFYT7ift0ED35g7Kc0B&language=fr&limit=1');
+    const d = await r.json();
+    const f = d && d.features && d.features[0];
+    HT.adr[k] = f ? String(f.place_name_fr || f.place_name || '').replace(/, France$/, '') : '';
+  } catch(e) { HT.adr[k] = ''; }
+  return HT.adr[k];
+}
+function htPosA(t) {   // position interpolée à l'instant t
+  const p = HT.pts; if (!p.length) return null;
+  if (t <= p[0].t) return [p[0].lat, p[0].lng];
+  for (let k = 1; k < p.length; k++) {
+    if (t <= p[k].t) { const a = p[k - 1], b = p[k], r = (b.t - a.t) > 0 ? (t - a.t) / (b.t - a.t) : 1; return [a.lat + (b.lat - a.lat) * r, a.lng + (b.lng - a.lng) * r]; }
+  }
+  return [p[p.length - 1].lat, p[p.length - 1].lng];
+}
+function htIdxA(t) { let best = 0; for (let k = 0; k < HT.pts.length; k++) { if (HT.pts[k].t <= t) best = k; else break; } return best; }
+
 window.effacerTraceChauffeur = function(){
-  try { if(window._ccTrace && ccMap){ window._ccTrace.forEach(function(l){ ccMap.removeLayer(l); }); } } catch(e){}
+  try { if (HT.timer) { clearInterval(HT.timer); HT.timer = null; } } catch(e){}
+  try { if (ccMap) { HT.layers.forEach(function(l){ ccMap.removeLayer(l); }); if (HT.mk) ccMap.removeLayer(HT.mk); } } catch(e){}
+  HT.layers = []; HT.mk = null; HT.pts = []; HT.stops = []; HT.courses = [];
   window._ccTrace = null;
-  const info = document.getElementById('cc-hist-info'); if(info) info.textContent = '';
+  const info = document.getElementById('cc-hist-info'); if (info) info.textContent = '';
+  const pn = document.getElementById('cc-hist-panel'); if (pn) pn.remove();
 };
+
 window.voirTraceChauffeur = async function(){
   const sel = document.getElementById('cc-hist-driver');
   const dt = document.getElementById('cc-hist-date');
   const info = document.getElementById('cc-hist-info');
   const id = sel ? sel.value : '';
   const date = dt ? dt.value : '';
-  if(!id){ showToast('Choisissez un chauffeur', true); return; }
-  if(!date){ showToast('Choisissez une date', true); return; }
-  if(!ccMap || !window.L){ showToast('Carte pas encore prête', true); return; }
-  if(info) info.textContent = 'Chargement…';
-  const jour = date.replace(/-/g,'');
-  // ★ On conserve TOUS les champs du point (lat, lng, at) — pas juste [lat,lng]
-  // pour pouvoir afficher l'heure de chaque point sur la carte.
-  const points = [];
+  if (!id) { showToast('Choisissez un chauffeur', true); return; }
+  if (!date) { showToast('Choisissez une date', true); return; }
+  if (!ccMap || !window.L) { showToast('Carte pas encore prête', true); return; }
+  if (info) info.textContent = 'Chargement…';
+  let data = null, refuse = false;
   try {
-    const r = await fetch(`${FB_URL}/gps_trails/${id}/${jour}.json${authParam(await getAuthToken())}`);
-    const data = await r.json();
-    if(data){
-      Object.keys(data).sort().forEach(function(k){
-        const p = data[k];
-        if(p && p.lat && p.lng) points.push({ lat:p.lat, lng:p.lng, at:p.at || null, key:k });
-      });
-    }
-  } catch(e){}
-  effacerTraceChauffeur();
-  if(!points.length){ if(info) info.textContent = 'Aucun déplacement enregistré ce jour-là.'; showToast('Aucune trace pour cette date', true); return; }
+    const r = await fetch(`${FB_URL}/gps_trails/${id}/${date.replace(/-/g,'')}.json${authParam(await getAuthToken())}`);
+    if (!r.ok) refuse = true; else data = await r.json();
+  } catch(e) {}
+  window.effacerTraceChauffeur();
+  if (refuse) { if (info) info.textContent = 'Accès à cet historique refusé.'; showToast('Accès refusé', true); return; }
+  const pts = htNettoyer(data, date);
+  if (!pts.length) { if (info) info.textContent = 'Aucun déplacement enregistré ce jour-là.'; showToast('Aucune trace pour cette date', true); return; }
+  const L = window.L;
+  HT.pts = pts; HT.jour = date; HT.sim = pts[0].t;
+  HT.nom = (sel.options[sel.selectedIndex] || {}).text || '';
+  HT.stops = htArrets(pts);
 
-  const latlngs = points.map(p => [p.lat, p.lng]);
-  const layers = [];
-
-  // Tracé principal
-  const line = window.L.polyline(latlngs, { color:'#c8a96e', weight:4, opacity:0.85 }).addTo(ccMap);
-  layers.push(line);
-  const nom = (sel.options[sel.selectedIndex]||{}).text || '';
-
-  // ── Helpers heure/distance ────────────────────────────────────────────
-  const fmtHeure = (iso, key) => {
-    try {
-      if (iso) return new Date(iso).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-      // Fallback : le `key` contient HHMMSS si at manque
-      if (key && key.length === 6) return key.slice(0,2)+':'+key.slice(2,4)+':'+key.slice(4,6);
-    } catch(e){}
-    return '';
-  };
-  const first = points[0];
-  const last = points[points.length - 1];
-  const hDebut = fmtHeure(first.at, first.key);
-  const hFin   = fmtHeure(last.at,  last.key);
-
-  // Distance totale approximative
-  let distKm = 0;
-  for (let i=1; i<points.length; i++) {
-    distKm += distanceKm(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng);
+  // ── Tracé : normal (or), pendant un transfert (bleu), sans signal (gris pointillé)
+  let km = 0, sansSignal = 0, vmax = 0, seg = null;
+  const pousser = function(){ if (seg && seg.ll.length > 1) HT.layers.push(L.polyline(seg.ll, seg.type === 'trou' ? { color:'#9ca3af', weight:3, opacity:0.8, dashArray:'4,8' } : seg.type === 'course' ? { color:'#2563eb', weight:6, opacity:0.9 } : { color:'#c8a96e', weight:4, opacity:0.9 }).addTo(ccMap)); };
+  for (let k = 1; k < pts.length; k++) {
+    const a = pts[k - 1], b = pts[k], d = distanceKm(a.lat, a.lng, b.lat, b.lng);
+    const trou = htTrou(a, b);
+    if (trou) sansSignal += (b.t - a.t); else { km += d; const dh = (b.t - a.t) / 3600000; if (dh > 0.0015 && d / dh > vmax && d / dh < 170) vmax = d / dh; }
+    const type = trou ? 'trou' : ((b.c && a.c === b.c && (b.st === 'onboard' || a.st === 'onboard')) ? 'course' : 'normal');
+    if (!seg || seg.type !== type) { pousser(); seg = { type:type, ll:[[a.lat, a.lng]] }; }
+    seg.ll.push([b.lat, b.lng]);
   }
+  pousser();
+  const bornes = L.latLngBounds(pts.map(function(p){ return [p.lat, p.lng]; }));
 
-  // Durée (si on a des timestamps valides au début et à la fin)
-  let dureeStr = '';
-  try {
-    if (first.at && last.at) {
-      const mn = Math.max(0, Math.round((new Date(last.at) - new Date(first.at)) / 60000));
-      if (mn >= 60) dureeStr = Math.floor(mn/60)+'h'+String(mn%60).padStart(2,'0');
-      else dureeStr = mn+' min';
-    }
-  } catch(e){}
+  const deb = pts[0], fin = pts[pts.length - 1];
+  const totalMin = (fin.t - deb.t) / 60000;
+  const arretMin = HT.stops.reduce(function(s, x){ return s + (x.fin - x.debut); }, 0) / 60000;
+  const conduiteMin = Math.max(0, totalMin - arretMin - sansSignal / 60000);
+  const vmoy = conduiteMin > 1 ? km / (conduiteMin / 60) : 0;
 
-  // ── Marker DÉPART (vert) avec heure dans le popup ──────────────────────
-  const popupDebut = '<div style="font-weight:800;font-size:13px;color:#166534;margin-bottom:4px">🚦 Départ</div>'
-    + '<div style="font-size:12px"><strong>' + E(hDebut || '--:--') + '</strong></div>'
-    + '<div style="font-size:11px;color:#555;margin-top:4px">' + E(nom) + '</div>';
-  layers.push(
-    window.L.circleMarker(latlngs[0], { radius:9, color:'#fff', weight:3, fillColor:'#2ecc8a', fillOpacity:1 })
-      .addTo(ccMap).bindPopup(popupDebut)
-  );
+  // ── Départ / arrivée
+  HT.layers.push(L.circleMarker([deb.lat, deb.lng], { radius:9, color:'#fff', weight:3, fillColor:'#2ecc8a', fillOpacity:1 }).addTo(ccMap)
+    .bindPopup('<b style="color:#166534">🚦 Début de journée</b><br>' + htH(deb.t) + '<br><span style="color:#555;font-size:11px">' + E(HT.nom) + '</span>'));
+  HT.layers.push(L.circleMarker([fin.lat, fin.lng], { radius:9, color:'#fff', weight:3, fillColor:'#e74c3c', fillOpacity:1 }).addTo(ccMap)
+    .bindPopup('<b style="color:#991b1b">🏁 Dernière position</b><br>' + htH(fin.t) + '<br><span style="color:#555;font-size:11px">' + km.toFixed(1) + ' km · ' + htDur(totalMin) + '</span>'));
 
-  // ── Marker ARRIVÉE (rouge) avec heure + durée + distance ───────────────
-  const popupFin = '<div style="font-weight:800;font-size:13px;color:#991b1b;margin-bottom:4px">🏁 Arrivée</div>'
-    + '<div style="font-size:12px"><strong>' + E(hFin || '--:--') + '</strong></div>'
-    + (dureeStr ? '<div style="font-size:11px;color:#555;margin-top:4px">⏱️ Durée : ' + dureeStr + '</div>' : '')
-    + (distKm > 0.1 ? '<div style="font-size:11px;color:#555">📏 Distance : ' + distKm.toFixed(1) + ' km</div>' : '')
-    + '<div style="font-size:11px;color:#555;margin-top:4px">' + E(nom) + '</div>';
-  layers.push(
-    window.L.circleMarker(latlngs[latlngs.length-1], { radius:9, color:'#fff', weight:3, fillColor:'#e74c3c', fillOpacity:1 })
-      .addTo(ccMap).bindPopup(popupFin)
-  );
+  // ── Arrêts numérotés
+  HT.stops.forEach(function(s, n){
+    const ic = L.divIcon({ className:'', iconSize:[26,26], iconAnchor:[13,13], html:'<div style="width:26px;height:26px;border-radius:50%;background:#7c3aed;color:#fff;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font:700 12px Inter,sans-serif">' + (n + 1) + '</div>' });
+    s.mk = L.marker([s.lat, s.lng], { icon:ic }).addTo(ccMap)
+      .bindPopup('<b style="color:#5b21b6">⏸ Arrêt ' + (n + 1) + '</b><br>' + htH(s.debut) + ' → ' + htH(s.fin) + ' · <b>' + htDur((s.fin - s.debut) / 60000) + '</b><div id="ht-pop-adr-' + n + '" style="color:#555;font-size:11px;margin-top:3px"></div>');
+    HT.layers.push(s.mk);
+  });
 
-  // ── Petits points INTERMÉDIAIRES cliquables (toutes les N positions) ──
-  // Pour ne pas surcharger la carte, on n'affiche pas tous les points :
-  // seulement 1 sur N pour avoir ~15-25 points cliquables.
-  const nbInterm = Math.max(0, points.length - 2);
-  const step = Math.max(1, Math.ceil(nbInterm / 20));
-  for (let i = 1; i < points.length - 1; i += step) {
-    const p = points[i];
-    const h = fmtHeure(p.at, p.key);
-    const popup = '<div style="font-size:12px;font-weight:700;color:#8b6914">📍 Point ' + i + '</div>'
-      + '<div style="font-size:12px;margin-top:2px"><strong>' + E(h || '--:--') + '</strong></div>';
-    layers.push(
-      window.L.circleMarker([p.lat, p.lng], { radius:4, color:'#fff', weight:1.5, fillColor:'#d4a017', fillOpacity:0.85 })
-        .addTo(ccMap).bindPopup(popup)
-    );
-  }
+  // ── Transferts du chauffeur ce jour-là
+  const nomCh = HT.nom.replace(/\s*\(.*$/, '').trim().toLowerCase();
+  HT.courses = (D.courses || []).filter(function(c){
+    if (!c || (c.datetime || '').slice(0,10) !== date || ['annulee','noshow'].indexOf(c.statut) >= 0) return false;
+    return c.chauffeurId === id || (c.chauffeur && (c.chauffeur.trim().toLowerCase() === nomCh || nomCh.indexOf(c.chauffeur.trim().toLowerCase()) === 0));
+  }).sort(function(a,b){ return String(a.datetime).localeCompare(String(b.datetime)); }).map(function(c){
+    const mes = pts.filter(function(p){ return p.c === c._id; });
+    const bord = mes.filter(function(p){ return p.st === 'onboard'; });
+    const o = { c:c, prevu:new Date(c.datetime).getTime(), pec:bord[0] || null, depose:bord.length ? (mes[mes.length - 1]) : null, deb:mes[0] || null };
+    const pin = function(p, emoji, titre, coul){ const m = L.marker([p.lat, p.lng], { icon:L.divIcon({ className:'', iconSize:[28,28], iconAnchor:[14,14], html:'<div style="width:28px;height:28px;border-radius:8px;background:' + coul + ';border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:14px">' + emoji + '</div>' }) }).addTo(ccMap)
+      .bindPopup('<b>' + titre + '</b> · ' + htH(p.t) + '<br><span style="font-size:11px;color:#555">' + E((c.client || '') + ' — ' + (c.depart || c.lieu || '?') + ' → ' + (c.arrivee || '?')) + '</span>'); HT.layers.push(m); return m; };
+    if (o.pec) { o.mk = pin(o.pec, '🧍', 'Prise en charge', '#2563eb'); if (o.depose && o.depose !== o.pec) pin(o.depose, '🏁', 'Dépose', '#15803d'); }
+    else if (o.prevu >= deb.t - 600000 && o.prevu <= fin.t + 600000) { const q = htPosA(o.prevu); o.approx = true; o.mk = pin({ lat:q[0], lng:q[1], t:o.prevu }, '🕐', 'Position à l\'heure prévue', '#b45309'); }
+    return o;
+  });
 
-  window._ccTrace = layers;
+  window._ccTrace = HT.layers;
   ccMap._userMoved = true;
-  try { ccMap.fitBounds(line.getBounds(), { padding:[40,40] }); } catch(e){}
+  try { ccMap.fitBounds(bornes, { padding:[40,40] }); } catch(e){}
+  if (info) info.textContent = km.toFixed(1) + ' km · ' + htH(deb.t) + ' → ' + htH(fin.t) + ' · ' + HT.stops.length + ' arrêt(s)';
 
-  // Récap affiché sous la barre de recherche
-  if(info) {
-    const parts = [points.length + ' points'];
-    if (hDebut && hFin) parts.push(hDebut + ' → ' + hFin);
-    if (dureeStr) parts.push('⏱️ ' + dureeStr);
-    if (distKm > 0.1) parts.push('📏 ' + distKm.toFixed(1) + ' km');
-    info.textContent = parts.join(' · ');
+  // ── Panneau sous la carte
+  const cont = document.getElementById('cc-map-container');
+  if (cont) {
+    const pn = document.createElement('div'); pn.id = 'cc-hist-panel';
+    pn.style.cssText = 'margin-top:14px;background:var(--card);border:1px solid var(--border);border-radius:var(--r);overflow:hidden';
+    const tuile = function(v, l){ return '<div style="flex:1;min-width:92px;padding:10px 6px;text-align:center"><div style="font-size:17px;font-weight:800;color:var(--white);white-space:nowrap">' + v + '</div><div style="font-size:10px;color:var(--muted);margin-top:2px;text-transform:uppercase">' + l + '</div></div>'; };
+    pn.innerHTML = '<div style="padding:10px 14px;font-size:13px;font-weight:700;color:var(--white);border-bottom:1px solid var(--border)"><i class="fas fa-route" style="color:var(--gold)"></i> ' + E(HT.nom) + ' — ' + new Date(date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }) + '</div>'
+      + '<div style="display:flex;flex-wrap:wrap;border-bottom:1px solid var(--border)">' + tuile(km.toFixed(1) + ' km', 'Distance') + tuile(htH(deb.t), 'Début') + tuile(htH(fin.t), 'Fin') + tuile(htDur(conduiteMin), 'Conduite') + tuile(htDur(arretMin), 'À l\'arrêt') + tuile(HT.stops.length, 'Arrêts') + (vmoy ? tuile(Math.round(vmoy) + ' km/h', 'Moyenne') : '') + (sansSignal >= 300000 ? tuile(htDur(sansSignal / 60000), 'Sans signal') : '') + '</div>'
+      + '<div style="padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--border);background:var(--card2)">'
+      +   '<button id="ht-play" class="btn btn-p btn-sm" onclick="htLecture()"><i class="fas fa-play"></i> Rejouer</button>'
+      +   '<input id="ht-slider" type="range" min="0" max="1000" value="0" oninput="htCurseur(this.value)" style="flex:1;min-width:140px" aria-label="Position dans la journée">'
+      +   '<span id="ht-heure" style="font-size:14px;font-weight:800;color:var(--white);font-variant-numeric:tabular-nums;min-width:48px">' + htH(deb.t) + '</span>'
+      +   '<select id="ht-vit" class="fsel" onchange="HT.vit=parseInt(this.value)||60" style="padding:5px 6px" aria-label="Vitesse de lecture"><option value="120">Lent</option><option value="60" selected>Normal</option><option value="20">Rapide</option></select>'
+      + '</div>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0">'
+      +   '<div style="padding:12px 14px;border-right:1px solid var(--border)"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:6px">⏸ Arrêts (' + HT.stops.length + ')</div>'
+      +     (HT.stops.length ? HT.stops.map(function(s, n){ return '<div onclick="htVoirArret(' + n + ')" style="display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--border2);cursor:pointer;font-size:12.5px;color:var(--white)"><span style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#7c3aed;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">' + (n + 1) + '</span><span style="min-width:0"><b>' + htH(s.debut) + ' → ' + htH(s.fin) + '</b> · ' + htDur((s.fin - s.debut) / 60000) + '<br><span id="ht-adr-' + n + '" style="color:var(--muted);font-size:11.5px">Recherche de l\'adresse…</span></span></div>'; }).join('') : '<div style="font-size:12.5px;color:var(--muted)">Aucun arrêt de plus de 3 minutes.</div>')
+      +   '</div>'
+      +   '<div style="padding:12px 14px"><div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:6px">🚗 Transferts du jour (' + HT.courses.length + ')</div>'
+      +     (HT.courses.length ? HT.courses.map(function(o, n){ const c = o.c; return '<div onclick="htVoirCourse(' + n + ')" style="padding:8px 0;border-top:1px solid var(--border2);cursor:pointer;font-size:12.5px;color:var(--white)"><b>' + E((c.datetime || '').slice(11,16)) + '</b> · ' + E(c.client || '') + '<br><span style="color:var(--muted);font-size:11.5px">' + E((c.depart || c.lieu || '?') + ' → ' + (c.arrivee || '?')) + '</span><br><span style="font-size:11.5px;color:' + (o.pec ? '#2563eb' : 'var(--muted)') + '">' + (o.pec ? '🧍 Pris en charge ' + htH(o.pec.t) + (o.depose && o.depose !== o.pec ? ' · 🏁 déposé ' + htH(o.depose.t) : '') : (o.approx ? '🕐 Position à l\'heure prévue (heures réelles non enregistrées)' : 'Hors de la période enregistrée')) + '</span></div>'; }).join('') : '<div style="font-size:12.5px;color:var(--muted)">Aucun transfert attribué ce jour-là.</div>')
+      +   '</div>'
+      + '</div>'
+      + '<div style="padding:8px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--border)"><span style="color:#c8a96e">━</span> trajet &nbsp; <span style="color:#2563eb">━</span> client à bord &nbsp; <span style="color:#9ca3af">┅</span> sans signal GPS</div>';
+    cont.parentNode.insertBefore(pn, cont.nextSibling);
   }
+  // Adresses des arrêts (15 au maximum, l'une après l'autre)
+  (async function(){
+    const jeton = HT.jour + '|' + id;
+    for (let n = 0; n < HT.stops.length; n++) {
+      if (HT.jour + '|' + id !== jeton || !document.getElementById('cc-hist-panel')) return;
+      const adr = n < 15 ? await htAdresse(HT.stops[n].lat, HT.stops[n].lng) : '';
+      if (!HT.stops[n]) return;
+      HT.stops[n].adr = adr;
+      const el = document.getElementById('ht-adr-' + n); if (el) el.textContent = adr || 'Adresse non trouvée';
+    }
+  })();
 };
+window.htVoirArret = function(n) {
+  const s = HT.stops[n]; if (!s || !ccMap) return;
+  ccMap.setView([s.lat, s.lng], Math.max(ccMap.getZoom(), 16));
+  try { s.mk.openPopup(); const el = document.getElementById('ht-pop-adr-' + n); if (el) el.textContent = s.adr || ''; } catch(e){}
+  try { document.getElementById('cc-map-container').scrollIntoView({ behavior:'smooth', block:'center' }); } catch(e){}
+};
+window.htVoirCourse = function(n) {
+  const o = HT.courses[n]; if (!o || !ccMap) return;
+  if (!o.mk) { showToast('Pas de position enregistrée pour ce transfert', true); return; }
+  if (o.pec && o.depose && o.depose !== o.pec) { try { ccMap.fitBounds([[o.pec.lat, o.pec.lng], [o.depose.lat, o.depose.lng]], { padding:[60,60], maxZoom:16 }); } catch(e){} }
+  else ccMap.setView(o.mk.getLatLng(), Math.max(ccMap.getZoom(), 15));
+  try { o.mk.openPopup(); } catch(e){}
+  try { document.getElementById('cc-map-container').scrollIntoView({ behavior:'smooth', block:'center' }); } catch(e){}
+  htAller((o.pec ? o.pec.t : o.prevu));
+};
+// ── Lecture animée
+function htAller(t) {
+  if (!HT.pts.length || !ccMap) return;
+  const d = HT.pts[0].t, f = HT.pts[HT.pts.length - 1].t;
+  HT.sim = Math.min(f, Math.max(d, t));
+  const q = htPosA(HT.sim);
+  if (!HT.mk) HT.mk = window.L.marker(q, { zIndexOffset:1000, icon:window.L.divIcon({ className:'', iconSize:[34,34], iconAnchor:[17,17], html:'<div style="width:34px;height:34px;border-radius:50%;background:#111827;border:3px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;font-size:16px">🚘</div>' }) }).addTo(ccMap);
+  else HT.mk.setLatLng(q);
+  const h = document.getElementById('ht-heure'); if (h) h.textContent = htH(HT.sim);
+  const sl = document.getElementById('ht-slider'); if (sl && f > d) sl.value = Math.round((HT.sim - d) / (f - d) * 1000);
+}
+window.htCurseur = function(v) {
+  if (!HT.pts.length) return;
+  const d = HT.pts[0].t, f = HT.pts[HT.pts.length - 1].t;
+  htAller(d + (f - d) * (parseInt(v) || 0) / 1000);
+  try { if (!ccMap.getBounds().contains(HT.mk.getLatLng())) ccMap.panTo(HT.mk.getLatLng()); } catch(e){}
+};
+window.htLecture = function() {
+  const btn = document.getElementById('ht-play');
+  if (HT.timer) { clearInterval(HT.timer); HT.timer = null; if (btn) btn.innerHTML = '<i class="fas fa-play"></i> Rejouer'; return; }
+  if (!HT.pts.length) return;
+  const d = HT.pts[0].t, f = HT.pts[HT.pts.length - 1].t;
+  if (HT.sim >= f - 1000) HT.sim = d;
+  if (btn) btn.innerHTML = '<i class="fas fa-pause"></i> Pause';
+  HT.timer = setInterval(function(){
+    if (!document.getElementById('cc-hist-panel')) { clearInterval(HT.timer); HT.timer = null; return; }
+    // Toute la journée défile en ~HT.vit secondes ; les arrêts passent 8× plus vite.
+    let pas = (f - d) / (HT.vit * 10);
+    const k = htIdxA(HT.sim), a = HT.pts[k], b = HT.pts[k + 1];
+    if (a && b && (b.t - a.t) > 180000 && distanceKm(a.lat, a.lng, b.lat, b.lng) < 0.25) pas *= 8;
+    htAller(HT.sim + Math.max(pas, 1000));
+    try { if (!ccMap.getBounds().pad(-0.1).contains(HT.mk.getLatLng())) ccMap.panTo(HT.mk.getLatLng()); } catch(e){}
+    if (HT.sim >= f) { clearInterval(HT.timer); HT.timer = null; if (btn) btn.innerHTML = '<i class="fas fa-play"></i> Rejouer'; }
+  }, 100);
+};
+window.HT = HT;
 
 // ── CARTE SUIVI CHAUFFEUR (espace client) ──
 let cpMap = null;
@@ -20584,9 +20725,16 @@ async function sendGPS(pos) {
   if(!ch) return;
   // heading = cap en degrés (0=Nord, 90=Est…) ; null si le tel est immobile ou
   // ne le fournit pas. speed en m/s. On les stocke pour afficher la direction.
-  const h = (pos.coords.heading != null && !isNaN(pos.coords.heading)) ? Math.round(pos.coords.heading) : null;
+  const h = (pos.coords.heading != null && !isNaN(pos.coords.heading) && pos.coords.heading >= 0) ? Math.round(pos.coords.heading) : null;
+  // Position imprécise (> 200 m : tunnel, parking, bâtiment) : on garde la
+  // dernière bonne position au lieu de faire « sauter » le chauffeur sur la
+  // carte — sauf si l'on n'a plus rien de bon depuis 60 s.
+  const _acc = Math.round(pos.coords.accuracy || 0);
+  if (_acc > 200 && window._gpsBonAt && (Date.now() - window._gpsBonAt) < 60000) return;
+  if (_acc <= 200) window._gpsBonAt = Date.now();
+  const _vit = (pos.coords.speed != null && !isNaN(pos.coords.speed) && pos.coords.speed >= 0) ? Math.round(pos.coords.speed * 10) / 10 : null;
   await fbUpdate('chauffeurs', ch._id, {
-    gps: {lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy), at:new Date().toISOString(), heading:h, speed: pos.coords.speed!=null?Math.round(pos.coords.speed):null},
+    gps: {lat:pos.coords.latitude, lng:pos.coords.longitude, acc:_acc, at:new Date().toISOString(), heading:h, speed:_vit},
     gpsActive: true,
     gpsUpdated: new Date().toISOString()
   });
@@ -20595,7 +20743,7 @@ async function sendGPS(pos) {
   // Alerte « arrivée imminente » au client partenaire (ex. Value Retail) X min avant.
   try { await checkArriveeClient(pos.coords.latitude, pos.coords.longitude); } catch(e){}
   // Historique de déplacement : enregistre un point (throttlé) pour rejouer le trajet.
-  try { await enregistrerTrace(ch._id, pos.coords.latitude, pos.coords.longitude); } catch(e){}
+  try { await enregistrerTrace(ch._id, pos.coords.latitude, pos.coords.longitude, { acc:_acc, vit:_vit, cap:h }); } catch(e){}
 }
 
 // Enregistre la trace GPS du chauffeur. Seuils réduits pour un suivi plus fin :
@@ -20605,27 +20753,43 @@ async function sendGPS(pos) {
 // détaillé. Rangé par jour : gps_trails/<chauffeurId>/<AAAAMMJJ>/<HHMMSS>.
 // Un premier point est toujours enregistré à l'ouverture (even if no last).
 window._lastTrace = window._lastTrace || {};
-async function enregistrerTrace(driverId, lat, lng){
+async function enregistrerTrace(driverId, lat, lng, extra){
   if(!driverId || !lat || !lng) return;
+  extra = extra || {};
   const now = Date.now();
   const last = window._lastTrace[driverId];
+  let immobile = false;
   if(last){
     const ecoule = now - last.at;
     const dist = distanceKm(last.lat, last.lng, lat, lng);
-    // Point écrit si (30s écoulées ET bougé un peu) OU (bougé significativement)
-    const condition1 = ecoule >= 30000 && dist >= 0.02; // 30s + 20m
-    const condition2 = dist >= 0.05; // 50m peu importe le temps
-    if (!condition1 && !condition2) return;
+    // Point GPS imprécis (> 100 m) : ignoré, sauf si rien n'a été enregistré depuis 2 min.
+    if (extra.acc && extra.acc > 100 && ecoule < 120000) return;
+    // Tracé fin : un point toutes les 15 s dès 15 m parcourus, ou tous les 40 m.
+    const bouge = (ecoule >= 15000 && dist >= 0.015) || dist >= 0.04;
+    // À l'arrêt : un point « témoin » toutes les 5 min, pour distinguer dans
+    // l'historique un vrai arrêt d'une coupure de signal.
+    immobile = !bouge && ecoule >= 300000;
+    if (!bouge && !immobile) return;
   }
   window._lastTrace[driverId] = { lat:lat, lng:lng, at:now };
   const d = new Date();
   const p2 = n => String(n).padStart(2,'0');
   const jour = '' + d.getFullYear() + p2(d.getMonth()+1) + p2(d.getDate());
   const heure = p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
+  const point = { lat: Math.round(lat*1e5)/1e5, lng: Math.round(lng*1e5)/1e5, at: d.toISOString() };
+  if (extra.acc) point.a = extra.acc;                                   // précision (m)
+  if (extra.vit != null) point.s = Math.round(extra.vit * 3.6);         // vitesse (km/h)
+  if (immobile) point.i = 1;                                            // point témoin (à l'arrêt)
+  // Transfert en cours : permet de retrouver prise en charge et dépose dans l'historique.
+  try {
+    const moi = SESSION.name, uid = SESSION.uid;
+    const cc = (D.courses||[]).find(c => (c.chauffeur === moi || c.chauffeurId === driverId || (uid && c.chauffeurUid === uid)) && ['en_route','sur_place','onboard'].includes(c.statut));
+    if (cc && cc._id) { point.c = cc._id; point.st = cc.statut; }
+  } catch(e){}
   try {
     const r = await fetch(`${FB_URL}/gps_trails/${driverId}/${jour}/${heure}.json${authParam(await getAuthToken())}`, {
       method:'PUT', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ lat: Math.round(lat*1e5)/1e5, lng: Math.round(lng*1e5)/1e5, at: d.toISOString() })
+      body: JSON.stringify(point)
     });
     if (r && !r.ok && window._diagShow) {
       window._diagShow('enregistrerTrace HTTP ' + r.status + ' pour ' + jour + '/' + heure);
@@ -20763,6 +20927,16 @@ function demarrerSuiviGPS() {
     document.addEventListener('visibilitychange', () => {
       if(document.visibilityState === 'visible' && gpsActive) {
         _acquireWakeLock(); // le wake lock est libéré en arrière-plan : le reprendre
+        // Retour dans l'app : envoyer TOUT DE SUITE une position fraîche (sans
+        // attendre le prochain relevé), pour que le dispatch ne voie pas une
+        // vieille position.
+        try {
+          navigator.geolocation.getCurrentPosition(function(pos){
+            _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
+            _gpsLastSent = Date.now();
+            try { sendGPS(pos); } catch(e){}
+          }, function(){}, { enableHighAccuracy:true, maximumAge:0, timeout:10000 });
+        } catch(e){}
       } else if(document.visibilityState === 'hidden' && gpsActive && _lastGpsPos) {
         // Au passage en arrière-plan (ouverture de Waze) : pousser la dernière
         // position connue pour que le dispatch ait le point le plus récent.
