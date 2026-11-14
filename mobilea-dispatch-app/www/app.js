@@ -12257,17 +12257,24 @@ window.generateDriverInvoice = async function() {
   for(const k of cles){
     const g = groupes[k];
     const buyer = g.buyer;
-    let totalHT = 0;
+    // CORRECTION TVA : les prix stockés (prixChauffeur, frais d'attente) sont
+    // TTC — comme pour la facture client. Il faut donc partir du TTC puis
+    // en extraire la part HT et la TVA, et NON pas ajouter 10 % au-dessus.
+    // Avant : prix 80 TTC → facture affichait 80 HT + 8 TVA = 88 TTC (bug).
+    // Apres : prix 80 TTC → facture 72.73 HT + 7.27 TVA = 80.00 TTC ✓
+    let totalTTC = 0;
     const lines = g.list.map(c=>{
       const prixCh = parseFloat(c.prixChauffeur)||0;
       const w = (typeof calcWaitFees==='function') ? calcWaitFees(c) : null;
       const waitCh = w ? w.chauffeurFee : 0;
-      const montant = prixCh + waitCh;
-      totalHT += montant;
+      const montantTTC = prixCh + waitCh;             // prix stocke = TTC
+      // Ligne affichee en HT (compatible avec l'intitule de colonne "Montant HT")
+      const montant = tvaApplicable ? (montantTTC / (1 + TVA)) : montantTTC;
+      totalTTC += montantTTC;
       return { date: c.datetime ? parseLocalDT(c.datetime).toLocaleDateString('fr-FR',{timeZone:'UTC'}) : '—', ref:c.ref||'', trajet:`${E(c.depart||c.lieu||'—')} → ${E(c.arrivee||c.duree||'—')}`, montant };
     });
-    const tva = tvaApplicable ? totalHT * 0.10 : 0;
-    const totalTTC = totalHT + tva;
+    const totalHT = tvaApplicable ? (totalTTC / (1 + TVA)) : totalTTC;
+    const tva = tvaApplicable ? (totalTTC - totalHT) : 0;
     const totalHTr = Math.round(totalHT*100)/100;
     const tvaR = Math.round(tva*100)/100;
     const totalTTCr = Math.round(totalTTC*100)/100;
@@ -12327,10 +12334,9 @@ window.generateDriverInvoice = async function() {
     </table>
 
     <div class="totals">
-      <div class="tr"><span>Total HT (net à payer)</span><span>${totalHTr.toFixed(2)} €</span></div>
+      <div class="tr"><span>${tvaApplicable?'Total HT':'Net à payer'}</span><span>${totalHTr.toFixed(2)} €</span></div>
       ${tvaApplicable
-        ? `<div class="tr" style="font-size:11px;color:#555"><span>Base HT au taux 10 %</span><span>${totalHTr.toFixed(2)} €</span></div>
-           <div class="tr"><span>TVA 10 %</span><span>${tvaR.toFixed(2)} €</span></div>`
+        ? `<div class="tr"><span>TVA 10 %</span><span>${tvaR.toFixed(2)} €</span></div>`
         : `<div class="tr" style="font-size:10px;color:#888"><span>TVA non applicable — art. 293 B du CGI</span><span>0.00 €</span></div>`}
       <div class="tf"><span>Total ${tvaApplicable?'TTC':'à payer'}</span><span>${totalTTCr.toFixed(2)} €</span></div>
     </div>
