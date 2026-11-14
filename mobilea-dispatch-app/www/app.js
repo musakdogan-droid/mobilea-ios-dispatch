@@ -10524,6 +10524,7 @@ window.openGerantPanel = async function() {
 // (pas de permissions admin), cloisonné à son périmètre.
 window.gerantEditChauffeur = function(id) {
   if(SESSION.role!=='chauffeur' || !SESSION.gerant) { showToast('Accès non autorisé', true); return; }
+  if(!gOpt('chauffeurs')) { showToast('Option « Ajouter des chauffeurs » non activée par l\'administrateur', true); return; }
   const g = window._gerantData; if(!g) return;
   let ch = {};
   if(id) {
@@ -10545,7 +10546,9 @@ window.gerantEditChauffeur = function(id) {
       <div style="margin-bottom:10px"><label style="font-size:12px;color:#555;display:block;margin-bottom:4px">Nom</label><input id="gch-nom" value="${E(ch.nom||'')}" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:10px;font-size:14px;box-sizing:border-box"></div>
       <div style="margin-bottom:10px"><label style="font-size:12px;color:#555;display:block;margin-bottom:4px">Téléphone</label><input id="gch-tel" value="${E(ch.tel||'')}" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:10px;font-size:14px;box-sizing:border-box"></div>
       <div style="margin-bottom:10px"><label style="font-size:12px;color:#555;display:block;margin-bottom:4px">Email (pour sa connexion)</label><input id="gch-email" type="email" value="${E(ch.email||'')}" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:10px;font-size:14px;box-sizing:border-box"></div>
-      <div style="margin-bottom:16px"><label style="font-size:12px;color:#555;display:block;margin-bottom:4px">Mot de passe ${id?'(laisser vide pour ne pas changer)':'*'}</label><input id="gch-pass" type="text" placeholder="min. 6 caractères" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:10px;font-size:14px;box-sizing:border-box"></div>
+      ${id
+        ? `<input type="hidden" id="gch-pass" value=""><div style="margin-bottom:16px"><button type="button" onclick="gerantResetMdpChauffeur('${id}')" style="width:100%;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:10px;padding:11px;color:#334155;font-size:13px;font-weight:700;cursor:pointer">📧 Lui envoyer un lien pour changer son mot de passe</button></div>`
+        : `<div style="margin-bottom:16px"><label style="font-size:12px;color:#555;display:block;margin-bottom:4px">Mot de passe * <span style="color:#888">(à lui communiquer — il n'est pas conservé dans l'application)</span></label><input id="gch-pass" type="text" autocomplete="off" placeholder="min. 6 caractères" style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:10px;font-size:14px;box-sizing:border-box"></div>`}
       <button onclick="gerantSaveChauffeur()" style="width:100%;background:#2563eb;border:none;border-radius:10px;padding:13px;color:#fff;font-size:14px;font-weight:800;cursor:pointer">Enregistrer</button>
       <div id="gch-err" style="color:#dc2626;font-size:12px;margin-top:10px;text-align:center"></div>
     </div>`;
@@ -10555,61 +10558,118 @@ window.gerantEditChauffeur = function(id) {
 
 window.gerantSaveChauffeur = async function() {
   if(SESSION.role!=='chauffeur' || !SESSION.gerant) { showToast('Accès non autorisé', true); return; }
+  // SÉCURITÉ : ajouter / modifier un chauffeur n'est possible que si l'admin a
+  // coché l'option « Ajouter des chauffeurs » (vérifiée aussi par le serveur).
+  if(!gOpt('chauffeurs')) { showToast('Option « Ajouter des chauffeurs » non activée par l\'administrateur', true); return; }
   const g = window._gerantData; if(!g) return;
   const id = document.getElementById('gch-id').value;
-  // SÉCURITÉ : le gérant ne peut PAS créer de chauffeur — uniquement modifier les
-  // siens. La création est réservée à l'admin (ou un dispatch autorisé).
-  if(!id) { showToast('Seul un administrateur peut ajouter un chauffeur', true); return; }
   const prenom = document.getElementById('gch-prenom').value.trim();
   const nom = document.getElementById('gch-nom').value.trim();
   const tel = document.getElementById('gch-tel').value.trim();
   const email = document.getElementById('gch-email').value.trim().toLowerCase();
-  const pass = document.getElementById('gch-pass').value.trim();
+  const pass = (document.getElementById('gch-pass').value||'').trim();
   const err = document.getElementById('gch-err');
+  err.textContent = '';
   if(!prenom) { err.textContent='Le prénom est obligatoire.'; return; }
-  if(pass && pass.length<6) { err.textContent='Mot de passe : min. 6 caractères.'; return; }
-  if(!id && !pass) { err.textContent='Un mot de passe est requis pour un nouveau chauffeur.'; return; }
-
-  // Sécurité : en modification, le chauffeur DOIT appartenir à sa société
-  if(id) {
-    const existant = (g.mesChauffeurs||[]).find(x => x._id === id);
-    if(!existant) { err.textContent='Chauffeur hors de votre société.'; return; }
-  }
+  if(!g.socNom) { err.textContent='Aucune société associée à votre compte.'; return; }
 
   const data = {
     prenom: sanitize(prenom,50), nom: sanitize(nom,50), tel: sanitize(tel,20),
-    email: sanitize(email,100),
-    soc_nom: g.socNom,          // société IMPOSÉE
+    soc_nom: g.socNom,          // société IMPOSÉE (celle du gérant)
     soustraitant: true,
     updatedAt: new Date().toISOString(),
   };
-  if(pass) data.password = pass;
 
   try {
     if(id) {
-      await fbUpdate('chauffeurs', id, data);
+      // ── MODIFICATION : le chauffeur DOIT appartenir à sa société ──
+      const existant = (g.mesChauffeurs||[]).find(x => x._id === id);
+      if(!existant) { err.textContent='Chauffeur hors de votre société.'; return; }
+      // L'email de connexion ne se change pas ici (il est lié au compte).
+      if(email && email !== String(existant.email||'').trim().toLowerCase() && existant.uid) {
+        err.textContent = 'L\'email de connexion ne peut pas être modifié ici — contactez MOBILEA.'; return;
+      }
+      if(email && !existant.uid) data.email = sanitize(email,100);
+      await gRest('PATCH', 'chauffeurs/' + id, data);
     } else {
+      // ── CRÉATION : compte de connexion + rôle + fiche ──
+      if(!email || !isValidEmail(email)) { err.textContent='Un email valide est obligatoire (il sert à sa connexion).'; return; }
+      if(pass.length < 6) { err.textContent='Mot de passe : min. 6 caractères.'; return; }
+      let tous = [];
+      try { fbInvalidate('chauffeurs'); tous = await fbGet('chauffeurs') || []; } catch(e){}
+      if(tous.some(c => String(c.email||'').trim().toLowerCase() === email)) { err.textContent='Un chauffeur existe déjà avec cet email.'; return; }
+      if(!(window.firebase && typeof firebaseConfig !== 'undefined')) { err.textContent='Service de comptes indisponible. Réessayez.'; return; }
+      err.style.color = '#2563eb'; err.textContent = 'Création du compte…';
+      // 1) Compte de connexion (application secondaire : ne déconnecte pas le gérant)
+      let nvUid = '';
+      const secApp = firebase.initializeApp(firebaseConfig, 'SecGer_' + Date.now());
+      try {
+        const cred = await secApp.auth().createUserWithEmailAndPassword(email, pass);
+        nvUid = (cred && cred.user && cred.user.uid) || '';
+      } catch(ex) {
+        err.style.color = '#dc2626';
+        err.textContent = (ex && ex.code === 'auth/email-already-in-use') ? 'Cet email a déjà un compte. Utilisez un autre email ou contactez MOBILEA.'
+          : (ex && ex.code === 'auth/weak-password') ? 'Mot de passe trop faible.'
+          : 'Création du compte impossible. Réessayez.';
+        try { await secApp.delete(); } catch(e){}
+        return;
+      }
+      try { await secApp.auth().signOut(); } catch(e){}
+      try { await secApp.delete(); } catch(e){}
+      err.style.color = '#dc2626';
+      if(!nvUid) { err.textContent='Création du compte impossible. Réessayez.'; return; }
+      // 2) Fiche chauffeur (le mot de passe n'est JAMAIS enregistré dans la base)
+      data.email = sanitize(email,100);
+      data.uid = nvUid;
+      data.statut = 'indisponible';
       data.createdAt = new Date().toISOString();
       data.createdByGerant = SESSION.name;
-      await fbPush('chauffeurs', data);
+      data.createdByUid = gUid();
+      // Mêmes informations société que le gérant (pour ses factures)
+      try {
+        const moi = (g.mesChauffeurs||[]).find(x => x._id === SESSION.chauffeurId) || {};
+        ['soc_siret','soc_adresse','soc_tva','soc_tvaapp','soc_iban'].forEach(k => { if(moi[k]) data[k] = moi[k]; });
+      } catch(e){}
+      await gRest('POST', 'chauffeurs', data);
+      // 3) Rôle « chauffeur » (sans lui il ne verrait aucune course)
+      let roleOK = true;
+      try { await gRest('PUT', 'roles/' + nvUid, 'chauffeur'); } catch(e){ roleOK = false; }
+      if(!roleOK) showToast('⚠️ Chauffeur créé, mais son accès doit être validé par MOBILEA', true);
     }
-    showToast('Chauffeur enregistré ✓');
+    try { fbInvalidate('chauffeurs'); } catch(e){}
+    gJT('Chauffeur enregistré ✓');
     document.getElementById('gerant-ch-ov')?.remove();
     document.getElementById('gerant-panel-ov')?.remove();
     setTimeout(()=>{ try{renderGerantChauffeurs();}catch(e){} }, 300);
-  } catch(e) { err.textContent='Erreur d\'enregistrement.'; }
+  } catch(e) {
+    err.style.color = '#dc2626';
+    err.textContent = (e && (e.status === 401 || e.status === 403)) ? 'Refusé par le serveur — option non activée, ou règles de sécurité pas à jour.' : 'Erreur d\'enregistrement.';
+  }
+};
+
+// Envoie au chauffeur un email pour définir un nouveau mot de passe.
+window.gerantResetMdpChauffeur = async function(id) {
+  if(!gOpt('chauffeurs')) { showToast('Option non activée par l\'administrateur', true); return; }
+  const g = window._gerantData; if(!g) return;
+  const ch = (g.mesChauffeurs||[]).find(x => x._id === id);
+  if(!ch || !ch.email) { showToast('Ce chauffeur n\'a pas d\'email de connexion', true); return; }
+  if(!confirm('Envoyer à ' + ch.email + ' un lien pour changer son mot de passe ?')) return;
+  try { await window.fbAuth.sendPasswordResetEmail(String(ch.email).trim()); showToast('📧 Email envoyé à ' + ch.email); }
+  catch(e) { showToast('Envoi impossible — vérifiez l\'email', true); }
 };
 
 window.gerantArchiveChauffeur = async function(id, nom) {
   if(SESSION.role!=='chauffeur' || !SESSION.gerant) { showToast('Accès non autorisé', true); return; }
+  if(!gOpt('chauffeurs')) { showToast('Option « Ajouter des chauffeurs » non activée par l\'administrateur', true); return; }
   const g = window._gerantData; if(!g) return;
   const ch = (g.mesChauffeurs||[]).find(x => x._id === id);
   if(!ch) { showToast('Chauffeur hors de votre société', true); return; }
   if(ch.gerant) { showToast('Impossible d\'archiver le gérant', true); return; }
   if(!confirm(`Archiver ${nom} ? Il n'apparaîtra plus dans la liste active.`)) return;
   try {
-    await fbUpdate('chauffeurs', id, { archived: true, archivedAt: new Date().toISOString(), archivedBy: SESSION.name });
-    showToast('Chauffeur archivé ✓');
+    await gRest('PATCH', 'chauffeurs/' + id, { archived: true, archivedAt: new Date().toISOString(), archivedBy: SESSION.name, soc_nom: ch.soc_nom || g.socNom });
+    try { fbInvalidate('chauffeurs'); } catch(e){}
+    gJT('Chauffeur archivé ✓');
     document.getElementById('gerant-panel-ov')?.remove();
     setTimeout(()=>{ try{renderGerantChauffeurs();}catch(e){} }, 300);
   } catch(e) { showToast('Erreur', true); }
@@ -10710,6 +10770,7 @@ async function renderGerantChauffeurs() {
       <div style="font-size:30px;font-weight:800;font-family:'Inter',sans-serif">${fmt(caGlobal)}</div>
       <div style="font-size:12px;opacity:0.9;margin-top:2px">${nbGlobal} course(s) • ${g.mesChauffeurs.length} chauffeur(s)</div>
     </div>
+    ${gOpt('chauffeurs') ? '<button onclick="gerantEditChauffeur(\'\')" class="btn btn-p" style="width:100%;justify-content:center;margin-bottom:12px"><i class="fas fa-user-plus"></i> Ajouter un chauffeur</button>' : ''}
     <div style="position:relative;margin-bottom:12px">
       <i class="fas fa-search" style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px"></i>
       <input id="gc-search" type="text" placeholder="Rechercher un chauffeur…" oninput="filterGerantChauffeurs(this.value)" style="width:100%;background:var(--card);border:1px solid var(--border2);border-radius:10px;padding:11px 11px 11px 38px;color:var(--white);font-size:14px;box-sizing:border-box">
@@ -10732,8 +10793,8 @@ async function renderGerantChauffeurs() {
             <div style="display:flex;gap:4px;margin-top:6px">
               <button class="btn btn-ghost btn-xs" onclick='gerantVoirDetailGains(${JSON.stringify(l.nom)})' style="color:#3b82f6" title="Détail des gains" aria-label="Détail des gains"><i class="fas fa-list" aria-hidden="true"></i></button>
               <button class="btn btn-ghost btn-xs" onclick="gerantVoirHeures('${l.ch._id}','${E(l.nom)}')" style="color:#2563eb" aria-label="Horaires"><i class="fas fa-clock" aria-hidden="true"></i></button>
-              <button class="btn btn-ghost btn-xs" onclick="gerantEditChauffeur('${l.ch._id}')" aria-label="Modifier"><i class="fas fa-edit" aria-hidden="true"></i></button>
-              ${!l.ch.gerant?`<button class="btn btn-ghost btn-xs" onclick="gerantArchiveChauffeur('${l.ch._id}','${E(l.nom)}')" style="color:#dc2626" aria-label="Archiver"><i class="fas fa-archive" aria-hidden="true"></i></button>`:''}
+              ${gOpt('chauffeurs')?`<button class="btn btn-ghost btn-xs" onclick="gerantEditChauffeur('${l.ch._id}')" aria-label="Modifier"><i class="fas fa-edit" aria-hidden="true"></i></button>`:''}
+              ${(gOpt('chauffeurs') && !l.ch.gerant)?`<button class="btn btn-ghost btn-xs" onclick="gerantArchiveChauffeur('${l.ch._id}','${E(l.nom)}')" style="color:#dc2626" aria-label="Archiver"><i class="fas fa-archive" aria-hidden="true"></i></button>`:''}
             </div>
           </div>
         </div>
@@ -10824,12 +10885,17 @@ async function renderGerantVehicules() {
   const g = await loadGerantData();
   if(!g) { cont.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)">Aucune société associée.</div>'; return; }
   if(cnt) cnt.textContent = g.mesVehicules.length;
+  // Option « Ajouter des véhicules » (activée par l'admin) : bouton d'ajout.
+  const _gvOpt = gOpt('vehicules');
+  try { const info = cont.previousElementSibling; if(info && /contactez MOBILEA/.test(info.textContent||'')) info.style.display = _gvOpt ? 'none' : ''; } catch(e){}
+  const _gvAjout = _gvOpt ? '<button onclick="gvehEditer(\'\')" class="btn btn-p" style="width:100%;justify-content:center;margin-bottom:12px"><i class="fas fa-plus"></i> Ajouter un véhicule</button>' : '';
 
   if(!g.mesVehicules.length) {
+    if(_gvOpt) { cont.innerHTML = _gvAjout + '<div style="text-align:center;padding:24px;color:var(--muted)">Aucun véhicule enregistré.</div>'; return; }
     cont.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted)"><i class="fas fa-car" style="font-size:28px;opacity:0.3"></i><p style="margin-top:10px">Aucun véhicule enregistré pour votre société.</p><p style="font-size:12px">Contactez MOBILEA pour en ajouter.</p></div>';
     return;
   }
-  cont.innerHTML = g.mesVehicules.map(v => {
+  cont.innerHTML = _gvAjout + g.mesVehicules.map(v => {
     // Qui utilise ce van aujourd'hui ? Comparaison normalisée (trim + majuscules)
     // pour tolérer espaces/casse invisibles dans les immatriculations.
     const norm = s => String(s||'').trim().toUpperCase().replace(/\s+/g,'');
@@ -10843,6 +10909,7 @@ async function renderGerantVehicules() {
         <div>
           <div style="font-size:14px;font-weight:700;color:var(--white)">${E(v.marque||'')} ${E(v.modele||'')}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px">${v.immat?'🔖 '+E(v.immat):''}${v.type?' · '+E(v.type):''}${v.annee?' · '+E(v.annee):''}</div>
+          ${(_gvOpt && (v.societe||'').trim() === g.socNom) ? `<div style="display:flex;gap:6px;margin-top:8px"><button class="btn btn-ghost btn-xs" onclick="gvehEditer('${v._id}')" aria-label="Modifier"><i class="fas fa-edit" aria-hidden="true"></i> Modifier</button><button class="btn btn-ghost btn-xs" style="color:#dc2626" onclick="gvehSupprimer('${v._id}')" aria-label="Supprimer"><i class="fas fa-trash" aria-hidden="true"></i></button></div>` : ''}
           ${util?`<div style="font-size:11px;color:#3b82f6;margin-top:4px">🚐 Aujourd'hui : ${E(util.prenom+(util.nom?' '+util.nom:''))}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:4px">Non attribué</div>'}
         </div>
       </div>
@@ -11077,9 +11144,16 @@ window.renderGerantNouveau = async function(){
     var _searchInput = document.getElementById('gn-autre-ch-search');
     if(_searchInput && !_searchInput._focusHooked) {
       _searchInput.addEventListener('focus', window.gnAutreChOnFocus);
+      // CORRECTIF : le champ n'avait aucun évènement de saisie → taper un nom
+      // ne filtrait jamais la liste. On filtre maintenant à chaque frappe.
+      _searchInput.addEventListener('input', function(){ try { window.gnAutreChSearch(this.value); } catch(e){} });
+      _searchInput.addEventListener('keyup', function(){ try { window.gnAutreChSearch(this.value); } catch(e){} });
       _searchInput._focusHooked = true;
     }
   } catch(e){}
+  // Liste COMPLÈTE du réseau pour la recherche (D.chauffeurs peut être limité
+  // à la société du gérant).
+  try { var _tousCh = await fbGet('chauffeurs'); if(Array.isArray(_tousCh) && _tousCh.length) window._gnReseau = _tousCh; } catch(e){}
   try { await gNouveauEnrichir(); } catch(e){} // espace privé : client facturé + tarif auto
   gerantMajMarge();
 };
@@ -11091,9 +11165,11 @@ window.gnAutreChSearch = function(q) {
   var drop = document.getElementById('gn-autre-ch-drop');
   if(!drop) return;
   var queryRaw = String(q||'').trim();
-  var query = queryRaw.toLowerCase();
+  // Recherche insensible aux majuscules ET aux accents (« helene » trouve « Hélène »)
+  var _sansAcc = function(t){ return String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); };
+  var query = _sansAcc(queryRaw);
   // Récupérer tous les chauffeurs MOBILEA (actifs, non bloqués, non archivés)
-  var tous = (D.chauffeurs||[]).filter(function(ch){
+  var tous = ((window._gnReseau && window._gnReseau.length) ? window._gnReseau : (D.chauffeurs||[])).filter(function(ch){
     return !ch.archived && !ch.blocked;
   });
   // ★ Si vide → on affiche toute la liste (triée par nom) au lieu de cacher.
@@ -11110,8 +11186,8 @@ window.gnAutreChSearch = function(q) {
     var cleanTel = function(t){ return String(t||'').replace(/[\s+\-().]/g,''); };
     var queryTel = cleanTel(queryRaw);
     res = tous.filter(function(ch){
-      var nom = ((ch.prenom||'') + ' ' + (ch.nom||'')).toLowerCase().trim();
-      var nomInv = ((ch.nom||'') + ' ' + (ch.prenom||'')).toLowerCase().trim();
+      var nom = _sansAcc((ch.prenom||'') + ' ' + (ch.nom||'')).trim();
+      var nomInv = _sansAcc((ch.nom||'') + ' ' + (ch.prenom||'')).trim();
       var tel = cleanTel(ch.tel);
       if(nom.indexOf(query) !== -1) return true;
       if(nomInv.indexOf(query) !== -1) return true;
@@ -11156,7 +11232,7 @@ window.gnAutreChOnFocus = function() {
 };
 
 window.gnAutreChPick = function(id) {
-  var ch = (D.chauffeurs||[]).find(function(x){ return x._id === id; });
+  var ch = (window._gnReseau||[]).find(function(x){ return x._id === id; }) || (D.chauffeurs||[]).find(function(x){ return x._id === id; });
   if(!ch) return;
   var nom = (ch.prenom||'') + ((ch.nom)?' '+ch.nom:'');
   var hidden = document.getElementById('gn-autre-ch');
@@ -11281,7 +11357,7 @@ window.gerantCreerTransfert = async function(mode){
       return;
     }
     var mes = (window._gerantCache && window._gerantCache.mesChauffeurs) || [];
-    var ch = mes.find(function(x){return x._id===chId;}) || (D.chauffeurs||[]).find(function(x){return x._id===chId;});
+    var ch = mes.find(function(x){return x._id===chId;}) || (D.chauffeurs||[]).find(function(x){return x._id===chId;}) || (window._gnReseau||[]).find(function(x){return x._id===chId;});
     if(!ch){ showToast('Chauffeur introuvable', true); return; }
     var nomCh = ch.prenom + (ch.nom?' '+ch.nom:'');
     base.chauffeur = nomCh;
@@ -11299,6 +11375,7 @@ window.gerantCreerTransfert = async function(mode){
       if(!_gPriv) try { await addLog('➕ Transfert gérant ('+SESSION.name+') '+_label+nomCh+' : '+dep+' → '+arr); } catch(e){}
       try { await sendPushNotification('🚗 Nouveau transfert', client+' — '+dep+' → '+arr, null, ch._id?[ch._id]:null); } catch(e){}
       showToast('✅ Transfert attribué à '+nomCh);
+      try { gJournal('Transfert créé et attribué à '+nomCh+' — '+dep+' → '+arr); } catch(e){}
       gerantResetTransfert();
       try { gnAutreChClear(); } catch(e){}
       try { gp(gOpt('agenda') ? 'gerant-agenda' : 'gerant-transferts'); } catch(e){} // confirmation visuelle
@@ -11336,6 +11413,7 @@ window.gerantCreerTransfert = async function(mode){
         if(!_gPriv) try { await addLog('🙋 Transfert gérant ('+SESSION.name+') proposé au réseau : '+dep+' → '+arr); } catch(e){}
         try { await sendPushNotification('🙋 Transfert à prendre', client+' — '+dep+' → '+arr+(prixChauffeur?' — '+prixChauffeur+'€':''), null, null, { key:'role', value:'chauffeur' }); } catch(e){}
         showToast('✅ Transfert proposé à tout le réseau');
+        try { gJournal('Transfert créé et proposé au réseau — '+dep+' → '+arr); } catch(e){}
       }
       gerantResetTransfert();
       try { gp(gOpt('agenda') ? 'gerant-agenda' : 'gerant-transferts'); } catch(e){} // confirmation visuelle
@@ -21890,7 +21968,7 @@ function gp(name, btn) {
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   const pg=document.getElementById('page-'+name);if(pg)pg.classList.add('on');
   if(btn)btn.classList.add('on');
-  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',transfertsgerants:'Transferts gérants',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres',aiphone:'IA Téléphonique','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert','gerant-agenda':'Mon dispatch','gerant-clients':'Mes clients & tarifs','gerant-facturation':'Ma facturation','gerant-equipe':'Messagerie équipe',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
+  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',transfertsgerants:'Transferts gérants',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres',aiphone:'IA Téléphonique','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert','gerant-agenda':'Mon dispatch','gerant-clients':'Mes clients & tarifs','gerant-facturation':'Ma facturation','gerant-equipe':'Messagerie équipe','gerant-planning':'Mon planning','gerant-pointage':'Pointage & véhicules','gerant-rapports':'Mes rapports','gerant-historique':'Mon historique','gerant-partenaires':'Mes sous-traitants','gerant-parametres':'Mes paramètres',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
   document.getElementById('page-title').textContent=titles[name]||name;
   closeMob();
   if(name==='cartechauffeurs') { setTimeout(initCarteChauffeurs, 300); }
@@ -21903,6 +21981,7 @@ function gp(name, btn) {
   if(name==='gerant-clients') { setTimeout(()=>{ try{ renderGerantClients(); }catch(e){} }, 100); }
   if(name==='gerant-facturation') { setTimeout(()=>{ try{ renderGerantFacturation(); }catch(e){} }, 100); }
   if(name==='gerant-equipe') { setTimeout(()=>{ try{ renderGerantEquipe(); }catch(e){} }, 100); }
+  if(/^gerant-(planning|pointage|rapports|historique|partenaires|parametres)$/.test(name)) { setTimeout(()=>{ try{ gPageRendre(name); }catch(e){} }, 100); }
   if(name==='gerant-vehicules') { setTimeout(()=>{ try{ renderGerantVehicules(); }catch(e){} }, 200); }
   if(name==='aiphone') { setTimeout(()=>{ try{ mobileaAiPhoneOpen(); }catch(e){} }, 150); }
   if(name==='parametres') { setTimeout(()=>{ try{ renderApiKeys(); }catch(e){} try{ renderClientColors(); }catch(e){} try{ loadDriverTimeout(); }catch(e){} try{ majEtatNotif(); }catch(e){} }, 200); }
@@ -23989,8 +24068,24 @@ const G_OPTIONS = [
     desc:'Son propre carnet de clients et sa propre grille tarifaire (séparés de ceux de MOBILEA).' },
   { k:'facturation', ico:'🧾', coul:'#b45309', label:'Facturation',
     desc:'Factures clients au nom de SA société, avec protection anti-double facturation.' },
-  { k:'suivi',       ico:'📍', coul:'#16a34a', label:'Suivi + messagerie',
-    desc:'Tableau de bord, carte + historique de trajets de SES chauffeurs, messagerie privée avec eux.' }
+  { k:'suivi',       ico:'📍', coul:'#16a34a', label:'Suivi + carte + messagerie',
+    desc:'Tableau de bord, carte + historique de trajets de SES chauffeurs, messagerie privée avec eux.' },
+  { k:'chauffeurs',  ico:'👥', coul:'#2563eb', label:'Ajouter des chauffeurs',
+    desc:'Créer (avec compte de connexion), modifier et archiver les chauffeurs de SA société.' },
+  { k:'vehicules',   ico:'🚐', coul:'#475569', label:'Ajouter des véhicules',
+    desc:'Ajouter, modifier et supprimer les véhicules de SA société.' },
+  { k:'planning',    ico:'🗓️', coul:'#4338ca', label:'Planning',
+    desc:'Planning privé à la semaine de SES transferts, par chauffeur.' },
+  { k:'pointage',    ico:'⏱️', coul:'#0f766e', label:'Pointage & véhicules',
+    desc:'Pointage privé de SES chauffeurs (heures, véhicule du jour, total du mois).' },
+  { k:'rapports',    ico:'📊', coul:'#be185d', label:'Rapports',
+    desc:'Chiffre d\'affaires, marge, répartition par client et par chauffeur, export CSV.' },
+  { k:'historique',  ico:'📜', coul:'#57534e', label:'Historique',
+    desc:'Journal privé de SES actions (créations, attributions, factures…).' },
+  { k:'soustraitants', ico:'🤝', coul:'#c2410c', label:'Sous-traitants & partenaires',
+    desc:'Son propre carnet de partenaires (séparé de celui de MOBILEA).' },
+  { k:'parametres',  ico:'⚙️', coul:'#334155', label:'Paramètres',
+    desc:'Réglages privés de SA société : numérotation, délai et mentions de ses factures.' }
 ];
 window._gOpts = null;          // options du gérant connecté (lues sur le serveur)
 window._gGerantLien = null;    // côté chauffeur simple : { gUid, gNom, gChauffeurId }
@@ -24083,7 +24178,19 @@ function gNavConstruire() {
     // (la liste est déjà filtrée par société et le serveur refuse les autres).
     try { const hb = document.getElementById('cc-historique-bar'); if (hb) hb.style.display = ''; } catch(e) {}
   }
+  if (gOpt('planning'))      a.push(gNavBtn('gerant-planning', 'fa-calendar-week', 'Mon planning'));
+  if (gOpt('pointage'))      a.push(gNavBtn('gerant-pointage', 'fa-clock', 'Pointage & véhicules'));
+  if (gOpt('rapports'))      a.push(gNavBtn('gerant-rapports', 'fa-chart-pie', 'Mes rapports'));
+  if (gOpt('soustraitants')) a.push(gNavBtn('gerant-partenaires', 'fa-handshake', 'Mes sous-traitants'));
+  if (gOpt('historique'))    a.push(gNavBtn('gerant-historique', 'fa-history', 'Mon historique'));
+  if (gOpt('parametres'))    a.push(gNavBtn('gerant-parametres', 'fa-cog', 'Mes paramètres'));
   a.forEach(function(b){ if (ancre) nav.insertBefore(b, ancre); else nav.appendChild(b); });
+  // Les options viennent d'arriver : rafraîchir les pages gérant déjà affichées.
+  try {
+    const pc = document.getElementById('page-gerant-chauffeurs'), pv = document.getElementById('page-gerant-vehicules');
+    if (pc && pc.classList.contains('on')) renderGerantChauffeurs();
+    if (pv && pv.classList.contains('on')) renderGerantVehicules();
+  } catch(e) {}
 }
 
 // Pages créées à la volée (aucune modification de index.html nécessaire).
@@ -24091,7 +24198,7 @@ function gPagesCreer() {
   const ref = document.getElementById('page-gerant-transferts') || document.getElementById('page-mescourses') || document.querySelector('.page');
   const parent = ref ? ref.parentNode : document.querySelector('.main');
   if (!parent) return;
-  [['gerant-agenda','ga-root'],['gerant-clients','gcl-root'],['gerant-facturation','gf-root'],['gerant-equipe','gm-root']].forEach(function(x){
+  [['gerant-agenda','ga-root'],['gerant-clients','gcl-root'],['gerant-facturation','gf-root'],['gerant-equipe','gm-root'],['gerant-planning','gpl-root'],['gerant-pointage','gpt-root'],['gerant-rapports','grp-root'],['gerant-historique','ghi-root'],['gerant-partenaires','gst-root'],['gerant-parametres','gpa-root']].forEach(function(x){
     if (document.getElementById('page-' + x[0])) return;
     const d = document.createElement('div');
     d.className = 'page'; d.id = 'page-' + x[0];
@@ -24132,7 +24239,7 @@ function gBandeauPrive(txt) {
 // ═══════════════════════════════════════════════════════════════════════════
 //  STOCKAGE PRIVÉ  /gerant_data/{uid}
 // ═══════════════════════════════════════════════════════════════════════════
-const GP = { uid:'', clients:[], tarifs:[], priv:{}, factures:[], compteurs:{}, at:0, erreur:null };
+const GP = { uid:'', clients:[], tarifs:[], priv:{}, factures:[], compteurs:{}, partenaires:[], parametres:{}, journal:[], pointages:{}, at:0, erreur:null };
 
 async function gpCharger(force) {
   const uid = gUid();
@@ -24146,6 +24253,10 @@ async function gpCharger(force) {
     GP.priv = (d && d.courses_priv) || {};
     GP.factures = gArr(d && d.factures).sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
     GP.compteurs = (d && d.compteurs) || {};
+    GP.partenaires = gArr(d && d.partenaires).sort(function(a,b){ return String(a.nom||'').localeCompare(String(b.nom||''), 'fr'); });
+    GP.parametres = (d && d.parametres) || {};
+    GP.journal = gArr(d && d.journal).sort(function(a,b){ return String(b.at||'').localeCompare(String(a.at||'')); });
+    GP.pointages = (d && d.pointages) || {};
     GP.at = Date.now(); GP.erreur = null;
   } catch(e) {
     GP.erreur = (e && (e.status === 401 || e.status === 403)) ? 'refus' : 'reseau';
@@ -24414,24 +24525,36 @@ function gaDessiner() {
       + (GA.filtre === 'attribuer' ? 'Aucun transfert en attente de chauffeur. 👌' : 'Aucun transfert ce jour-là.') + '</div>';
   } else {
     h += duJour.map(function(c){
+      // Carte IDENTIQUE à celle du dispatch MOBILEA : couleur par client, 3 lignes,
+      // case blanche 28px, boutons 🔗 et ⚡ empilés à droite.
       const st = gaStatut(c);
-      const heure = (c.datetime||'').slice(11,16) || '--:--';
+      const color = gCoulCourse(c), txt = texteLisible(color), bgC = badgeContraste(color);
+      const heure = (c.datetime||'').slice(11,16) || '—';
       const jourC = GA.filtre === 'attribuer' ? (new Date(c.datetime).toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' ') : '';
-      const trajet = (c.depart || c.lieu || '?') + ' / ' + (c.arrivee || '?');
-      const quiPaie = (c._priv && c._priv.clientNom) ? c._priv.clientNom : gaNomPassager(c);
-      const ligne3 = c.chauffeur ? ('👤 ' + E(c.chauffeur)) : ('<em style="opacity:0.9">' + E(st.lab) + '</em>');
+      const terms = c.terminaux ? String(c.terminaux).replace(/CDG/g,'') : '';
+      const trajet = raccourcirLieu(c.depart || c.lieu || '?') + ' / ' + raccourcirLieu(c.arrivee || '?') + (terms ? ' / ' + terms : '');
+      const quiPaie = (c._priv && c._priv.clientNom) ? c._priv.clientNom : (c.client || gaNomPassager(c));
+      const pax = (c.passagers && c.passagers.length) || c.pax || 1;
+      const special = (!gaActif(c) || (!c.chauffeur && st.lab !== 'À attribuer')) ? st.lab : '';
+      const ligne3 = c.chauffeur ? ('<span style="font-weight:500">👤 ' + E(c.chauffeur) + '</span>' + (special ? ' <span style="opacity:0.8">· ' + E(special) + '</span>' : ''))
+        : ('<em style="opacity:0.75;font-weight:500">' + E(special || 'À assigner') + '</em>');
+      const bt = 'background:' + bgC + ';border:none;border-radius:8px;padding:5px 8px;color:' + txt + ';font-size:12px;font-weight:700;cursor:pointer;line-height:1';
       return '<div style="position:relative;margin-bottom:8px">'
-        + '<input type="checkbox" class="ga-chk" data-id="' + c._id + '"' + (GA.sel[c._id] ? ' checked' : '') + ' onchange="gaCocher(\'' + c._id + '\',this.checked)" onclick="event.stopPropagation()" style="position:absolute;left:12px;top:12px;width:28px;height:28px;cursor:pointer;z-index:2">'
-        + '<div onclick="gaDetail(\'' + c._id + '\')" style="background:' + st.bg + ';border-radius:12px;padding:12px 14px 12px 12px;cursor:pointer;color:#fff;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08);overflow:hidden">'
-        +   '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;padding-left:44px;min-width:0;min-height:28px">'
-        +     '<span style="font-size:16px;font-weight:800;flex-shrink:0">' + E(jourC + heure) + '</span>'
-        +     '<span style="font-size:16px;font-weight:700;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E(trajet) + '</span>'
+        + '<input type="checkbox" class="ga-chk" data-id="' + c._id + '"' + (GA.sel[c._id] ? ' checked' : '') + ' onchange="gaCocher(\'' + c._id + '\',this.checked)" onclick="event.stopPropagation()" style="position:absolute;left:12px;top:12px;width:28px;height:28px;cursor:pointer;z-index:2;accent-color:' + txt + '">'
+        + '<div onclick="gaDetail(\'' + c._id + '\')" style="background:' + color + ';border-radius:12px;padding:12px 14px 12px 12px;cursor:pointer;color:' + txt + ';position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">'
+        +   '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;padding-left:44px;padding-right:50px;min-width:0;min-height:28px">'
+        +     '<span style="font-size:16px;font-weight:800;letter-spacing:-0.3px;line-height:1.2;flex-shrink:0">' + E(jourC + heure) + '</span>'
+        +     '<span style="font-size:16px;font-weight:700;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + E(trajet) + '">' + E(trajet) + '</span>'
         +   '</div>'
-        +   '<div style="font-size:12px;display:flex;align-items:center;overflow:hidden;white-space:nowrap">'
-        +     '<span style="background:rgba(255,255,255,0.22);border-radius:5px;padding:2px 8px;font-weight:800;margin-right:6px;font-size:11.5px">' + gVehNom(c.vehicule) + ' · ' + (c.pax||1) + ' pax</span>'
-        +     '<span style="opacity:0.9;overflow:hidden;text-overflow:ellipsis">' + E(quiPaie) + '</span>'
+        +   '<div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px;display:flex;align-items:center;flex-wrap:nowrap;overflow:hidden">'
+        +     '<span style="display:inline-block;background:' + bgC + ';border-radius:5px;padding:2px 8px;font-weight:800;margin-right:6px;font-size:11.5px;white-space:nowrap">' + gVehNom(c.vehicule) + ' · ' + pax + ' pax</span>'
+        +     '<span style="opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + E(quiPaie) + '</span>'
         +   '</div>'
-        +   '<div style="font-size:13px;margin-top:3px;font-weight:500">' + ligne3 + '</div>'
+        +   '<div style="font-size:13px;margin-top:3px;padding-right:40px;line-height:1.3">' + ligne3 + '</div>'
+        +   '<div style="position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:4px;align-items:flex-end">'
+        +     '<button onclick="event.stopPropagation();gaLien(\'' + c._id + '\')" title="Lien chauffeur externe" style="' + bt + '">🔗</button>'
+        +     (gaSansChauffeur(c) ? '<button onclick="event.stopPropagation();gaAttribuer(\'' + c._id + '\')" title="Attribuer" style="' + bt + '">⚡</button>' : '')
+        +   '</div>'
         + '</div></div>';
     }).join('');
   }
@@ -24481,13 +24604,13 @@ window.gaLot = async function(action) {
     let n = 0;
     for (const id of ids) { const c = gaTrouver(id); if (!c || !gaActif(c)) continue;
       try { await fbUpdate('courses', id, { statut:'annulee', annuleePar:SESSION.name, annuleeLe:new Date().toISOString() }); n++; } catch(e) {} }
-    showToast(n + ' transfert(s) annulé(s)');
+    gJT(n + ' transfert(s) annulé(s)');
   } else {
     const avecCh = ids.filter(function(id){ const c = gaTrouver(id); return c && c.chauffeur; }).length;
     if (!confirm('Proposer ' + ids.length + ' transfert(s) ' + (action === 'prio' ? 'aux chauffeurs prioritaires ⭐' : 'à tout le réseau') + ' ?' + (avecCh ? '\n\n⚠️ ' + avecCh + ' ont déjà un chauffeur : il sera retiré.' : ''))) return;
     showToast('Envoi…', 'info');
     const n = await gaProposerIds(ids, action);
-    showToast('✅ ' + n + ' transfert(s) proposé(s)');
+    gJT('✅ ' + n + ' transfert(s) proposé(s)');
   }
   GA.sel = {};
   window.renderGerantAgenda(true);
@@ -24544,7 +24667,7 @@ window.gaProposerUn = async function(id, mode) {
   if (!confirm((mode === 'prio' ? 'Proposer ce transfert aux chauffeurs prioritaires ⭐ ?' : 'Proposer ce transfert à tout le réseau ?') + (c.chauffeur ? '\n\n⚠️ Le chauffeur actuel (' + c.chauffeur + ') sera retiré.' : ''))) return;
   const n = await gaProposerIds([id], mode);
   gSheetFermer('ga-sheet');
-  showToast(n ? '✅ Transfert proposé' : 'Impossible de proposer ce transfert', !n);
+  showToast(n ? '✅ Transfert proposé' : 'Impossible de proposer ce transfert', !n); if (n) gJournal('Transfert proposé', id);
   window.renderGerantAgenda(true);
 };
 window.gaAnnuler = async function(id) {
@@ -24553,7 +24676,7 @@ window.gaAnnuler = async function(id) {
     const c = gaTrouver(id);
     await fbUpdate('courses', id, { statut:'annulee', annuleePar:SESSION.name, annuleeLe:new Date().toISOString() });
     if (c && c.chauffeurId) { try { await sendPushNotification('❌ Transfert annulé', (c.depart||'') + ' → ' + (c.arrivee||''), null, [c.chauffeurId]); } catch(e) {} }
-    gSheetFermer('ga-sheet'); showToast('Transfert annulé');
+    gSheetFermer('ga-sheet'); gJT('Transfert annulé', (typeof id === 'string') ? id : '');
   } catch(e) { showToast('Erreur lors de l\'annulation', true); }
   window.renderGerantAgenda(true);
 };
@@ -24562,7 +24685,7 @@ window.gaSupprimer = async function(id) {
   try {
     await fbDelete('courses', id);
     try { await gRest('DELETE', gpChemin('courses_priv/' + id)); delete GP.priv[id]; } catch(e) {}
-    gSheetFermer('ga-sheet'); showToast('Transfert supprimé');
+    gSheetFermer('ga-sheet'); gJT('Transfert supprimé', (typeof id === 'string') ? id : '');
   } catch(e) { showToast('Suppression impossible', true); }
   window.renderGerantAgenda(true);
 };
@@ -24623,7 +24746,7 @@ window.gaAttribuerA = async function(chId) {
     try { await sendPushNotification('🚗 Nouveau transfert', (c.depart||'') + ' → ' + (c.arrivee||'') + (c.datetime ? ' — ' + new Date(c.datetime).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : ''), null, [ch._id], null, { courseId: ctx.id }); } catch(e) {}
     if (c.chauffeurId && c.chauffeurId !== ch._id) { try { await sendPushNotification('ℹ️ Transfert retiré', (c.depart||'') + ' → ' + (c.arrivee||''), null, [c.chauffeurId]); } catch(e) {} }
     try { fbInvalidate('courses'); } catch(e) {}
-    gSheetFermer('ga-sheet'); showToast('✅ Attribué à ' + nom);
+    gSheetFermer('ga-sheet'); gJT('✅ Attribué à ' + nom, ctx.id);
   } catch(e) { showToast('Attribution impossible', true); }
   window.renderGerantAgenda(true);
 };
@@ -24715,7 +24838,7 @@ window.gaModifierOK = async function(id) {
       try { await sendPushNotification('✏️ Transfert modifié', pub.depart + ' → ' + pub.arrivee + ' — ' + new Date(pub.datetime).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }), null, [c.chauffeurId], null, { courseId: id }); } catch(e) {}
     }
     try { fbInvalidate('courses'); } catch(e) {}
-    gSheetFermer('ga-sheet'); showToast('✅ Transfert enregistré');
+    gSheetFermer('ga-sheet'); gJT('✅ Transfert enregistré', (typeof id === 'string') ? id : '');
   } catch(e) { showToast('Erreur lors de l\'enregistrement', true); }
   window.renderGerantAgenda(true);
 };
@@ -24857,7 +24980,7 @@ window.gclEnregistrer = async function(id) {
   try {
     if (id) await gRest('PATCH', gpChemin('clients/' + id), data);
     else { data.createdAt = data.updatedAt; await gRest('POST', gpChemin('clients'), data); }
-    gSheetFermer('gcl-sheet'); showToast('✅ Client enregistré');
+    gSheetFermer('gcl-sheet'); gJT('✅ Client enregistré');
     await gpCharger(true); gclDessiner();
   } catch(e) { showToast((e && (e.status === 401 || e.status === 403)) ? '⚠️ Refusé par le serveur (option non activée ?)' : 'Erreur — réessayez', true); }
 };
@@ -24868,7 +24991,7 @@ window.gclSupprimer = async function(id) {
   try {
     await gRest('DELETE', gpChemin('clients/' + id));
     for (const t of GP.tarifs.filter(function(t){ return t.clientId === id; })) { try { await gRest('DELETE', gpChemin('tarifs/' + t._id)); } catch(e) {} }
-    gSheetFermer('gcl-sheet'); showToast('Client supprimé');
+    gSheetFermer('gcl-sheet'); gJT('Client supprimé');
     await gpCharger(true); gclDessiner();
   } catch(e) { showToast('Suppression impossible', true); }
 };
@@ -24898,7 +25021,7 @@ window.gtarEnregistrer = async function(id, clientId) {
   try {
     if (id) await gRest('PATCH', gpChemin('tarifs/' + id), data);
     else await gRest('POST', gpChemin('tarifs'), data);
-    showToast('✅ Tarif enregistré');
+    gJT('✅ Tarif enregistré');
     await gpCharger(true); gclDessiner();
     if (clientId) window.gclOuvrir(clientId); else gSheetFermer('gcl-sheet');
   } catch(e) { showToast((e && (e.status === 401 || e.status === 403)) ? '⚠️ Refusé par le serveur (option non activée ?)' : 'Erreur — réessayez', true); }
@@ -24908,7 +25031,7 @@ window.gtarSupprimer = async function(id) {
   if (!confirm('Supprimer ce tarif ?')) return;
   try {
     await gRest('DELETE', gpChemin('tarifs/' + id));
-    showToast('Tarif supprimé');
+    gJT('Tarif supprimé');
     await gpCharger(true); gclDessiner();
     if (t.clientId) window.gclOuvrir(t.clientId); else gSheetFermer('gcl-sheet');
   } catch(e) { showToast('Suppression impossible', true); }
@@ -25001,7 +25124,7 @@ window.gfGenerer = async function() {
   const annee = new Date().getFullYear();
   const cle = 'facture_' + annee;
   const num = (parseInt(GP.compteurs[cle]) || 0) + 1;
-  const numero = 'F' + annee + '-' + String(num).padStart(4, '0');
+  const numero = (String((GP.parametres||{}).prefixe||'F').replace(/[^A-Z0-9]/gi,'').slice(0,6) || 'F') + annee + '-' + String(num).padStart(4, '0');
   const soc = GF.soc || await gMaSociete();
   let totalTTC = 0;
   const lignes = sel.map(function(c){
@@ -25026,7 +25149,7 @@ window.gfGenerer = async function() {
       const priv = Object.assign({}, GP.priv[l.courseId] || {}, { factureRef: numero, factureId: fact._id || '', factureLe: fact.date });
       try { await gRest('PATCH', gpChemin('courses_priv/' + l.courseId), { factureRef: numero, factureId: fact._id || '', factureLe: fact.date }); GP.priv[l.courseId] = priv; } catch(e) {}
     }
-    showToast('✅ Facture ' + numero + ' créée');
+    gJT('✅ Facture ' + numero + ' créée');
     await gpCharger(true);
     GF.lignes = []; gfResultat(); gfHisto();
     gfImprimer(fact);
@@ -25061,7 +25184,7 @@ window.gfSupprimer = async function(id) {
       if (p && p.factureRef === f.numero) { try { await gRest('PATCH', gpChemin('courses_priv/' + l.courseId), { factureRef:null, factureId:null, factureLe:null }); } catch(e) {} }
     }
     await gRest('DELETE', gpChemin('factures/' + id));
-    showToast('Facture supprimée');
+    gJT('Facture supprimée');
     await gpCharger(true); gfHisto();
   } catch(e) { showToast('Suppression impossible', true); }
 };
@@ -25088,9 +25211,357 @@ function gfImprimer(f) {
     + (f.tvaApplicable ? '<div><span>TVA 10 %</span><span>' + (parseFloat(f.tva)||0).toFixed(2) + ' €</span></div>' : '')
     + '<div class="f"><span>' + (f.tvaApplicable ? 'Total TTC' : 'Net à payer') + '</span><span>' + (parseFloat(f.totalTTC)||0).toFixed(2) + ' €</span></div></div>'
     + '<div class="pied">' + (f.tvaApplicable ? '' : 'TVA non applicable — art. 293 B du CGI.<br>') + (em.iban ? 'Règlement par virement — IBAN : ' + E(em.iban) + '<br>' : '')
-    + 'Paiement à réception. En cas de retard, pénalités au taux légal en vigueur et indemnité forfaitaire de recouvrement de 40 €.</div>'
+    + (((GP.parametres||{}).mentions) ? E(GP.parametres.mentions) + '<br>' : '') + ((parseInt((GP.parametres||{}).delai) > 0) ? 'Paiement à ' + parseInt(GP.parametres.delai) + ' jours.' : 'Paiement à réception.') + ' En cas de retard, pénalités au taux légal en vigueur et indemnité forfaitaire de recouvrement de 40 €.</div>'
     + '</body></html>');
 }
+
+
+// ── Véhicules du gérant (option « Ajouter des véhicules », activée par l'admin) ──
+window.gvehEditer = function(id) {
+  if(!gOpt('vehicules')) { showToast('Option « Ajouter des véhicules » non activée par l\'administrateur', true); return; }
+  const g = window._gerantCache || {};
+  const v = id ? ((g.mesVehicules||[]).find(x => x._id === id) || {}) : {};
+  if(id && (v.societe||'').trim() !== (g.socNom||'')) { showToast('Véhicule hors de votre société', true); return; }
+  const types = [['berline','Berline'],['van','Van'],['sprinter','Sprinter'],['bus','Bus'],['pmr','Van PMR'],['limousine','Limousine']];
+  const h = '<div style="font-size:12px;color:#2563eb;background:#eff6ff;border-radius:8px;padding:8px 10px;margin-bottom:4px">👔 Société : <b>' + E(g.socNom || '') + '</b> (imposée)</div>'
+    + gChamp('Marque *', '<input type="text" id="gveh-marque" value="' + E(v.marque || '') + '" maxlength="50" style="' + G_IN + '">')
+    + gChamp('Modèle', '<input type="text" id="gveh-modele" value="' + E(v.modele || '') + '" maxlength="50" style="' + G_IN + '">')
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +   '<div>' + gChamp('Immatriculation', '<input type="text" id="gveh-immat" value="' + E(v.immat || '') + '" maxlength="20" style="' + G_IN + ';text-transform:uppercase">') + '</div>'
+    +   '<div>' + gChamp('Année', '<input type="number" id="gveh-annee" min="1990" max="2100" value="' + E(String(v.annee || '')) + '" style="' + G_IN + '">') + '</div>'
+    + '</div>'
+    + gChamp('Type', '<select id="gveh-type" style="' + G_IN + '">' + types.map(function(t){ return '<option value="' + t[0] + '"' + ((v.type || 'berline') === t[0] ? ' selected' : '') + '>' + t[1] + '</option>'; }).join('') + '</select>')
+    + '<div style="margin-top:16px">' + gBtn('💾 Enregistrer', 'gvehEnregistrer(\'' + (id || '') + '\')', '#16a34a', true) + '</div>';
+  gSheet('gveh-sheet', id ? 'Modifier le véhicule' : 'Ajouter un véhicule', h);
+};
+window.gvehEnregistrer = async function(id) {
+  if(!gOpt('vehicules')) { showToast('Option non activée par l\'administrateur', true); return; }
+  const g = window._gerantCache || {};
+  if(!g.socNom) { showToast('Aucune société associée à votre compte', true); return; }
+  const marque = sanitize(gVal('gveh-marque'), 50);
+  if(!marque) { showToast('Marque obligatoire', true); return; }
+  const data = { marque: marque, modele: sanitize(gVal('gveh-modele'), 50), immat: sanitize(gVal('gveh-immat'), 20).toUpperCase(),
+    annee: gVal('gveh-annee'), type: gVal('gveh-type') || 'berline', societe: g.socNom, updatedAt: new Date().toISOString() };
+  try {
+    if(id) await gRest('PATCH', 'vehicules/' + id, data);
+    else { data.statut = 'actif'; data.createdAt = data.updatedAt; data.createdByUid = gUid(); data.createdByGerant = SESSION.name; await gRest('POST', 'vehicules', data); }
+    try { fbInvalidate('vehicules'); } catch(e){}
+    gSheetFermer('gveh-sheet'); gJT('Véhicule enregistré ✓');
+    renderGerantVehicules();
+  } catch(e) { showToast((e && (e.status === 401 || e.status === 403)) ? '⚠️ Refusé par le serveur (option non activée ?)' : 'Erreur — réessayez', true); }
+};
+window.gvehSupprimer = async function(id) {
+  if(!gOpt('vehicules')) { showToast('Option non activée par l\'administrateur', true); return; }
+  const g = window._gerantCache || {};
+  const v = (g.mesVehicules||[]).find(x => x._id === id);
+  if(!v || (v.societe||'').trim() !== (g.socNom||'')) { showToast('Véhicule hors de votre société', true); return; }
+  if(!confirm('Supprimer le véhicule ' + ((v.marque||'') + ' ' + (v.modele||'')).trim() + (v.immat ? ' (' + v.immat + ')' : '') + ' ?')) return;
+  try {
+    await gRest('DELETE', 'vehicules/' + id);
+    try { fbInvalidate('vehicules'); } catch(e){}
+    gJT('Véhicule supprimé'); renderGerantVehicules();
+  } catch(e) { showToast('Suppression impossible', true); }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PAGES PRIVÉES SUPPLÉMENTAIRES DU GÉRANT (une case admin par page)
+//  Planning · Pointage · Rapports · Historique · Sous-traitants · Paramètres
+//  Tout est rangé dans /gerant_data/{uid}/… : lisible par le gérant SEUL.
+// ═══════════════════════════════════════════════════════════════════════════
+function gRefus(root) { root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Option non activée par l\'administrateur.</div>'; }
+function gCharg(root) { root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Chargement…</div>'; }
+function gCarte(html, extra) { return '<div style="background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:14px;margin-bottom:10px;' + (extra || '') + '">' + html + '</div>'; }
+function gErrServ(e) { return (e && (e.status === 401 || e.status === 403)) ? '⚠️ Refusé par le serveur (option non activée, ou règles pas à jour)' : 'Erreur — réessayez'; }
+async function gEquipe() {
+  let tous = [];
+  try { tous = await fbGet('chauffeurs') || []; } catch(e) {}
+  const soc = (SESSION.socNom || '').trim();
+  return tous.filter(function(c){ return soc && (c.soc_nom || '').trim() === soc && !c.archived; })
+    .sort(function(a,b){ return String(a.prenom||'').localeCompare(String(b.prenom||''), 'fr'); });
+}
+function gNomCh(c) { return ((c.prenom || '') + (c.nom ? ' ' + c.nom : '')).trim(); }
+
+// ── Journal privé (page « Historique ») ─────────────────────────────────────
+async function gJournal(texte, courseId) {
+  try {
+    if (!gOpt('historique') || !texte) return;
+    let t = String(texte).replace(/^[✅🙋⭐💾📧\s]+/, '');
+    const c = courseId ? (GA.liste || []).find(function(x){ return x._id === courseId; }) : null;
+    if (c) t += ' — ' + (c.datetime ? new Date(c.datetime).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) + ' ' : '') + (c.depart || c.lieu || '?') + ' → ' + (c.arrivee || '?');
+    await gRest('POST', gpChemin('journal'), { t: sanitize(t, 300), at: new Date().toISOString(), par: sanitize(SESSION.name || '', 80) });
+    GP.at = 0;
+  } catch(e) {}
+}
+function gJT(msg, courseId) { showToast(msg); gJournal(msg, courseId); }
+window.gJournal = gJournal;
+
+const GH = { q: '' };
+window.renderGerantHistorique = async function() {
+  const root = document.getElementById('ghi-root'); if (!root) return;
+  if (!gOpt('historique')) return gRefus(root);
+  gCharg(root); await gpCharger(true);
+  const err = gErreurPrive();
+  root.innerHTML = gBandeauPrive('Journal privé de vos actions — visible par vous seul.')
+    + (err ? gCarte(E(err)) : '')
+    + '<input type="text" id="ghi-q" placeholder="🔎 Rechercher dans l\'historique…" value="' + E(GH.q) + '" oninput="ghiListe()" style="' + G_IN + ';margin-bottom:12px">'
+    + '<div id="ghi-liste"></div>';
+  ghiListe();
+};
+window.ghiListe = function() {
+  const box = document.getElementById('ghi-liste'); if (!box) return;
+  GH.q = gVal('ghi-q'); const q = gNorm(GH.q);
+  const l = (GP.journal || []).filter(function(j){ return !q || gNorm(j.t).indexOf(q) >= 0; }).slice(0, 300);
+  if (!l.length) { box.innerHTML = gCarte('<div style="text-align:center;color:var(--muted)">' + (q ? 'Aucun résultat.' : 'Aucune action enregistrée pour le moment.') + '</div>'); return; }
+  let jour = '';
+  box.innerHTML = l.map(function(j){
+    const d = new Date(j.at), js = d.toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' });
+    const tete = js !== jour ? '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin:14px 0 6px">' + E(js) + '</div>' : '';
+    jour = js;
+    return tete + '<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--border2);font-size:13px;color:var(--white)">'
+      + '<span style="color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums">' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }) + '</span><span style="min-width:0">' + E(j.t || '') + '</span></div>';
+  }).join('');
+};
+
+// ── Planning (semaine, par chauffeur) ───────────────────────────────────────
+const GPL = { lundi: null };
+function gplLundi(d) { const x = new Date(d); x.setHours(12,0,0,0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+window.gplDecaler = function(n) { const d = new Date(GPL.lundi); d.setDate(d.getDate() + n * 7); GPL.lundi = n === 0 ? gplLundi(new Date()) : d; window.renderGerantPlanning(true); };
+window.renderGerantPlanning = async function(sansCharger) {
+  const root = document.getElementById('gpl-root'); if (!root) return;
+  if (!gOpt('planning')) return gRefus(root);
+  if (!GPL.lundi) GPL.lundi = gplLundi(new Date());
+  if (!sansCharger || !GA.liste.length) { gCharg(root); try { GA.liste = await gMesTransferts(); } catch(e) {} }
+  const jours = []; for (let i = 0; i < 7; i++) { const d = new Date(GPL.lundi); d.setDate(d.getDate() + i); jours.push(d); }
+  const cles = jours.map(gJourStr), auj = gJourStr(new Date());
+  const sem = GA.liste.filter(function(c){ const j = (c.datetime || '').slice(0,10); return cles.indexOf(j) >= 0 && G_MORTS.indexOf(c.statut) < 0; });
+  const lignes = {};
+  sem.forEach(function(c){ const n = c.chauffeur || '— À assigner'; (lignes[n] = lignes[n] || []).push(c); });
+  const noms = Object.keys(lignes).sort(function(a,b){ return a.charAt(0) === '—' ? -1 : b.charAt(0) === '—' ? 1 : a.localeCompare(b, 'fr'); });
+  const fin = jours[6];
+  let h = gBandeauPrive('Planning privé de vos transferts — visible par vous seul.')
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'
+    + '<button onclick="gplDecaler(-1)" class="btn btn-ghost btn-sm" aria-label="Semaine précédente">‹</button>'
+    + '<div style="flex:1;font-size:16px;font-weight:800;color:var(--white);min-width:0">Semaine du ' + jours[0].getDate() + ' au ' + fin.toLocaleDateString('fr-FR', { day:'numeric', month:'long' }) + '</div>'
+    + '<button onclick="gplDecaler(1)" class="btn btn-ghost btn-sm" aria-label="Semaine suivante">›</button>'
+    + '<button onclick="gplDecaler(0)" class="btn btn-ghost btn-sm">Cette semaine</button></div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + sem.length + ' transfert' + (sem.length > 1 ? 's' : '') + ' · ' + noms.filter(function(n){ return n.charAt(0) !== '—'; }).length + ' chauffeur(s)</div>';
+  if (!sem.length) { root.innerHTML = h + gCarte('<div style="text-align:center;color:var(--muted)">Aucun transfert cette semaine.</div>'); return; }
+  h += '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border2);border-radius:12px;background:var(--card)"><table style="border-collapse:collapse;min-width:860px;width:100%;font-size:12px">'
+    + '<thead><tr><th style="position:sticky;left:0;background:var(--card);text-align:left;padding:8px;min-width:110px;color:var(--muted);z-index:1">Chauffeur</th>'
+    + jours.map(function(d, i){ return '<th style="padding:8px 4px;min-width:104px;color:' + (cles[i] === auj ? 'var(--gold)' : 'var(--muted)') + ';text-transform:capitalize">' + d.toLocaleDateString('fr-FR', { weekday:'short', day:'numeric' }) + '</th>'; }).join('') + '</tr></thead><tbody>'
+    + noms.map(function(n){
+        return '<tr><td style="position:sticky;left:0;background:var(--card);padding:8px;font-weight:700;color:' + (n.charAt(0) === '—' ? '#d97706' : 'var(--white)') + ';border-top:1px solid var(--border2);vertical-align:top;z-index:1">' + E(n) + '<div style="font-weight:400;color:var(--muted);font-size:11px">' + lignes[n].length + ' transfert(s)</div></td>'
+          + cles.map(function(j){
+              const l = lignes[n].filter(function(c){ return (c.datetime || '').slice(0,10) === j; }).sort(function(a,b){ return String(a.datetime).localeCompare(String(b.datetime)); });
+              return '<td style="padding:4px;border-top:1px solid var(--border2);border-left:1px solid var(--border2);vertical-align:top">' + l.map(function(c){
+                const col = gCoulCourse(c);
+                return '<div onclick="gaDetail(\'' + c._id + '\')" style="background:' + col + ';color:' + texteLisible(col) + ';border-radius:7px;padding:5px 6px;margin-bottom:4px;cursor:pointer;line-height:1.25"><b>' + E((c.datetime || '').slice(11,16)) + '</b><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:96px">' + E(raccourcirLieu(c.depart || c.lieu || '?') + ' / ' + raccourcirLieu(c.arrivee || '?')) + '</div></div>';
+              }).join('') + '</td>';
+            }).join('') + '</tr>';
+      }).join('') + '</tbody></table></div>';
+  root.innerHTML = h;
+  // Sur téléphone : amener la colonne d'aujourd'hui à l'écran.
+  try { const k = cles.indexOf(auj), bx = root.querySelector('div[style*="overflow-x"]'); if (k > 0 && bx) bx.scrollLeft = Math.max(0, (k - 1) * 104); } catch(e) {}
+};
+// Couleur d'un transfert : une couleur stable par client (comme le dispatch MOBILEA).
+const G_PALETTE = ['#2563eb','#7c3aed','#0891b2','#b45309','#be185d','#15803d','#4338ca','#c2410c','#0f766e','#a16207'];
+function gCoulCourse(c) {
+  if (G_MORTS.indexOf(c.statut) >= 0) return '#9ca3af';
+  const n = gNorm((c._priv && c._priv.clientNom) || c.client || 'x'); let s = 0;
+  for (let i = 0; i < n.length; i++) s = (s * 31 + n.charCodeAt(i)) % 9973;
+  return G_PALETTE[s % G_PALETTE.length];
+}
+
+// ── Pointage & véhicules (privé) ────────────────────────────────────────────
+const GPT = { jour: gJourStr(new Date()), equipe: [], veh: [], pub: [] };
+window.gptDecaler = function(n) { const d = new Date(GPT.jour + 'T12:00:00'); d.setDate(d.getDate() + n); GPT.jour = n === 0 ? gJourStr(new Date()) : gJourStr(d); window.renderGerantPointage(); };
+window.gptJour = function(v) { if (/^\d{4}-\d{2}-\d{2}$/.test(v)) { GPT.jour = v; window.renderGerantPointage(); } };
+window.renderGerantPointage = async function() {
+  const root = document.getElementById('gpt-root'); if (!root) return;
+  if (!gOpt('pointage')) return gRefus(root);
+  gCharg(root); await gpCharger(true);
+  GPT.equipe = await gEquipe();
+  try { const v = await fbGet('vehicules') || []; const soc = (SESSION.socNom || '').trim(); GPT.veh = v.filter(function(x){ return (x.societe || '').trim() === soc; }); } catch(e) { GPT.veh = []; }
+  try { GPT.pub = await fbGet('pointages') || []; } catch(e) { GPT.pub = []; }
+  const mois = GPT.jour.slice(0,7).replace('-', '');
+  const err = gErreurPrive();
+  let h = gBandeauPrive('Pointage privé de vos chauffeurs — visible par vous seul.') + (err ? gCarte(E(err)) : '')
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">'
+    + '<button onclick="gptDecaler(-1)" class="btn btn-ghost btn-sm" aria-label="Jour précédent">‹</button>'
+    + '<input type="date" value="' + GPT.jour + '" onchange="gptJour(this.value)" style="' + G_IN + ';width:auto;flex:1;min-width:150px">'
+    + '<button onclick="gptDecaler(1)" class="btn btn-ghost btn-sm" aria-label="Jour suivant">›</button>'
+    + '<button onclick="gptDecaler(0)" class="btn btn-ghost btn-sm">Aujourd\'hui</button></div>';
+  if (!GPT.equipe.length) { root.innerHTML = h + gCarte('<div style="text-align:center;color:var(--muted)">Aucun chauffeur dans votre société.</div>'); return; }
+  h += GPT.equipe.map(function(ch){
+    const cle = clePointage(GPT.jour, ch._id);
+    const p = (GP.pointages || {})[cle], pub = GPT.pub.find(function(x){ return x._id === cle; });
+    let totMois = 0;
+    Object.keys(GP.pointages || {}).forEach(function(k){ if (k.indexOf(mois) === 0 && k.slice(9) === cle.slice(9)) totMois += parseFloat(GP.pointages[k].heures) || 0; });
+    const src = p || pub;
+    const etat = src ? ('<b>' + E(src.heureDebut || '—') + ' → ' + E(src.heureFin || 'en cours') + '</b>' + (src.heures != null ? ' · ' + (Math.round(src.heures * 100) / 100) + ' h' : '')
+        + (src.vehiculeLabel ? '<br>🚐 ' + E(src.vehiculeLabel) : '') + (src.note ? '<br><span style="color:var(--muted)">' + E(src.note) + '</span>' : '')
+        + (!p && pub ? '<br><span style="color:var(--muted);font-size:11px">pointé par le chauffeur</span>' : ''))
+      : '<span style="color:var(--muted)">Non pointé</span>';
+    return gCarte('<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">'
+      + '<div style="min-width:0"><div style="font-size:14px;font-weight:700;color:var(--white)">' + E(gNomCh(ch)) + '</div>'
+      + '<div style="font-size:12.5px;color:var(--white);margin-top:4px;line-height:1.5">' + etat + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-top:4px">Total du mois : ' + (Math.round(totMois * 100) / 100) + ' h</div></div>'
+      + '<button class="btn btn-ghost btn-sm" onclick="gptEditer(\'' + ch._id + '\')"><i class="fas fa-clock"></i> ' + (p ? 'Modifier' : 'Pointer') + '</button></div>');
+  }).join('');
+  root.innerHTML = h;
+};
+window.gptEditer = function(chId) {
+  const ch = GPT.equipe.find(function(x){ return x._id === chId; }); if (!ch) return;
+  const cle = clePointage(GPT.jour, chId);
+  const p = (GP.pointages || {})[cle] || GPT.pub.find(function(x){ return x._id === cle; }) || {};
+  const h = '<div style="font-size:13px;color:#555;margin-bottom:4px">' + E(gNomCh(ch)) + ' — ' + new Date(GPT.jour + 'T12:00:00').toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }) + '</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div>' + gChamp('Début *', '<input type="time" id="gpt-debut" value="' + E(p.heureDebut || '') + '" style="' + G_IN + '">') + '</div>'
+    + '<div>' + gChamp('Fin', '<input type="time" id="gpt-fin" value="' + E(p.heureFin || '') + '" style="' + G_IN + '">') + '</div></div>'
+    + gChamp('Véhicule du jour', '<select id="gpt-veh" style="' + G_IN + '"><option value="">— Aucun —</option>' + GPT.veh.map(function(v){ return '<option value="' + v._id + '"' + (p.vehiculeId === v._id ? ' selected' : '') + '>' + E(((v.marque || '') + ' ' + (v.modele || '')).trim() + (v.immat ? ' (' + v.immat + ')' : '')) + '</option>'; }).join('') + '</select>')
+    + gChamp('Note', '<input type="text" id="gpt-note" maxlength="200" value="' + E(p.note || '') + '" style="' + G_IN + '">')
+    + '<div style="margin-top:16px;display:flex;gap:8px">' + gBtn('💾 Enregistrer', 'gptEnregistrer(\'' + chId + '\')', '#16a34a', true)
+    + ((GP.pointages || {})[cle] ? gBtn('🗑', 'gptSupprimer(\'' + chId + '\')', '#dc2626') : '') + '</div>';
+  gSheet('gpt-sheet', 'Pointage', h);
+};
+window.gptEnregistrer = async function(chId) {
+  if (!gOpt('pointage')) { showToast('Option non activée par l\'administrateur', true); return; }
+  const ch = GPT.equipe.find(function(x){ return x._id === chId; }); if (!ch) { showToast('Chauffeur hors de votre société', true); return; }
+  const debut = gVal('gpt-debut'), fin = gVal('gpt-fin');
+  if (!debut) { showToast('Heure de début obligatoire', true); return; }
+  const v = GPT.veh.find(function(x){ return x._id === gVal('gpt-veh'); });
+  const data = { date: GPT.jour, chauffeurId: chId, chauffeurNom: gNomCh(ch), heureDebut: debut, heureFin: fin || '', heures: fin ? heuresEntre(debut, fin) : null,
+    vehiculeId: v ? v._id : '', vehiculeLabel: v ? (((v.marque || '') + ' ' + (v.modele || '')).trim() + (v.immat ? ' (' + v.immat + ')' : '')) : '',
+    note: sanitize(gVal('gpt-note'), 200), majAt: new Date().toISOString() };
+  try {
+    await gRest('PUT', gpChemin('pointages/' + clePointage(GPT.jour, chId)), data);
+    gSheetFermer('gpt-sheet'); gJT('✅ Pointage enregistré — ' + data.chauffeurNom + ' ' + debut + (fin ? ' → ' + fin : ''));
+    window.renderGerantPointage();
+  } catch(e) { showToast(gErrServ(e), true); }
+};
+window.gptSupprimer = async function(chId) {
+  if (!confirm('Supprimer ce pointage ?')) return;
+  try { await gRest('DELETE', gpChemin('pointages/' + clePointage(GPT.jour, chId))); gSheetFermer('gpt-sheet'); gJT('Pointage supprimé'); window.renderGerantPointage(); }
+  catch(e) { showToast(gErrServ(e), true); }
+};
+
+// ── Rapports ────────────────────────────────────────────────────────────────
+const GR = { mois: gJourStr(new Date()).slice(0,7), lignes: [] };
+window.grMois = function(v) { if (/^\d{4}-\d{2}$/.test(v)) { GR.mois = v; window.renderGerantRapports(true); } };
+window.renderGerantRapports = async function(sansCharger) {
+  const root = document.getElementById('grp-root'); if (!root) return;
+  if (!gOpt('rapports')) return gRefus(root);
+  if (!sansCharger || !GA.liste.length) { gCharg(root); try { GA.liste = await gMesTransferts(); } catch(e) {} }
+  const tous = GA.liste.filter(function(c){ return (c.datetime || '').slice(0,7) === GR.mois; });
+  const actifs = tous.filter(function(c){ return G_MORTS.indexOf(c.statut) < 0; });
+  const finis = actifs.filter(function(c){ return G_FINIS.indexOf(c.statut) >= 0; });
+  const som = function(l, k){ return l.reduce(function(s, c){ return s + (parseFloat(c[k]) || 0); }, 0); };
+  const ca = som(actifs, 'prix'), cout = som(actifs, 'prixChauffeur');
+  const grp = function(cle){ const o = {}; actifs.forEach(function(c){ const k = cle(c) || '—'; o[k] = o[k] || { n:0, ca:0, cout:0 }; o[k].n++; o[k].ca += parseFloat(c.prix) || 0; o[k].cout += parseFloat(c.prixChauffeur) || 0; }); return Object.keys(o).map(function(k){ return Object.assign({ nom:k }, o[k]); }).sort(function(a,b){ return b.ca - a.ca || b.n - a.n; }); };
+  const parClient = grp(function(c){ return (c._priv && c._priv.clientNom) || c.client; });
+  const parCh = grp(function(c){ return c.chauffeur || 'À assigner'; });
+  GR.lignes = actifs;
+  const kpi = function(v, l, col){ return '<div style="flex:1;min-width:132px;background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:12px"><div style="font-size:20px;font-weight:800;color:' + (col || 'var(--white)') + '">' + v + '</div><div style="font-size:11px;color:var(--muted);margin-top:2px">' + l + '</div></div>'; };
+  const tab = function(titre, l, colCout){ return gCarte('<div style="font-size:13px;font-weight:700;color:var(--white);margin-bottom:8px">' + titre + '</div>'
+    + (l.length ? '<table style="width:100%;border-collapse:collapse;font-size:12.5px;color:var(--white)"><thead><tr style="color:var(--muted);font-size:11px;text-align:right"><th style="text-align:left;padding:4px 0">Nom</th><th>Nb</th><th>' + (colCout ? 'Payé' : 'CA') + '</th>' + (colCout ? '' : '<th>Marge</th>') + '</tr></thead><tbody>'
+      + l.map(function(x){ return '<tr style="border-top:1px solid var(--border2);text-align:right"><td style="text-align:left;padding:7px 6px 7px 0">' + E(x.nom) + '</td><td>' + x.n + '</td><td style="white-space:nowrap">' + gEur(colCout ? x.cout : x.ca) + '</td>' + (colCout ? '' : '<td style="white-space:nowrap">' + gEur(x.ca - x.cout) + '</td>') + '</tr>'; }).join('') + '</tbody></table>'
+      : '<div style="color:var(--muted);font-size:13px">Aucune donnée.</div>')); };
+  root.innerHTML = gBandeauPrive('Rapports privés de votre société — visibles par vous seul.')
+    + '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap"><input type="month" value="' + GR.mois + '" onchange="grMois(this.value)" style="' + G_IN + ';width:auto;flex:1;min-width:160px">'
+    + '<button class="btn btn-ghost btn-sm" onclick="grExport()"><i class="fas fa-download"></i> Export CSV</button></div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+    + kpi(actifs.length, 'Transferts') + kpi(finis.length, 'Terminés', '#16a34a') + kpi(tous.length - actifs.length, 'Annulés', '#dc2626')
+    + kpi(gEur(ca), 'Chiffre d\'affaires TTC', '#3b82f6') + kpi(gEur(cout), 'Payé aux chauffeurs') + kpi(gEur(ca - cout), 'Marge', '#16a34a') + '</div>'
+    + tab('Par client', parClient, false) + tab('Par chauffeur', parCh, true);
+};
+window.grExport = function() {
+  if (!GR.lignes.length) { showToast('Aucun transfert sur ce mois', true); return; }
+  const q = function(v){ return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+  const csv = '﻿' + ['Date;Heure;Client;Départ;Arrivée;Véhicule;Chauffeur;Statut;Prix client TTC;Prix chauffeur;Marge'].concat(GR.lignes.slice().sort(function(a,b){ return String(a.datetime).localeCompare(String(b.datetime)); }).map(function(c){
+    const p = parseFloat(c.prix) || 0, pc = parseFloat(c.prixChauffeur) || 0;
+    return [(c.datetime || '').slice(0,10), (c.datetime || '').slice(11,16), (c._priv && c._priv.clientNom) || c.client || '', c.depart || c.lieu || '', c.arrivee || '', gVehNom(c.vehicule), c.chauffeur || '', c.statut || '', p.toFixed(2).replace('.', ','), pc.toFixed(2).replace('.', ','), (p - pc).toFixed(2).replace('.', ',')].map(q).join(';');
+  })).join('\r\n');
+  try {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type:'text/csv;charset=utf-8' })); a.download = 'rapport-' + GR.mois + '.csv';
+    document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  } catch(e) { showToast('Export impossible sur cet appareil', true); }
+};
+
+// ── Sous-traitants & partenaires (carnet privé) ─────────────────────────────
+window.renderGerantPartenaires = async function() {
+  const root = document.getElementById('gst-root'); if (!root) return;
+  if (!gOpt('soustraitants')) return gRefus(root);
+  gCharg(root); await gpCharger(true);
+  const err = gErreurPrive(), l = GP.partenaires || [];
+  root.innerHTML = gBandeauPrive('Vos sous-traitants et partenaires — visibles par vous seul.') + (err ? gCarte(E(err)) : '')
+    + '<button onclick="gstEditer(\'\')" class="btn btn-p" style="width:100%;justify-content:center;margin-bottom:12px"><i class="fas fa-plus"></i> Ajouter un partenaire</button>'
+    + (l.length ? l.map(function(p){
+        return gCarte('<div style="display:flex;justify-content:space-between;gap:10px"><div style="min-width:0"><div style="font-size:14px;font-weight:700;color:var(--white)">' + E(p.nom || '') + '</div>'
+          + '<div style="font-size:12px;color:var(--muted);margin-top:3px;line-height:1.5">' + [p.contact, p.tel, p.email, p.siret ? 'SIRET ' + p.siret : ''].filter(Boolean).map(E).join(' · ') + (p.notes ? '<br>' + E(p.notes) : '') + '</div></div>'
+          + '<div style="display:flex;gap:6px;flex-shrink:0;align-items:flex-start">' + (p.tel ? '<a class="btn btn-ghost btn-xs" href="tel:' + E(String(p.tel).replace(/[^\d+]/g, '')) + '" aria-label="Appeler"><i class="fas fa-phone"></i></a>' : '')
+          + '<button class="btn btn-ghost btn-xs" onclick="gstEditer(\'' + p._id + '\')" aria-label="Modifier"><i class="fas fa-pen"></i></button></div></div>');
+      }).join('') : gCarte('<div style="text-align:center;color:var(--muted)">Aucun partenaire enregistré.</div>'));
+};
+window.gstEditer = function(id) {
+  const p = id ? ((GP.partenaires || []).find(function(x){ return x._id === id; }) || {}) : {};
+  const f = function(lab, k, type, max){ return gChamp(lab, '<input type="' + (type || 'text') + '" id="gst-' + k + '" value="' + E(p[k] || '') + '" maxlength="' + (max || 200) + '" style="' + G_IN + '">'); };
+  gSheet('gst-sheet', id ? 'Modifier le partenaire' : 'Nouveau partenaire',
+    f('Société / nom *', 'nom') + f('Contact', 'contact') + f('Téléphone', 'tel', 'tel', 30) + f('Email', 'email', 'email') + f('SIRET', 'siret', 'text', 20)
+    + gChamp('Notes (tarifs convenus, véhicules…)', '<textarea id="gst-notes" rows="3" maxlength="1000" style="' + G_IN + ';resize:vertical">' + E(p.notes || '') + '</textarea>')
+    + '<div style="margin-top:16px;display:flex;gap:8px">' + gBtn('💾 Enregistrer', 'gstEnregistrer(\'' + (id || '') + '\')', '#16a34a', true) + (id ? gBtn('🗑', 'gstSupprimer(\'' + id + '\')', '#dc2626') : '') + '</div>');
+};
+window.gstEnregistrer = async function(id) {
+  if (!gOpt('soustraitants')) { showToast('Option non activée par l\'administrateur', true); return; }
+  const nom = sanitize(gVal('gst-nom'), 200); if (!nom) { showToast('Nom obligatoire', true); return; }
+  const email = gVal('gst-email'); if (email && !isValidEmail(email)) { showToast('Email invalide', true); return; }
+  const data = { nom: nom, contact: sanitize(gVal('gst-contact'), 200), tel: sanitize(gVal('gst-tel'), 30), email: sanitize(email, 200), siret: sanitize(gVal('gst-siret'), 20), notes: sanitize(gVal('gst-notes'), 1000), updatedAt: new Date().toISOString() };
+  try {
+    if (id) await gRest('PATCH', gpChemin('partenaires/' + id), data);
+    else { data.createdAt = data.updatedAt; await gRest('POST', gpChemin('partenaires'), data); }
+    gSheetFermer('gst-sheet'); gJT('✅ Partenaire enregistré — ' + nom); window.renderGerantPartenaires();
+  } catch(e) { showToast(gErrServ(e), true); }
+};
+window.gstSupprimer = async function(id) {
+  const p = (GP.partenaires || []).find(function(x){ return x._id === id; }); if (!p) return;
+  if (!confirm('Supprimer le partenaire « ' + (p.nom || '') + ' » ?')) return;
+  try { await gRest('DELETE', gpChemin('partenaires/' + id)); gSheetFermer('gst-sheet'); gJT('Partenaire supprimé — ' + (p.nom || '')); window.renderGerantPartenaires(); }
+  catch(e) { showToast(gErrServ(e), true); }
+};
+
+// ── Paramètres (réglages privés de la société du gérant) ────────────────────
+window.renderGerantParametres = async function() {
+  const root = document.getElementById('gpa-root'); if (!root) return;
+  if (!gOpt('parametres')) return gRefus(root);
+  gCharg(root); await gpCharger(true);
+  const soc = await gMaSociete(), P = GP.parametres || {}, err = gErreurPrive();
+  const li = function(l, v){ return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border2);font-size:13px"><span style="color:var(--muted)">' + l + '</span><span style="color:var(--white);text-align:right;min-width:0;word-break:break-word">' + (v ? E(v) : '—') + '</span></div>'; };
+  const ch = function(lab, k, def, type, extra){ return '<label style="display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin:12px 0 5px">' + lab + '</label><input type="' + (type || 'text') + '" id="gpa-' + k + '" value="' + E(P[k] != null ? String(P[k]) : (def || '')) + '" ' + (extra || 'maxlength="200"') + ' style="' + G_IN + '">'; };
+  root.innerHTML = gBandeauPrive('Réglages privés de votre société — visibles par vous seul.') + (err ? gCarte(E(err)) : '')
+    + gCarte('<div style="font-size:13px;font-weight:700;color:var(--white);margin-bottom:6px">Ma société</div>'
+      + li('Raison sociale', soc.nom) + li('SIRET', soc.siret) + li('Adresse', soc.adresse) + li('N° TVA', soc.tva) + li('TVA applicable', soc.tvaApplicable ? 'Oui' : 'Non') + li('IBAN', soc.iban)
+      + '<div style="font-size:11px;color:var(--muted);margin-top:8px">Ces informations légales sont celles de votre fiche. Pour les corriger, contactez l\'administrateur.</div>')
+    + gCarte('<div style="font-size:13px;font-weight:700;color:var(--white)">Mes factures</div>'
+      + ch('Préfixe des numéros de facture', 'prefixe', 'F', 'text', 'maxlength="6"')
+      + ch('Délai de paiement (jours, 0 = à réception)', 'delai', '0', 'number', 'min="0" max="90"')
+      + ch('Téléphone affiché sur les factures', 'tel', soc.tel, 'tel', 'maxlength="30"')
+      + ch('Email affiché sur les factures', 'email', soc.email, 'email')
+      + '<label style="display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin:12px 0 5px">Mention en bas de facture</label><textarea id="gpa-mentions" rows="3" maxlength="600" style="' + G_IN + ';resize:vertical">' + E(P.mentions || '') + '</textarea>'
+      + '<div style="margin-top:14px">' + gBtn('💾 Enregistrer', 'gpaEnregistrer()', '#16a34a', true) + '</div>');
+};
+window.gpaEnregistrer = async function() {
+  if (!gOpt('parametres')) { showToast('Option non activée par l\'administrateur', true); return; }
+  const email = gVal('gpa-email'); if (email && !isValidEmail(email)) { showToast('Email invalide', true); return; }
+  const prefixe = (gVal('gpa-prefixe').toUpperCase().replace(/[^A-Z0-9]/g, '') || 'F').slice(0, 6);
+  const data = { prefixe: prefixe, delai: Math.max(0, Math.min(90, parseInt(gVal('gpa-delai')) || 0)), tel: sanitize(gVal('gpa-tel'), 30), email: sanitize(email, 200), mentions: sanitize(gVal('gpa-mentions'), 600), updatedAt: new Date().toISOString() };
+  try { await gRest('PUT', gpChemin('parametres'), data); GP.parametres = data; gJT('✅ Paramètres enregistrés'); window.renderGerantParametres(); }
+  catch(e) { showToast(gErrServ(e), true); }
+};
+
+// Aiguillage des nouvelles pages (appelé par le routeur gp)
+window.gPageRendre = function(name) {
+  const f = { 'gerant-planning': window.renderGerantPlanning, 'gerant-pointage': window.renderGerantPointage, 'gerant-rapports': window.renderGerantRapports,
+    'gerant-historique': window.renderGerantHistorique, 'gerant-partenaires': window.renderGerantPartenaires, 'gerant-parametres': window.renderGerantParametres }[name];
+  if (f) { try { f(); } catch(e) { console.warn(name, e); } }
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  MODULE 4 — MESSAGERIE PRIVÉE gérant ↔ chauffeur
