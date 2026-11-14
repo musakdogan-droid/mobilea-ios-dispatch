@@ -347,22 +347,33 @@ async function fbGetMesCourses(nomChauffeur) {
       return d ? Object.entries(d).map(([k,v]) => ({_id:k, ...v})) : [];
     };
 
-    // DEUX requetes, toutes deux minuscules :
+    // QUATRE requetes en parallele :
     //  1. mes courses (filtre sur le nom du chauffeur)
-    //  2. les offres en cours — une offre urgente n'a PAS encore de chauffeur
-    //     assigne, elle serait donc invisible avec le seul filtre par nom.
-    //     Sans cette seconde requete, le chauffeur raterait les propositions
-    //     entre deux lectures completes.
-    const [miennes, offres] = await Promise.all([
+    //  2. offre_en_cours — auto-dispatch individuel au plus proche
+    //  3. offre_prioritaire — proposition groupee aux prioritaires ⭐
+    //  4. offre_ouverte — proposition groupee a tous les chauffeurs 🙋
+    //  Sans ces 3 dernieres, le chauffeur rate les propositions en lot
+    //  (seules celles deja assignees a son nom apparaissent).
+    const [miennes, offres1, offres2, offres3] = await Promise.all([
       req('chauffeur', nomChauffeur),
-      req('statut', 'offre_en_cours'),
+      req('statut', 'offre_en_cours').catch(()=>[]),
+      req('statut', 'offre_prioritaire').catch(()=>[]),
+      req('statut', 'offre_ouverte').catch(()=>[]),
     ]);
 
-    // Fusion sans doublon
+    // Fusion sans doublon (par _id)
     const vues = new Set(miennes.map(c => c._id));
-    const fusion = miennes.concat(offres.filter(c => !vues.has(c._id)));
+    const toutesOffres = offres1.concat(offres2, offres3);
+    const fusion = miennes.concat(toutesOffres.filter(c => c && !vues.has(c._id)));
+    // Dedupe final au cas ou une course aurait change de statut entre 2 requetes
+    const idSet = new Set();
+    const result = fusion.filter(c => {
+      if(!c || !c._id || idSet.has(c._id)) return false;
+      idSet.add(c._id);
+      return true;
+    });
     window._filtreCoursesKO = false;
-    return fusion;
+    return result;
   } catch(e) {
     window._filtreCoursesKO = true;
     return await fbGet('courses');
