@@ -4491,17 +4491,18 @@ function renderAgenda() {
     const codeFactPart = codeFact ? '<span style="opacity:0.85;color:'+txtColor+'">'+E(codeFact)+'</span>' : '';
     return `<div style="position:relative;margin-bottom:8px">
       <input type="checkbox" class="agenda-chk" data-id="${c._id}" onchange="onAgendaChkChange()" onclick="event.stopPropagation()"
-        style="position:absolute;left:12px;top:14px;width:22px;height:22px;cursor:pointer;z-index:2;accent-color:${txtColor}">
-      <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:12px;padding:12px 14px 12px 44px;cursor:pointer;color:${txtColor};position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
-        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;padding-right:50px">
+        style="position:absolute;left:12px;top:14px;width:28px;height:28px;cursor:pointer;z-index:2;accent-color:${txtColor}">
+      <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:12px;padding:12px 14px 12px 12px;cursor:pointer;color:${txtColor};position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
+        <!-- Ligne 1 : heure + trajet (padding-left 44px pour laisser passer la case a cocher 28px en position absolue) -->
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;padding-left:44px;padding-right:50px">
           <span style="font-family:'Inter',sans-serif;font-size:24px;font-weight:800;letter-spacing:-0.5px;line-height:1;flex-shrink:0;color:${txtColor}">${time}</span>
-          <span style="font-size:15px;font-weight:600;line-height:1.25;flex:1;min-width:0;word-break:break-word;color:${txtColor}">${dirIcon} ${ligne1}</span>
+          <span style="font-size:15px;font-weight:600;line-height:1.25;flex:1;min-width:0;word-break:break-word;color:${txtColor}">${ligne1}</span>
         </div>
-        <!-- Ligne 2 : badge vehicule colle a gauche + code facturation, 1 seule ligne -->
+        <!-- Ligne 2 : badge vehicule colle a gauche (aligne avec la case blanche) + code facturation -->
         <div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px;color:${txtColor};display:flex;align-items:center;flex-wrap:nowrap;overflow:hidden">
           ${vehBadge}${codeFactPart}
         </div>
-        <!-- Ligne 3 : nom du chauffeur (ou À assigner) -->
+        <!-- Ligne 3 : nom du chauffeur (ou À assigner) — aligne a gauche -->
         <div style="font-size:13px;margin-top:3px;padding-right:40px;color:${txtColor};line-height:1.3">
           ${c.chauffeur?'<span style="font-weight:500">👤 '+E(c.chauffeur)+'</span>':'<em style="opacity:0.75;color:'+txtColor+';font-weight:500">À assigner</em>'}
         </div>
@@ -4913,7 +4914,7 @@ window.editCourseGoogle = function(id) {
         <span style="font-size:22px;color:#5f6368;margin-top:4px">≡</span>
         <textarea id="ge-pax" rows="6"
           placeholder="07:20 / TO3910 / 3 / R4N7XF3F5KF / Angela Bruciafreddo Italy +393491972346"
-          style="flex:1;border:none;outline:none;font-size:20px;color:#222;resize:vertical;line-height:1.6;font-family:inherit" maxlength="2000">${(c.passagers||[]).map(p=>[p.harrivee,p.vol,p.terminal,p.refClient,(p.prenom+' '+p.nom).trim()+(p.tel?' '+p.tel:'')].filter(x=>x).join(' / ')).join('\n')}</textarea>
+          style="flex:1;border:none;outline:none;font-size:20px;color:#222;resize:vertical;line-height:1.6;font-family:inherit" maxlength="2000">${(c.passagers||[]).map(p=>[p.harrivee||'',p.vol||'',p.terminal||'',p.refClient||'',((p.prenom||'')+' '+(p.nom||'')).trim()+(p.tel?' '+p.tel:'')].join(' / ')).join('\n')}</textarea>
       </div>
 
       <!-- Notes -->
