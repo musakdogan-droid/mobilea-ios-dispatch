@@ -4504,10 +4504,12 @@ function renderAgenda() {
       <input type="checkbox" class="agenda-chk" data-id="${c._id}" onchange="onAgendaChkChange()" onclick="event.stopPropagation()"
         style="position:absolute;left:12px;top:14px;width:28px;height:28px;cursor:pointer;z-index:2;accent-color:${txtColor}">
       <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:12px;padding:12px 14px 12px 12px;cursor:pointer;color:${txtColor};position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
-        <!-- Ligne 1 : heure + trajet (padding-left 44px pour laisser passer la case a cocher 28px en position absolue) -->
-        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;padding-left:44px;padding-right:50px">
-          <span style="font-family:'Inter',sans-serif;font-size:24px;font-weight:800;letter-spacing:-0.5px;line-height:1;flex-shrink:0;color:${txtColor}">${time}</span>
-          <span style="font-size:15px;font-weight:600;line-height:1.25;flex:1;min-width:0;word-break:break-word;color:${txtColor}">${ligne1}</span>
+        <!-- Ligne 1 : Heure + Depart + Arrivee sur UNE SEULE ligne (ellipsis si trop long).
+             Padding-left = 44px pour laisser passer la case a cocher (28px a left:12px),
+             +2mm d'espace entre case et heure. Taille 16px gras. -->
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;padding-left:44px;padding-right:50px;min-width:0">
+          <span style="font-family:'Inter',sans-serif;font-size:16px;font-weight:800;letter-spacing:-0.3px;line-height:1.2;flex-shrink:0;color:${txtColor}">${time}</span>
+          <span style="font-size:16px;font-weight:700;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${txtColor}" title="${E(ligne1)}">${ligne1}</span>
         </div>
         <!-- Ligne 2 : badge vehicule colle a gauche (aligne avec la case blanche) + code facturation -->
         <div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px;color:${txtColor};display:flex;align-items:center;flex-wrap:nowrap;overflow:hidden">
@@ -11837,52 +11839,37 @@ function renderMesCourses() {
       + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span style="font-size:18px">🙋</span><span style="font-family:Inter,sans-serif;font-size:16px;font-weight:800;color:#d97706">Réservations à prendre</span><span style="font-size:11px;background:#d97706;color:#fff;padding:2px 8px;border-radius:10px;font-weight:700">'+offresOuvertes.length+'</span></div>'
       + '<div style="font-size:11px;color:#999;margin-bottom:10px">Premier arrivé, premier servi — acceptez vite !</div>'
       + offresOuvertes.map(c => {
+          // Carte simplifiee 3 lignes : Date/Heure — Depart/Arrivee — Vehicule+Prix
+          // Pas d'infos passager / tel / boutons contact a ce stade (le chauffeur
+          // n'a pas encore accepte). Tout est plus GROS pour meilleure lisibilite.
           const dt = c.datetime ? new Date(c.datetime).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
           const canSeePrix = (SESSION.voirPrix !== false);
-          const prixLine = (canSeePrix && c.prixChauffeur) ? '<div style="font-size:14px;font-weight:800;color:#16a34a;margin-top:4px">'+parseFloat(c.prixChauffeur).toFixed(0)+'€</div>' : '';
+          const vehNom = {berline:'Berline',van:'Van',sprinter:'Sprinter',bus:'Bus',pmr:'PMR',limousine:'Limousine',classes:'Classe S'}[c.vehicule]||'Berline';
+          const prixTxt = (canSeePrix && c.prixChauffeur) ? parseFloat(c.prixChauffeur).toFixed(0)+'€' : '';
           const estPrio = c.statut === 'offre_prioritaire';
-          const badgePrio = estPrio ? '<div style="display:inline-block;font-size:10px;font-weight:700;color:#b45309;background:rgba(245,158,11,0.15);padding:2px 8px;border-radius:8px;margin-bottom:6px">⭐ Offre prioritaire</div>' : '';
-          // ★ Nom du gérant / origine du transfert — important pour que le chauffeur
-          // sache qui lui propose le transfert (collègue d'un autre dispatch, pas MOBILEA).
+          const badgePrio = estPrio ? '<div style="display:inline-block;font-size:11px;font-weight:700;color:#b45309;background:rgba(245,158,11,0.18);padding:3px 10px;border-radius:10px;margin-bottom:10px">⭐ Offre prioritaire</div>' : '';
+          // ★ Nom du gerant / origine — garde pour que le chauffeur sache qui propose
           let origineLine = '';
           if (c.creePar === 'gerant') {
             const nomGerant = (c.donneurOrdre && c.donneurOrdre.nom) || c.createdBy || c.ouvertePar || '';
             const soc = c.soc_nom || (c.donneurOrdre && c.donneurOrdre.soc_nom) || '';
             if (nomGerant) {
-              origineLine = '<div style="display:inline-block;font-size:10px;font-weight:700;color:#1e40af;background:rgba(37,99,235,0.1);padding:2px 8px;border-radius:8px;margin-bottom:6px;margin-left:4px">👔 Proposé par '+E(nomGerant)+(soc?' ('+E(soc)+')':'')+'</div>';
+              origineLine = '<div style="display:inline-block;font-size:11px;font-weight:700;color:#1e40af;background:rgba(37,99,235,0.1);padding:3px 10px;border-radius:10px;margin-bottom:10px;margin-left:4px">👔 Proposé par '+E(nomGerant)+(soc?' ('+E(soc)+')':'')+'</div>';
             }
           }
-          // ★ Boutons contact passager — numéro récupéré depuis passagers[0] ou tel direct
-          let contactBtns = '';
-          const paxTel = (c.passagers && c.passagers[0] && c.passagers[0].tel) || c.tel || '';
-          const paxNom = (c.passagers && c.passagers[0] && (c.passagers[0].prenom || c.passagers[0].nom))
-            ? ((c.passagers[0].prenom||'')+' '+(c.passagers[0].nom||'')).trim()
-            : (c.passager || c.client || '');
-          if (paxTel) {
-            const telNettoye = String(paxTel).replace(/[\s.()-]/g,'');
-            let telIntl = telNettoye;
-            if (telIntl.startsWith('00')) telIntl = '+' + telIntl.slice(2);
-            else if (telIntl.startsWith('0')) telIntl = '+33' + telIntl.slice(1);
-            else if (!telIntl.startsWith('+')) telIntl = '+' + telIntl;
-            const telWA = telIntl.replace(/[^0-9]/g,'');
-            contactBtns = '<div style="display:flex;gap:6px;margin-top:8px">'
-              + '<a href="tel:'+telIntl+'" onclick="event.stopPropagation()" style="flex:1;background:#22c55e;color:#fff;border-radius:8px;padding:8px;text-align:center;text-decoration:none;font-size:12px;font-weight:700">📞 Appeler</a>'
-              + '<a href="sms:'+telIntl+'" onclick="event.stopPropagation()" style="flex:1;background:#2563eb;color:#fff;border-radius:8px;padding:8px;text-align:center;text-decoration:none;font-size:12px;font-weight:700">💬 SMS</a>'
-              + '<a href="https://wa.me/'+telWA+'" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="flex:1;background:#25d366;color:#fff;border-radius:8px;padding:8px;text-align:center;text-decoration:none;font-size:12px;font-weight:700">📱 WhatsApp</a>'
-              + '</div>';
-          }
-          const paxLine = paxNom
-            ? '<div style="font-size:11px;color:#6b7280;margin-top:4px">👤 '+E(paxNom)+(paxTel?' · '+E(paxTel):'')+'</div>'
-            : '';
-          return '<div style="background:linear-gradient(135deg,#fffbeb,#fef3c7);border:2px solid #f59e0b;border-radius:14px;padding:14px;margin-bottom:10px">'
+          return '<div style="background:linear-gradient(135deg,#fffbeb,#fef3c7);border:2px solid #f59e0b;border-radius:14px;padding:18px;margin-bottom:12px">'
             + badgePrio + origineLine
-            + '<div style="font-size:12px;color:#92400e;font-weight:700">📅 '+dt+'</div>'
-            + '<div style="font-size:14px;font-weight:700;color:#111;margin-top:6px">'+E(c.depart||c.lieu||'?')+'</div>'
-            + '<div style="font-size:13px;color:#555;margin-top:2px">→ '+E(c.arrivee||'?')+'</div>'
-            + (c.vehicule?'<div style="font-size:11px;color:#999;margin-top:4px">'+vI(c.vehicule)+(c.pax?' · '+c.pax+' pax':'')+'</div>':'')
-            + paxLine + prixLine
-            + contactBtns
-            + '<button onclick="accepterOffreOuverte(\''+c._id+'\')" style="width:100%;margin-top:10px;background:#f59e0b;border:none;border-radius:10px;padding:12px;color:#fff;font-size:14px;font-weight:800;cursor:pointer">✋ Accepter ce transfert</button>'
+            // Ligne 1 : Date + Heure
+            + '<div style="font-size:17px;color:#92400e;font-weight:800;margin-bottom:12px">📅 '+dt+'</div>'
+            // Ligne 2 : Depart / Arrivee sur UNE SEULE ligne
+            + '<div style="font-size:20px;font-weight:800;color:#111;line-height:1.3;margin-bottom:12px;word-break:break-word">'+E(c.depart||c.lieu||'?')+' / '+E(c.arrivee||'?')+'</div>'
+            // Ligne 3 : Vehicule + Prix sur la meme ligne
+            + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px">'
+            +   '<span style="font-size:18px;font-weight:700;color:#444">'+vI(c.vehicule)+' '+vehNom+'</span>'
+            +   (prixTxt?'<span style="font-size:24px;font-weight:800;color:#16a34a">'+prixTxt+'</span>':'')
+            + '</div>'
+            // Bouton Accepter
+            + '<button onclick="accepterOffreOuverte(\''+c._id+'\')" style="width:100%;background:#f59e0b;border:none;border-radius:12px;padding:16px;color:#fff;font-size:17px;font-weight:800;cursor:pointer">✋ Accepter ce transfert</button>'
             + '</div>';
         }).join('')
       + '</div>';
