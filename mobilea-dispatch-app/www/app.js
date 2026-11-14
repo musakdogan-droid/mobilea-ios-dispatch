@@ -5052,28 +5052,43 @@ window.saveCourseGoogle = async function(id) {
   const _overrideMap = (window._gePresenceOverride && window._gePresenceOverride[id]) || {};
 
   // Parser les passagers — parser INTELLIGENT qui detecte si la 1ere colonne
-  // est une heure (HH:MM, HHhMM) ou directement le vol. Evite l'ambiguite des
-  // formats 4 colonnes (Vol/Terminal/Ref/Nom) vs 5 colonnes (Heure/Vol/Terminal/Ref/Nom).
-  // Regex heure : 1-2 chiffres, separateur : ou h ou ., 2 chiffres.
+  // est une heure (HH:MM/HHhMM/empty = format 5-col) ou directement le vol
+  // (format 4-col LogiPax sans heure). CAS IMPORTANT : si p[0] est vide,
+  // c'est le format 5 colonnes avec heure vide — NE PAS decaler.
   const _isHeure = (s) => /^\d{1,2}[:h.]\d{2}$/.test((s||'').trim());
   const passagers = paxText ? paxText.split('\n').filter(l=>l.trim()).map((line, idx)=>{
     const p=line.split('/').map(s=>s.trim());
-    // Detection : 1ere colonne est-elle une heure ?
-    const avecHeure = _isHeure(p[0]);
-    const harrivee  = avecHeure ? p[0] : '';
+    // Format 5 colonnes si : p[0] est une heure OU p[0] est vide (heure absente
+    // mais slot present). Format 4 colonnes uniquement si p[0] est NON vide
+    // et NON heure (ex: "EZY3034").
+    const avecHeure = (p[0] === '') || _isHeure(p[0]);
+    const harrivee  = avecHeure ? (p[0]||'') : '';
     const vol       = avecHeure ? (p[1]||'') : (p[0]||'');
     const terminal  = avecHeure ? (p[2]||'') : (p[1]||'');
     const refClient = avecHeure ? (p[3]||'') : (p[2]||'');
-    // Les 2 dernieres cases (raw5/raw6) servent au parsing nom+tel
+    // Nom+tel : on recupere TOUT ce qui reste a partir de nomTelStart, meme
+    // si l'utilisateur a mis des "/" en trop dans le nom. On recombine avec
+    // ' / ' pour ne RIEN perdre, puis on extrait le telephone a la fin.
+    // Ex: "Dupont / Jr +33612345678" reste intact au lieu de perdre " Jr".
     const nomTelStart = avecHeure ? 4 : 3;
-    const raw5=(p[nomTelStart]||'').trim();
-    const raw6=(p[nomTelStart+1]||'').trim();
+    const nomTelCombine = p.slice(nomTelStart).join(' / ').trim();
+    const lastPart = (p[p.length-1]||'').trim();
+    const lastPartCleaned = lastPart.replace(/[\s\-\(\)\.]/g,'');
     let tel='', nomComplet='';
-    if(raw6 && raw6.replace(/[\s\-\(\)\.]/g,'').match(/^[\+\d]{7,15}$/)){tel=raw6;nomComplet=raw5;}
-    else{
-      const m=raw5.match(/(\+[\d\s\-\.]{7,18}|\b[\d]{8,15})$/);
-      if(m){tel=m[1].trim();nomComplet=raw5.slice(0,raw5.lastIndexOf(m[1])).trim();}
-      else nomComplet=raw5;
+    // Cas 1 : le DERNIER champ est purement un telephone → tel = dernier champ,
+    //          nom = tout ce qui precede (recombine avec ' / ')
+    if(p.length > nomTelStart + 1 && /^[\+\d]{7,15}$/.test(lastPartCleaned)) {
+      tel = lastPart;
+      nomComplet = p.slice(nomTelStart, p.length - 1).join(' / ').trim();
+    } else {
+      // Cas 2 : chercher un numero de tel a la fin du texte combine
+      const m = nomTelCombine.match(/(\+[\d\s\-\.]{7,18}|\b[\d]{8,15})$/);
+      if(m){
+        tel = m[1].trim();
+        nomComplet = nomTelCombine.slice(0, nomTelCombine.lastIndexOf(m[1])).trim();
+      } else {
+        nomComplet = nomTelCombine;
+      }
     }
     const pays=['Italy','France','Germany','Spain','UK','USA','Belgium','Netherlands','Switzerland','Portugal','Sweden','Norway','Denmark','Finland','Austria','Poland','Brazil','Ireland','Australia','Canada'];
     const words=nomComplet.split(/\s+/);
@@ -5085,7 +5100,24 @@ window.saveCourseGoogle = async function(id) {
     let present = true;
     if(_overrideMap[idx] !== undefined) present = _overrideMap[idx];
     else if(_presenceAvant[idx] !== undefined) present = _presenceAvant[idx];
-    return{harrivee,vol,terminal,refClient,prenom:parts[0]||'',nom:parts.slice(1).join(' '),tel,present};
+
+    // ★ PROTECTION ANTI-PERTE : si un champ parse est vide MAIS que l'original
+    // avait une valeur, on garde l'original. L'utilisateur peut taper n'importe
+    // quoi dans la zone sans risquer de perdre les donnees pre-existantes.
+    const _paxAvant = (_coursAvant && _coursAvant.passagers) ? _coursAvant.passagers[idx] : null;
+    const _prenom = parts[0] || '';
+    const _nom = parts.slice(1).join(' ');
+    const _keep = (nouvelleVal, ancienneVal) => (String(nouvelleVal||'').trim() || String(ancienneVal||'').trim() || '');
+    return{
+      harrivee:  _keep(harrivee,   _paxAvant?.harrivee),
+      vol:       _keep(vol,        _paxAvant?.vol),
+      terminal:  _keep(terminal,   _paxAvant?.terminal),
+      refClient: _keep(refClient,  _paxAvant?.refClient),
+      prenom:    _keep(_prenom,    _paxAvant?.prenom),
+      nom:       _keep(_nom,       _paxAvant?.nom),
+      tel:       _keep(tel,        _paxAvant?.tel),
+      present
+    };
   }) : [];
   // Nettoie les overrides pour cette course (modif terminee)
   if(window._gePresenceOverride && window._gePresenceOverride[id]) delete window._gePresenceOverride[id];
@@ -5857,15 +5889,24 @@ function parsePaxLine(line) {
   let harrivee='', vol='', terminal='', refClient='', nomBrut='', tel='';
 
   if (parts.length >= 5) {
-    // Format LONG (5 ou 6 segments)
+    // Format LONG (5, 6 ou PLUS si l'utilisateur a mis des "/" en trop dans
+    // le nom). On garde les 4 premieres colonnes structurees et on recombine
+    // TOUT le reste comme nom+tel pour ne rien perdre.
     harrivee  = parts[0]||'';
     vol       = parts[1]||'';
     terminal  = parts[2]||'';
     refClient = parts[3]||'';
-    nomBrut   = parts[4]||'';
-    tel       = parts[5]||'';
-    if(!tel) {
-      const sp = _splitNomTel(nomBrut);
+    const resteFields = parts.slice(4);
+    const dernier = (resteFields[resteFields.length-1]||'').trim();
+    const dernierNet = dernier.replace(/[\s\-\(\)\.]/g,'');
+    // Si le DERNIER segment est purement un telephone (format long classique)
+    if (resteFields.length > 1 && /^[\+\d]{7,15}$/.test(dernierNet)) {
+      tel = dernier;
+      nomBrut = resteFields.slice(0, -1).join(' / ').trim();
+    } else {
+      // Sinon tout en un : on recombine puis on extrait le tel de la fin
+      const combine = resteFields.join(' / ').trim();
+      const sp = _splitNomTel(combine);
       nomBrut = sp.nom; tel = sp.tel;
     }
   } else if (parts.length === 4) {
@@ -5910,6 +5951,36 @@ function parsePaxLine(line) {
 // Ne modifie PAS Firebase, juste l'objet local pour l'affichage.
 function _healPax(p) {
   if(!p || typeof p !== 'object') return p;
+
+  // Detection corruption : prenom (ou nom) ressemble a un code (vol/ref), pas
+  // a un vrai nom. Ex: "EZY3034", "DE4214", "DJNM6VJ5CQG". On les deplace vers
+  // vol/refClient si ces champs sont vides, pour que le vrai nom (dans un
+  // autre champ) puisse remonter apres via le heal classique.
+  const isCodeLike = (s) => {
+    const v = (s||'').trim();
+    if(!v) return false;
+    // Lettres majuscules + chiffres, sans espace, 4-16 caracteres, >= 1 chiffre
+    return /^[A-Z0-9]{4,16}$/.test(v) && /\d/.test(v) && /[A-Z]/.test(v);
+  };
+
+  if(isCodeLike(p.prenom) && !((p.nom||'').trim().includes(' '))) {
+    // prenom="EZY3034" (vol pattern court) — probablement un code de vol
+    if(/^[A-Z]{2,4}\s*\d{2,5}$/.test(p.prenom.trim())) {
+      // Format vol → bascule vers champ vol si vide
+      if(!(p.vol||'').trim()) { p.vol = p.prenom.trim(); p.prenom = ''; }
+    } else {
+      // Format reference (12+ chars alphanumerique)
+      if(!(p.refClient||'').trim()) { p.refClient = p.prenom.trim(); p.prenom = ''; }
+    }
+  }
+  if(isCodeLike(p.nom) && !(p.prenom||'').trim()) {
+    if(/^[A-Z]{2,4}\s*\d{2,5}$/.test(p.nom.trim())) {
+      if(!(p.vol||'').trim()) { p.vol = p.nom.trim(); p.nom = ''; }
+    } else {
+      if(!(p.refClient||'').trim()) { p.refClient = p.nom.trim(); p.nom = ''; }
+    }
+  }
+
   const hasNom = ((p.prenom||'').trim() || (p.nom||'').trim());
   if(hasNom) return p;
 
