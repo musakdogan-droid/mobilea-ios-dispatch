@@ -4487,35 +4487,30 @@ function renderAgenda() {
     // \u2605 D\u00e9tection auto couleur de texte (noir ou blanc) selon la luminosit\u00e9 du fond client.
     const txtColor = texteLisible(color);
     const bgContrast = badgeContraste(color);
-    const vehBadge = '<span style="display:inline-block;background:'+bgContrast+';border-radius:5px;padding:2px 8px;font-weight:800;margin-right:6px;font-size:11.5px;color:'+txtColor+'">'+vehNom+' \u00b7 '+pax+' pax</span>';
-    // Pastilles de presence des passagers (vert \u2713 = present, rouge \u2717 = absent)
-    // permet au dispatch de voir d'un coup d'oeil qui le chauffeur a recupere
-    let paxPastilles = '';
-    if (c.passagers && c.passagers.length) {
-      paxPastilles = '<span style="display:inline-flex;align-items:center;gap:1px;margin-right:6px;vertical-align:middle">' +
-        c.passagers.map(function(p, i){
-          const isPresent = p.present !== false;
-          const nom = ((p.prenom||'')+' '+(p.nom||'')).trim() || ('Pax '+(i+1));
-          const titre = nom + ' \u2014 ' + (isPresent ? 'present \u2713' : 'ABSENT \u2717');
-          return '<span title="'+E(titre)+'" style="display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;background:'+(isPresent?'#16a34a':'#dc2626')+';color:#fff;border-radius:2px;font-size:9px;font-weight:800;line-height:1">'+(isPresent?'\u2713':'\u2717')+'</span>';
-        }).join('') +
-        '</span>';
-    }
-    const codeFactPart = codeFact ? '<span style="opacity:0.85;color:'+txtColor+'">'+E(codeFact)+'</span> \u00b7 ' : '';
+    const vehBadge = '<span style="display:inline-block;background:'+bgContrast+';border-radius:5px;padding:2px 8px;font-weight:800;margin-right:6px;font-size:11.5px;color:'+txtColor+';white-space:nowrap">'+vehNom+' \u00b7 '+pax+' pax</span>';
+    const codeFactPart = codeFact ? '<span style="opacity:0.85;color:'+txtColor+'">'+E(codeFact)+'</span>' : '';
     return `<div style="position:relative;margin-bottom:8px">
       <input type="checkbox" class="agenda-chk" data-id="${c._id}" onchange="onAgendaChkChange()" onclick="event.stopPropagation()"
         style="position:absolute;left:12px;top:14px;width:22px;height:22px;cursor:pointer;z-index:2;accent-color:${txtColor}">
       <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:12px;padding:12px 14px 12px 44px;cursor:pointer;color:${txtColor};position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
-        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;padding-right:70px">
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;padding-right:50px">
           <span style="font-family:'Inter',sans-serif;font-size:24px;font-weight:800;letter-spacing:-0.5px;line-height:1;flex-shrink:0;color:${txtColor}">${time}</span>
           <span style="font-size:15px;font-weight:600;line-height:1.25;flex:1;min-width:0;word-break:break-word;color:${txtColor}">${dirIcon} ${ligne1}</span>
         </div>
-        <div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px;color:${txtColor}">${vehBadge}${paxPastilles}${codeFactPart}${c.chauffeur?'<span style="font-weight:500">'+c.chauffeur+'</span>':'<em style="opacity:0.75;color:'+txtColor+'">À assigner</em>'}</div>
-        <div style="position:absolute;right:8px;top:8px;display:flex;gap:4px">
+        <!-- Ligne 2 : badge vehicule colle a gauche + code facturation, 1 seule ligne -->
+        <div style="font-size:12px;opacity:0.95;line-height:1.4;padding-right:40px;color:${txtColor};display:flex;align-items:center;flex-wrap:nowrap;overflow:hidden">
+          ${vehBadge}${codeFactPart}
+        </div>
+        <!-- Ligne 3 : nom du chauffeur (ou À assigner) -->
+        <div style="font-size:13px;margin-top:3px;padding-right:40px;color:${txtColor};line-height:1.3">
+          ${c.chauffeur?'<span style="font-weight:500">👤 '+E(c.chauffeur)+'</span>':'<em style="opacity:0.75;color:'+txtColor+';font-weight:500">À assigner</em>'}
+        </div>
+        <!-- Boutons empiles VERTICALEMENT (lien + eclair) -->
+        <div style="position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:4px;align-items:flex-end">
           <button onclick="event.stopPropagation();genererLienExterne('${c._id}')" title="Lien chauffeur externe"
-            style="background:${bgContrast};border:none;border-radius:8px;padding:5px 8px;color:${txtColor};font-size:12px;font-weight:700;cursor:pointer">🔗</button>
+            style="background:${bgContrast};border:none;border-radius:8px;padding:5px 8px;color:${txtColor};font-size:12px;font-weight:700;cursor:pointer;line-height:1">🔗</button>
           ${!c.chauffeur?`<button onclick="event.stopPropagation();autoDispatch('${c._id}')" title="Auto-dispatch"
-            style="background:${bgContrast};border:none;border-radius:8px;padding:5px 8px;color:${txtColor};font-size:12px;font-weight:700;cursor:pointer">⚡</button>`:''}
+            style="background:${bgContrast};border:none;border-radius:8px;padding:5px 8px;color:${txtColor};font-size:12px;font-weight:700;cursor:pointer;line-height:1">⚡</button>`:''}
         </div>
       </div>
     </div>`;
@@ -22376,7 +22371,7 @@ window.editCourse = function(id) {
       <td>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
           <button onclick="togglePaxPresence('${id}',${i})" style="background:${p.present===false?'var(--red-dim)':'var(--green-dim)'};border:1px solid ${p.present===false?'rgba(224,92,92,0.3)':'rgba(46,204,138,0.3)'};color:${p.present===false?'var(--red)':'var(--green)'};border-radius:var(--r-xs);padding:3px 8px;cursor:pointer;font-size:10px;font-weight:600">
-            ${p.present===false?'✗ Absent':'✓ Présent'}
+            ${p.present===false?'❌ Absent':'✅ Présent'}
           </button>
           <button onclick="copyPaxInfo('${copyText}')" title="Copier infos" style="background:var(--card);border:1px solid var(--border);border-radius:var(--r-xs);padding:3px 7px;cursor:pointer;font-size:10px;color:var(--muted2)">📋</button>
           <button onclick="transferPax('${id}',${i})" title="Transférer" style="background:var(--blue-dim);border:1px solid rgba(91,156,246,0.3);border-radius:var(--r-xs);padding:3px 7px;cursor:pointer;font-size:10px;color:var(--blue)">➡️ Transférer</button>
