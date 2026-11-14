@@ -5419,7 +5419,16 @@ window.genererLienExterne = async function(id) {
     await fbUpdate('courses', id, { extToken: token });
     c.extToken = token;
   }
-  const lien = location.origin + location.pathname + '#c/' + token;
+  // Fix : dans l'app iOS (Capacitor) location.origin = "capacitor://localhost"
+  // qui ne marche pas hors de l'app. On force toujours le domaine public
+  // mobilea-6tg.pages.dev pour que le lien soit ouvrable par un chauffeur
+  // externe depuis n'importe quel navigateur / SMS / WhatsApp.
+  const PUBLIC_BASE = 'https://mobilea-6tg.pages.dev/';
+  const isCapacitor = (location.protocol === 'capacitor:')
+    || (location.origin && location.origin.indexOf('capacitor://') === 0)
+    || !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  const base = isCapacitor ? PUBLIC_BASE : (location.origin + location.pathname);
+  const lien = base + '#c/' + token;
 
   const d = c.datetime ? c.datetime.slice(8,10)+'/'+c.datetime.slice(5,7)+' '+c.datetime.slice(11,16) : '';
   const dep = c.depart||c.lieu||'';
