@@ -4716,8 +4716,18 @@ window.viewCourseDetail = function(id) {
       <!-- Client / Téléphone -->
       ${twoCol('👤 CLIENT', E(c.client||'—'), '📞 TÉLÉPHONE', c.tel?'<a href="tel:'+String(c.tel).replace(/\s/g,'')+'" style="color:#1a73e8;text-decoration:none">'+E(c.tel)+'</a>':'—')}
 
-      <!-- Passager (si différent du client) -->
-      ${passagerNom.trim()?section('🧳', 'PASSAGER', '<strong>'+E(passagerNom.trim())+'</strong>'+(passagerTel?' · <a href="tel:'+String(passagerTel).replace(/\s/g,'')+'" style="color:#1a73e8;text-decoration:none">'+E(passagerTel)+'</a>':'')):''}
+      <!-- Passagers : liste complete avec ✅ present / ❌ absent -->
+      ${(c.passagers && c.passagers.length)
+        ? section('🧳', 'PASSAGERS', c.passagers.map((p,i) => {
+            const isPresent = p.present !== false;
+            const nom = ((p.prenom||'')+' '+(p.nom||'')).trim() || ('Passager '+(i+1));
+            const telLink = p.tel ? ' · <a href="tel:'+String(p.tel).replace(/\s/g,'')+'" style="color:#1a73e8;text-decoration:none;font-size:15px">'+E(p.tel)+'</a>' : '';
+            return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0'+(i<c.passagers.length-1?';border-bottom:1px solid #eee':'')+'">'
+              + '<span style="font-size:20px;flex-shrink:0">'+(isPresent?'✅':'❌')+'</span>'
+              + '<span style="flex:1;min-width:0"><strong style="color:'+(isPresent?'#1a1a1a':'#999')+(isPresent?'':';text-decoration:line-through')+'">'+E(nom)+'</strong>'+telLink+'</span>'
+              + '</div>';
+          }).join(''))
+        : (passagerNom.trim()?section('🧳', 'PASSAGER', '<strong>'+E(passagerNom.trim())+'</strong>'+(passagerTel?' · <a href="tel:'+String(passagerTel).replace(/\s/g,'')+'" style="color:#1a73e8;text-decoration:none">'+E(passagerTel)+'</a>':'')):'')}
 
       <!-- Véhicule + Pax -->
       ${twoCol(vehIcon+' VÉHICULE', E(vehNom), '👥 PASSAGERS', pax+' pax'+(c.bags||c.bagages?' · 🧳 '+(c.bags||c.bagages):''))}
@@ -4910,6 +4920,25 @@ window.editCourseGoogle = function(id) {
         <div style="font-size:11px;color:#999;margin-top:-4px;text-align:center">Le premier chauffeur qui accepte garde le transfert</div>
       </div>
 
+      <!-- Liste visuelle des passagers avec ✅/❌ (cliquer pour basculer present/absent) -->
+      ${(c.passagers && c.passagers.length) ? `
+      <div style="padding:14px 0;border-bottom:1px solid #f0f0f0">
+        <label style="display:block;font-size:11px;color:#5f6368;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">🧳 PASSAGERS (appuyer sur ✅/❌ pour basculer)</label>
+        <div id="ge-pax-presence-list">
+          ${c.passagers.map((p, i) => {
+            const isPresent = p.present !== false;
+            const nom = ((p.prenom||'')+' '+(p.nom||'')).trim() || ('Passager '+(i+1));
+            return `<div onclick="geTogglePaxPresence('${c._id}',${i})" style="display:flex;align-items:center;gap:12px;padding:10px 4px;cursor:pointer;border-bottom:1px solid #f5f5f5">
+              <span style="font-size:24px;flex-shrink:0;line-height:1">${isPresent?'✅':'❌'}</span>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:17px;font-weight:600;color:${isPresent?'#1a1a1a':'#999'};${isPresent?'':'text-decoration:line-through'}">${E(nom)}</div>
+                ${p.tel?`<div style="font-size:13px;color:#888">${E(p.tel)}</div>`:''}
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>` : ''}
+
       <div style="display:flex;align-items:flex-start;gap:16px;padding:18px 0;border-bottom:1px solid #f0f0f0">
         <span style="font-size:22px;color:#5f6368;margin-top:4px">≡</span>
         <textarea id="ge-pax" rows="6"
@@ -4963,6 +4992,42 @@ window.geSelectChauffeur = function(name) {
   if(box) box.style.display = 'none';
 };
 
+// Bascule present/absent pour un passager dans l'editeur "Modifier" rapide.
+// Met a jour Firebase immediatement + rafraichit la liste visuelle sans
+// fermer la modale. L'etat present/absent est aussi stocke dans
+// window._gePresenceOverride pour etre preserve au moment du Save.
+window.geTogglePaxPresence = async function(courseId, paxIndex) {
+  const c = D.courses.find(x => x._id === courseId);
+  if(!c || !c.passagers || !c.passagers[paxIndex]) return;
+  const current = c.passagers[paxIndex].present !== false;
+  const newPresent = !current;
+  // Met a jour la memoire locale tout de suite
+  c.passagers[paxIndex] = { ...c.passagers[paxIndex], present: newPresent };
+  // Memorise pour que le Save preserve cette valeur
+  if(!window._gePresenceOverride) window._gePresenceOverride = {};
+  if(!window._gePresenceOverride[courseId]) window._gePresenceOverride[courseId] = {};
+  window._gePresenceOverride[courseId][paxIndex] = newPresent;
+  // Rafraichit la liste visuelle seule
+  const list = document.getElementById('ge-pax-presence-list');
+  if(list) {
+    list.innerHTML = c.passagers.map((p, i) => {
+      const isPresent = p.present !== false;
+      const nom = ((p.prenom||'')+' '+(p.nom||'')).trim() || ('Passager '+(i+1));
+      return '<div onclick="geTogglePaxPresence(\''+courseId+'\','+i+')" style="display:flex;align-items:center;gap:12px;padding:10px 4px;cursor:pointer;border-bottom:1px solid #f5f5f5">'
+        + '<span style="font-size:24px;flex-shrink:0;line-height:1">'+(isPresent?'✅':'❌')+'</span>'
+        + '<div style="flex:1;min-width:0">'
+        +   '<div style="font-size:17px;font-weight:600;color:'+(isPresent?'#1a1a1a':'#999')+';'+(isPresent?'':'text-decoration:line-through')+'">'+E(nom)+'</div>'
+        +   (p.tel?'<div style="font-size:13px;color:#888">'+E(p.tel)+'</div>':'')
+        + '</div>'
+        + '</div>';
+    }).join('');
+  }
+  // Ecrit en Firebase pour que le changement soit visible ailleurs
+  try {
+    await fbUpdate('courses', courseId, { passagers: c.passagers, updatedAt: new Date().toISOString() });
+  } catch(e){ console.warn('geTogglePaxPresence fbUpdate:', e); }
+};
+
 window.saveCourseGoogle = async function(id) {
   // Départ et Arrivée lus depuis leurs champs séparés (plus de découpage de titre)
   const depart = (document.getElementById('ge-depart')?.value||'').trim();
@@ -4973,19 +5038,36 @@ window.saveCourseGoogle = async function(id) {
   const client = (document.getElementById('ge-client')?.value||'').trim();
   const tel = (document.getElementById('ge-tel')?.value||'').trim();
   const vehicule = document.getElementById('ge-vehicule')?.value || 'berline';
-  const prix = document.getElementById('ge-prix')?.value!=='' ? parseFloat(document.getElementById('ge-prix').value) : null;
-  const prixChauffeur = document.getElementById('ge-prix-chauffeur')?.value!=='' ? parseFloat(document.getElementById('ge-prix-chauffeur').value) : null;
+  let prix = document.getElementById('ge-prix')?.value!=='' ? parseFloat(document.getElementById('ge-prix').value) : null;
+  let prixChauffeur = document.getElementById('ge-prix-chauffeur')?.value!=='' ? parseFloat(document.getElementById('ge-prix-chauffeur').value) : null;
   const payMode = document.getElementById('ge-pay-mode')?.value || 'mobilea';
-  const marge = (prix!=null && prixChauffeur!=null) ? Math.max(0, prix-prixChauffeur) : null;
+  let marge = (prix!=null && prixChauffeur!=null) ? Math.max(0, prix-prixChauffeur) : null;
   const paxText = document.getElementById('ge-pax').value.trim();
   const notes = document.getElementById('ge-notes').value.trim();
 
-  // Parser les passagers (même logique que le formulaire)
-  const passagers = paxText ? paxText.split('\n').filter(l=>l.trim()).map(line=>{
+  // Avant de re-parser le textarea, recupere l'etat present/absent actuel +
+  // les overrides faits via les clics ✅/❌ dans la modale
+  const _coursAvant = (D.courses||[]).find(x => x._id === id);
+  const _presenceAvant = (_coursAvant && _coursAvant.passagers) ? _coursAvant.passagers.map(p => p.present !== false) : [];
+  const _overrideMap = (window._gePresenceOverride && window._gePresenceOverride[id]) || {};
+
+  // Parser les passagers — parser INTELLIGENT qui detecte si la 1ere colonne
+  // est une heure (HH:MM, HHhMM) ou directement le vol. Evite l'ambiguite des
+  // formats 4 colonnes (Vol/Terminal/Ref/Nom) vs 5 colonnes (Heure/Vol/Terminal/Ref/Nom).
+  // Regex heure : 1-2 chiffres, separateur : ou h ou ., 2 chiffres.
+  const _isHeure = (s) => /^\d{1,2}[:h.]\d{2}$/.test((s||'').trim());
+  const passagers = paxText ? paxText.split('\n').filter(l=>l.trim()).map((line, idx)=>{
     const p=line.split('/').map(s=>s.trim());
-    const harrivee=p[0]||'', vol=p[1]||'', terminal=p[2]||'', refClient=p[3]||'';
-    const raw5=(p[4]||'').trim();
-    const raw6=(p[5]||'').trim();
+    // Detection : 1ere colonne est-elle une heure ?
+    const avecHeure = _isHeure(p[0]);
+    const harrivee  = avecHeure ? p[0] : '';
+    const vol       = avecHeure ? (p[1]||'') : (p[0]||'');
+    const terminal  = avecHeure ? (p[2]||'') : (p[1]||'');
+    const refClient = avecHeure ? (p[3]||'') : (p[2]||'');
+    // Les 2 dernieres cases (raw5/raw6) servent au parsing nom+tel
+    const nomTelStart = avecHeure ? 4 : 3;
+    const raw5=(p[nomTelStart]||'').trim();
+    const raw6=(p[nomTelStart+1]||'').trim();
     let tel='', nomComplet='';
     if(raw6 && raw6.replace(/[\s\-\(\)\.]/g,'').match(/^[\+\d]{7,15}$/)){tel=raw6;nomComplet=raw5;}
     else{
@@ -4999,8 +5081,14 @@ window.saveCourseGoogle = async function(id) {
       nomComplet=words.slice(0,-1).join(' ');
     }
     const parts=nomComplet.split(/\s+/);
-    return{harrivee,vol,terminal,refClient,prenom:parts[0]||'',nom:parts.slice(1).join(' '),tel,present:true};
+    // Preserve present/absent : override (clic dans modale) > etat avant > true
+    let present = true;
+    if(_overrideMap[idx] !== undefined) present = _overrideMap[idx];
+    else if(_presenceAvant[idx] !== undefined) present = _presenceAvant[idx];
+    return{harrivee,vol,terminal,refClient,prenom:parts[0]||'',nom:parts.slice(1).join(' '),tel,present};
   }) : [];
+  // Nettoie les overrides pour cette course (modif terminee)
+  if(window._gePresenceOverride && window._gePresenceOverride[id]) delete window._gePresenceOverride[id];
 
   const avant = (D.courses||[]).find(x => x._id === id) || null;
   // Recomputer le champ agrege c.terminaux a partir des terminaux de chaque
@@ -5008,6 +5096,33 @@ window.saveCourseGoogle = async function(id) {
   // carte agenda, liste client) restent coincees sur l'ancienne valeur
   // apres edition (ex: 2F -> 2E). Deduplique et joint par '-'.
   const terminauxAgg = [...new Set(passagers.map(p => (p.terminal||'').trim()).filter(Boolean))].join('-');
+
+  // RECALCUL AUTOMATIQUE DU PRIX quand le nombre de terminaux change
+  // (ex: ajout d'un passager avec terminal different apres import LogiPax).
+  // On applique la grille tarifaire = prix de base + supplement par terminal
+  // supplementaire. On ne recalcule QUE si l'utilisateur n'a pas modifie
+  // manuellement les prix dans l'ecran (sinon on respecte son choix).
+  try {
+    const nbTermAvant = _coursAvant && _coursAvant.terminaux ? String(_coursAvant.terminaux).split('-').filter(Boolean).length : 1;
+    const nbTermApres = terminauxAgg ? terminauxAgg.split('-').filter(Boolean).length : 1;
+    const prixAvantSaisie = _coursAvant ? (_coursAvant.prix != null ? parseFloat(_coursAvant.prix) : null) : null;
+    const prixChAvantSaisie = _coursAvant ? (_coursAvant.prixChauffeur != null ? parseFloat(_coursAvant.prixChauffeur) : null) : null;
+    const prixInchange = (prix === prixAvantSaisie) || (prix == null && prixAvantSaisie == null);
+    const prixChInchange = (prixChauffeur === prixChAvantSaisie) || (prixChauffeur == null && prixChAvantSaisie == null);
+
+    if(nbTermAvant !== nbTermApres && prixInchange && prixChInchange && client && depart && arrivee) {
+      const nouveauTarif = await calculerPrixAutoImport(client, depart, arrivee, vehicule, terminauxAgg);
+      if(nouveauTarif) {
+        const ancienPrix = prix, ancienPrixCh = prixChauffeur;
+        if((nouveauTarif.client||0) > 0) prix = nouveauTarif.client;
+        if((nouveauTarif.chauffeur||0) > 0) prixChauffeur = nouveauTarif.chauffeur;
+        marge = (prix!=null && prixChauffeur!=null) ? Math.max(0, prix-prixChauffeur) : null;
+        const diffTxt = (nbTermApres > nbTermAvant ? '➕' : '➖') + ' ' + Math.abs(nbTermApres - nbTermAvant) + ' terminal(aux)';
+        showToast(`💶 Prix recalculé (${diffTxt}) : ${ancienPrix||0}€ → ${prix||0}€ client, ${ancienPrixCh||0}€ → ${prixChauffeur||0}€ chauffeur`);
+      }
+    }
+  } catch(e){ console.warn('recalc prix auto:', e); }
+
   const maj = {
     depart, arrivee, datetime,
     codeFact: code,
@@ -5730,6 +5845,14 @@ function parsePaxLine(line) {
   //           ex: 10:00 / 1022 / 1 / Akdogan Mustafa 0033686680017
   //   LIBRE : aucun /  — ex: "Akdogan Mustafa 0033686680017", "10:00 1022 Mustafa 06…"
   const parts = String(line||'').split('/').map(s=>s.trim());
+
+  // Smart : si la 1ere colonne n'est PAS une heure (HH:MM/HHhMM), on considere
+  // qu'il n'y a pas d'heure dans la ligne et on insere une colonne vide en tete
+  // pour que le parsing par position reste correct (vol → position 1, etc.).
+  // Evite que "EZY3034" (un vol) soit confondu avec une heure.
+  if (parts.length > 0 && parts[0] && !/^\d{1,2}[:h.]\d{2}$/.test(parts[0])) {
+    parts.unshift('');
+  }
 
   let harrivee='', vol='', terminal='', refClient='', nomBrut='', tel='';
 
