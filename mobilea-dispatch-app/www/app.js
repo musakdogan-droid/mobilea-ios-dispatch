@@ -2573,6 +2573,8 @@ function startApp() {
     document.querySelectorAll('.ni').forEach(n => n.style.display = 'none');
     document.querySelectorAll('.nsec').forEach(n => n.style.display = 'none');
     const nav = document.getElementById('main-nav');
+    // Espace privé du gérant : options lues sur le serveur, puis menus ajoutés.
+    setTimeout(function(){ try { gInitEspace(); } catch(e){} }, 0);
     // ★ Premier bouton visible — sert aussi de page par défaut au login.
     let premierBtn = null;
     // Mes courses
@@ -4502,12 +4504,12 @@ function renderAgenda() {
     const codeFactPart = codeFact ? '<span style="opacity:0.85;color:'+txtColor+'">'+E(codeFact)+'</span>' : '';
     return `<div style="position:relative;margin-bottom:8px">
       <input type="checkbox" class="agenda-chk" data-id="${c._id}" onchange="onAgendaChkChange()" onclick="event.stopPropagation()"
-        style="position:absolute;left:12px;top:14px;width:28px;height:28px;cursor:pointer;z-index:2;accent-color:${txtColor}">
+        style="position:absolute;left:12px;top:12px;width:28px;height:28px;cursor:pointer;z-index:2;accent-color:${txtColor}">
       <div onclick="viewCourseDetail('${c._id}')" style="background:${color};border-radius:12px;padding:12px 14px 12px 12px;cursor:pointer;color:${txtColor};position:relative;overflow:hidden;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
         <!-- Ligne 1 : Heure + Depart + Arrivee sur UNE SEULE ligne (ellipsis si trop long).
              Padding-left = 44px pour laisser passer la case a cocher (28px a left:12px),
              +2mm d'espace entre case et heure. Taille 16px gras. -->
-        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;padding-left:44px;padding-right:50px;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;padding-left:44px;padding-right:50px;min-width:0;min-height:28px">
           <span style="font-family:'Inter',sans-serif;font-size:16px;font-weight:800;letter-spacing:-0.3px;line-height:1.2;flex-shrink:0;color:${txtColor}">${time}</span>
           <span style="font-size:16px;font-weight:700;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${txtColor}" title="${E(ligne1)}">${ligne1}</span>
         </div>
@@ -5075,15 +5077,18 @@ window.saveCourseGoogle = async function(id) {
     // mais slot present). Format 4 colonnes uniquement si p[0] est NON vide
     // et NON heure (ex: "EZY3034").
     const avecHeure = (p[0] === '') || _isHeure(p[0]);
-    const harrivee  = avecHeure ? (p[0]||'') : '';
-    const vol       = avecHeure ? (p[1]||'') : (p[0]||'');
-    const terminal  = avecHeure ? (p[2]||'') : (p[1]||'');
-    const refClient = avecHeure ? (p[3]||'') : (p[2]||'');
+    // Ligne SANS aucun « / » (texte libre) : c'est un nom, pas un n° de vol.
+    // Les autres champs resteront ceux d'avant (protection anti-perte).
+    const texteLibre = (p.length === 1);
+    const harrivee  = texteLibre ? '' : (avecHeure ? (p[0]||'') : '');
+    const vol       = texteLibre ? '' : (avecHeure ? (p[1]||'') : (p[0]||''));
+    const terminal  = texteLibre ? '' : (avecHeure ? (p[2]||'') : (p[1]||''));
+    const refClient = texteLibre ? '' : (avecHeure ? (p[3]||'') : (p[2]||''));
     // Nom+tel : on recupere TOUT ce qui reste a partir de nomTelStart, meme
     // si l'utilisateur a mis des "/" en trop dans le nom. On recombine avec
     // ' / ' pour ne RIEN perdre, puis on extrait le telephone a la fin.
     // Ex: "Dupont / Jr +33612345678" reste intact au lieu de perdre " Jr".
-    const nomTelStart = avecHeure ? 4 : 3;
+    const nomTelStart = texteLibre ? 0 : (avecHeure ? 4 : 3);
     const nomTelCombine = p.slice(nomTelStart).join(' / ').trim();
     const lastPart = (p[p.length-1]||'').trim();
     const lastPartCleaned = lastPart.replace(/[\s\-\(\)\.]/g,'');
@@ -5100,7 +5105,15 @@ window.saveCourseGoogle = async function(id) {
         tel = m[1].trim();
         nomComplet = nomTelCombine.slice(0, nomTelCombine.lastIndexOf(m[1])).trim();
       } else {
-        nomComplet = nomTelCombine;
+        // Cas 3 : numéro au milieu du texte (du texte a été ajouté après) →
+        // on le sort quand même du nom.
+        const tous = nomTelCombine.match(/(\+[\d][\d\s\-\.]{6,17}\d|\b\d{8,15}\b)/g);
+        if(tous && tous.length){
+          tel = tous[tous.length-1].trim();
+          nomComplet = nomTelCombine.replace(tous[tous.length-1], ' ').replace(/\s+/g,' ').trim();
+        } else {
+          nomComplet = nomTelCombine;
+        }
       }
     }
     const pays=['Italy','France','Germany','Spain','UK','USA','Belgium','Netherlands','Switzerland','Portugal','Sweden','Norway','Denmark','Finland','Austria','Poland','Brazil','Ireland','Australia','Canada'];
@@ -5777,6 +5790,7 @@ window.doAutoDispatch = async function(courseId, chauffeurName, overlay) {
 
 // ── SAVE COURSE ──
 window.openCourseModal = function() {
+  window._pendingBulkTransferPax = null; // pas de déplacement de passagers en attente par défaut
   window._catManuelle = false; // nouvelle course → la détection auto reprend la main
   const now = new Date(); now.setMinutes(now.getMinutes()-now.getTimezoneOffset());
   document.getElementById('fc-dt').value = now.toISOString().slice(0,16);
@@ -5847,7 +5861,9 @@ function autoSelectVehicle(count) {
 function _splitNomTel(s) {
   if(!s) return {nom:'', tel:''};
   const txt = String(s).trim();
-  const m = txt.match(/([\+\d][\d\s\.\-\(\)]{8,})$/);
+  // D'abord un vrai numéro (+33…, 0033…, 06…, ou 8+ chiffres collés) : évite
+  // d'avaler un chiffre du nom (« test 1 0033… » donnait tel = « 1 0033… »).
+  const m = txt.match(/((?:\+|00|0)\d[\d\s\.\-\(\)]{6,}|\d{8,})$/) || txt.match(/([\+\d][\d\s\.\-\(\)]{8,})$/);
   if(m) return { nom: txt.slice(0, m.index).trim(), tel: m[1].trim() };
   return { nom: txt, tel: '' };
 }
@@ -6893,6 +6909,12 @@ async function _saveCourseForce(data, clientName, paxCount) {
   // On attend que la nouvelle course soit bien creee avant de modifier la
   // source, pour que l'utilisateur ne perde pas les donnees si il annule.
   try {
+    if(window._pendingBulkTransferPax && newId && (data.passagers||[]).length < (window._pendingBulkTransferPax.nb||1)) {
+      // Sécurité : la nouvelle course ne contient pas les passagers attendus →
+      // on NE touche PAS à la course d'origine (aucune perte possible).
+      window._pendingBulkTransferPax = null;
+      showToast('ℹ️ Passagers non retirés du transfert d\'origine (ils ne sont pas dans la nouvelle course)', 'info');
+    }
     if(window._pendingBulkTransferPax && newId) {
       const { fromId, paxIndexes } = window._pendingBulkTransferPax;
       const src = D.courses.find(x => x._id === fromId);
@@ -7213,6 +7235,8 @@ window.openChauffeurModal = function(id) {
     document.getElementById('ch-save-lbl').textContent = 'Ajouter';
   }
   openMo('chauffeur');
+  // Espace privé du gérant : cases d'options (lues sur le serveur, admin seul).
+  try { gAdminOptsOuvrir(id || ''); } catch(e){}
 };
 window.openChauffeurModal = window.openChauffeurModal;
 
@@ -7308,10 +7332,14 @@ window.saveChauffeur = async function() {
   // Rattacher l'UID Firebase à la fiche si le worker vient de le fournir
   // (création/màj de compte). Sert aux règles de sécurité et au filtrage.
   if(window._nouvelUidChauffeur) { data.uid = window._nouvelUidChauffeur; window._nouvelUidChauffeur = null; }
+  // Options de l'espace privé du gérant (lues AVANT de fermer la fenêtre).
+  let _gOptsSaisie = null;
+  try { _gOptsSaisie = gAdminOptsLire(); } catch(e){}
   closeMo('chauffeur');
   if(editId) {
     const avant = (D.chauffeurs||[]).find(x => x._id === editId) || null;
     await fbUpdate('chauffeurs', editId, data);
+    try { await gAdminOptsEnregistrer(editId, data, _gOptsSaisie); } catch(e){}
     const detail = diffChamps(avant, data, {
       prenom:'Prénom', nom:'Nom', tel:'Téléphone', email:'Email', vehicule:'Véhicule',
       vehImmatJour:'Immat. du jour', histAccess:'Accès historique', voirPrix:'Voit les prix',
@@ -7324,7 +7352,8 @@ window.saveChauffeur = async function() {
     showToast('Chauffeur mis à jour ✓');
   } else {
     data.statut = 'disponible'; data.createdAt = new Date().toISOString();
-    await fbPush('chauffeurs', data);
+    const _nvId = await fbPush('chauffeurs', data);
+    try { await gAdminOptsEnregistrer(_nvId || '', data, _gOptsSaisie); } catch(e){}
     await addLog(`Chauffeur ajouté : ${prenom}`);
     await loadAll();
     showToast('Chauffeur ajouté ✓');
@@ -10829,10 +10858,11 @@ window.renderGerantVehicules = renderGerantVehicules;
 // (attribués à ses chauffeurs OU proposés au réseau).
 // ══════════════════════════════════════════════════════════════════════
 window.renderGerantTransferts = async function(){
-  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  if(!gerantAccesTransferts()){ showToast('Accès non autorisé', true); return; }
   var courses=[];
   try { fbInvalidate('courses'); } catch(e){} // toujours lire l'état LIVE (un chauffeur a pu accepter)
   try { courses = await fbGet('courses') || []; } catch(e){}
+  try { courses = await gPrivFusionListe(courses); } catch(e){} // prix client privés du gérant
   var moi = (SESSION.name||'').trim();
   var soc = (SESSION.socNom||'').trim();
   var mine = courses.filter(function(c){
@@ -10913,7 +10943,7 @@ window.renderGerantTransferts = async function(){
   }).join('');
 };
 window.gerantAnnulerTransfert = async function(id){
-  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  if(!gerantAccesTransferts()){ showToast('Accès non autorisé', true); return; }
   if(!confirm('Annuler ce transfert ?')) return;
   try {
     await fbUpdate('courses', id, { statut:'annulee', annuleePar:SESSION.name, annuleeLe:new Date().toISOString() });
@@ -10926,7 +10956,7 @@ window.gerantAnnulerTransfert = async function(id){
 // peut finalement pas) : on retire le chauffeur et on remet LE MÊME transfert au
 // réseau, sans créer de nouvelle réservation.
 window.gerantReproposerTransfert = async function(id){
-  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  if(!gerantAccesTransferts()){ showToast('Accès non autorisé', true); return; }
   var c = null;
   try { c = ((await fbGet('courses'))||[]).find(function(x){return x._id===id;}); } catch(e){}
   if(!c){ showToast('Transfert introuvable', true); return; }
@@ -10952,13 +10982,14 @@ window.gerantReproposerTransfert = async function(id){
 // GÉRANT — Mon tableau de bord : chiffres de SA société uniquement.
 // ══════════════════════════════════════════════════════════════════════
 window.renderGerantDashboard = async function(){
-  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  if(!gerantAccesDashboard()){ showToast('Accès non autorisé', true); return; }
   var socNom = (SESSION.socNom||'').trim();
   var socEl = document.getElementById('gd-soc'); if(socEl) socEl.textContent = 'Activité de ' + (socNom||'ma société');
   var period = (document.getElementById('gd-period')||{}).value || 'month';
   var chauffeurs=[], courses=[];
   try { chauffeurs = await fbGet('chauffeurs') || []; } catch(e){}
   try { courses = await fbGet('courses') || []; } catch(e){}
+  try { courses = await gPrivFusionListe(courses); } catch(e){} // prix client privés du gérant
   var mesCh = chauffeurs.filter(function(c){ return (c.soc_nom||'').trim()===socNom && !c.archived; });
   var noms = mesCh.map(function(c){ return c.prenom + (c.nom?' '+c.nom:''); });
   var mois = new Date().toISOString().slice(0,7);
@@ -11014,7 +11045,7 @@ window.gerantMajMarge = function(){
   } catch(e){}
 };
 window.renderGerantNouveau = async function(){
-  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  if(!gerantAccesTransferts()){ showToast('Accès non autorisé', true); return; }
   // Pré-remplir la date/heure (prochaine heure pleine) si vide.
   try {
     var dt = document.getElementById('gn-dt');
@@ -11049,6 +11080,7 @@ window.renderGerantNouveau = async function(){
       _searchInput._focusHooked = true;
     }
   } catch(e){}
+  try { await gNouveauEnrichir(); } catch(e){} // espace privé : client facturé + tarif auto
   gerantMajMarge();
 };
 
@@ -11157,7 +11189,7 @@ document.addEventListener('click', function(e){
   drop.style.display = 'none';
 });
 window.gerantResetTransfert = function(){
-  ['gn-client','gn-dep','gn-arr','gn-notes','gn-prix','gn-prix-ch'].forEach(function(idf){ var e=document.getElementById(idf); if(e) e.value=''; });
+  ['gn-client','gn-client-tel','gn-vol','gn-client-prive','gn-dep','gn-arr','gn-notes','gn-prix','gn-prix-ch'].forEach(function(idf){ var e=document.getElementById(idf); if(e) e.value=''; });
   var p=document.getElementById('gn-pax'); if(p) p.value='1';
   var b=document.getElementById('gn-bags'); if(b) b.value='0';
   var s=document.getElementById('gn-mon-ch'); if(s) s.value='';
@@ -11167,7 +11199,7 @@ window.gerantResetTransfert = function(){
   gerantMajMarge();
 };
 window.gerantCreerTransfert = async function(mode){
-  if(SESSION.role!=='chauffeur' || !SESSION.gerantPro){ showToast('Accès non autorisé', true); return; }
+  if(!gerantAccesTransferts()){ showToast('Accès non autorisé', true); return; }
   var client = (document.getElementById('gn-client').value||'').trim();
   var dt = document.getElementById('gn-dt').value;
   var dep = (document.getElementById('gn-dep').value||'').trim();
@@ -11213,8 +11245,11 @@ window.gerantCreerTransfert = async function(mode){
     contact: SESSION.name
   };
 
+  // Téléphone du passager et n° de vol (champs présents dans le formulaire).
+  var _gnTel = ((document.getElementById('gn-client-tel')||{}).value||'').trim();
+  var _gnVol = ((document.getElementById('gn-vol')||{}).value||'').trim();
   var base = {
-    type:'transfert', client:client, tel:'', datetime:dt,
+    type:'transfert', client:client, tel:sanitize(_gnTel, 30), vol:sanitize(_gnVol, 30), datetime:dt,
     depart:dep, arrivee:arr, lieu:'', duree:'',
     vehicule:veh, pax:pax, bags:bags,
     prix:prix, prixChauffeur:prixChauffeur, marge:(prix-prixChauffeur),
@@ -11228,6 +11263,10 @@ window.gerantCreerTransfert = async function(mode){
     trajetKm:(_trajet?_trajet.km:null), trajetMin:(_trajet?_trajet.min:null), trajetApprox:(_trajet?!!_trajet.approx:null),
     createdAt:new Date().toISOString()
   };
+  // ESPACE PRIVÉ DU GÉRANT : le prix client, la marge et le client facturé
+  // sortent du transfert public et partent dans /gerant_data/{uid} (lui seul).
+  var _gPriv = null;
+  try { _gPriv = gPrivPreparer(base, paiementBord); } catch(e){ _gPriv = null; }
 
   if(mode==='mon_chauffeur' || mode==='autre_chauffeur'){
     // Pour "mon_chauffeur" : <select> gn-mon-ch
@@ -11247,6 +11286,7 @@ window.gerantCreerTransfert = async function(mode){
     var nomCh = ch.prenom + (ch.nom?' '+ch.nom:'');
     base.chauffeur = nomCh;
     base.chauffeurId = ch._id;
+    base.chauffeurUid = ch.uid || null;
     base.chauffeurTel = ch.tel || '';
     base.statut = 'attribuee';
     showToast('Création…');
@@ -11254,13 +11294,14 @@ window.gerantCreerTransfert = async function(mode){
       var id1 = await fbPush('courses', base);
       if(!id1){ showToast('⚠️ Échec : le transfert n\'a pas été enregistré (permissions ?)', true); return; }
       fbInvalidate('courses'); // purge APRÈS l'écriture → « Mes transferts » lira frais
+      if(_gPriv){ try { await gPrivEnregistrer(id1, _gPriv); } catch(e){ showToast('⚠️ Transfert créé, mais prix/client privés non enregistrés', true); } }
       var _label = (mode==='autre_chauffeur') ? 'attribué (réseau MOBILEA) à ' : 'attribué à ';
-      try { await addLog('➕ Transfert gérant ('+SESSION.name+') '+_label+nomCh+' : '+dep+' → '+arr); } catch(e){}
+      if(!_gPriv) try { await addLog('➕ Transfert gérant ('+SESSION.name+') '+_label+nomCh+' : '+dep+' → '+arr); } catch(e){}
       try { await sendPushNotification('🚗 Nouveau transfert', client+' — '+dep+' → '+arr, null, ch._id?[ch._id]:null); } catch(e){}
       showToast('✅ Transfert attribué à '+nomCh);
       gerantResetTransfert();
       try { gnAutreChClear(); } catch(e){}
-      try { gp('gerant-transferts'); } catch(e){} // ouvrir Mes transferts → confirmation visuelle
+      try { gp(gOpt('agenda') ? 'gerant-agenda' : 'gerant-transferts'); } catch(e){} // confirmation visuelle
     } catch(e){ showToast('Erreur lors de la création', true); }
   } else {
     base.chauffeur = '';
@@ -11277,26 +11318,27 @@ window.gerantCreerTransfert = async function(mode){
       var id2 = await fbPush('courses', base);
       if(!id2){ showToast('⚠️ Échec : le transfert n\'a pas été enregistré (permissions ?)', true); return; }
       fbInvalidate('courses'); // purge APRÈS l'écriture → « Mes transferts » lira frais
+      if(_gPriv){ try { await gPrivEnregistrer(id2, _gPriv); } catch(e){ showToast('⚠️ Transfert créé, mais prix/client privés non enregistrés', true); } }
       if(urgent){
         var okCycle = false;
         try { okCycle = await startOfferCycle(id2, pickupLat, pickupLng); } catch(e){ okCycle = false; }
         if(okCycle){
-          try { await addLog('⚡ Transfert gérant ('+SESSION.name+') URGENT proposé au chauffeur le plus proche : '+dep+' → '+arr); } catch(e){}
+          if(!_gPriv) try { await addLog('⚡ Transfert gérant ('+SESSION.name+') URGENT proposé au chauffeur le plus proche : '+dep+' → '+arr); } catch(e){}
           showToast('⚡ Proposé au chauffeur le plus proche');
         } else {
           // Aucun chauffeur proche dispo → repli sur l'offre ouverte au réseau.
           try { await fbUpdate('courses', id2, { statut:'offre_ouverte' }); } catch(e){}
           try { await sendPushNotification('🙋 Transfert à prendre', client+' — '+dep+' → '+arr+(prixChauffeur?' — '+prixChauffeur+'€':''), null, null, { key:'role', value:'chauffeur' }); } catch(e){}
-          try { await addLog('🙋 Transfert gérant ('+SESSION.name+') proposé au réseau (aucun chauffeur proche dispo) : '+dep+' → '+arr); } catch(e){}
+          if(!_gPriv) try { await addLog('🙋 Transfert gérant ('+SESSION.name+') proposé au réseau (aucun chauffeur proche dispo) : '+dep+' → '+arr); } catch(e){}
           showToast('✅ Proposé au réseau (aucun chauffeur proche en ligne)');
         }
       } else {
-        try { await addLog('🙋 Transfert gérant ('+SESSION.name+') proposé au réseau : '+dep+' → '+arr); } catch(e){}
+        if(!_gPriv) try { await addLog('🙋 Transfert gérant ('+SESSION.name+') proposé au réseau : '+dep+' → '+arr); } catch(e){}
         try { await sendPushNotification('🙋 Transfert à prendre', client+' — '+dep+' → '+arr+(prixChauffeur?' — '+prixChauffeur+'€':''), null, null, { key:'role', value:'chauffeur' }); } catch(e){}
         showToast('✅ Transfert proposé à tout le réseau');
       }
       gerantResetTransfert();
-      try { gp('gerant-transferts'); } catch(e){} // ouvrir Mes transferts → confirmation visuelle
+      try { gp(gOpt('agenda') ? 'gerant-agenda' : 'gerant-transferts'); } catch(e){} // confirmation visuelle
     } catch(e){ showToast('Erreur lors de la création', true); }
   }
 };
@@ -11874,7 +11916,7 @@ function renderMesCourses() {
             + '<div style="font-size:20px;font-weight:800;color:#111;line-height:1.3;margin-bottom:12px;word-break:break-word">'+E(c.depart||c.lieu||'?')+' / '+E(c.arrivee||'?')+'</div>'
             // Ligne 3 : Vehicule + Prix sur la meme ligne
             + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px">'
-            +   '<span style="font-size:18px;font-weight:700;color:#444">'+vI(c.vehicule)+' '+vehNom+'</span>'
+            +   '<span style="font-size:18px;font-weight:700;color:#444">'+vI(c.vehicule)+'</span>'
             +   (prixTxt?'<span style="font-size:24px;font-weight:800;color:#16a34a">'+prixTxt+'</span>':'')
             + '</div>'
             // Bouton Accepter
@@ -17497,7 +17539,8 @@ window.cbApplyPromo = async function(){
 // ── PAGE « Transferts gérants » (admin/dispatch) ──────────────────────────
 window.renderTransfertsGerants = function(){
   var box=document.getElementById('tg-list'); if(!box) return;
-  var list = (D.coursesGerant||[]).slice().sort(function(a,b){ return new Date(b.datetime||0)-new Date(a.datetime||0); });
+  // Les transferts de l'espace PRIVÉ d'un gérant (gPrive) ne sont pas affichés ici.
+  var list = (D.coursesGerant||[]).filter(function(c){ return !(c && c.gPrive === true); }).sort(function(a,b){ return new Date(b.datetime||0)-new Date(a.datetime||0); });
   var nb=document.getElementById('nb-tg'); if(nb) nb.textContent=list.length;
   if(!list.length){ box.innerHTML='<div style="text-align:center;color:var(--muted);font-size:13px;padding:24px">Aucun transfert gérant.</div>'; return; }
   box.innerHTML = list.map(function(c){
@@ -21847,7 +21890,7 @@ function gp(name, btn) {
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   const pg=document.getElementById('page-'+name);if(pg)pg.classList.add('on');
   if(btn)btn.classList.add('on');
-  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',transfertsgerants:'Transferts gérants',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres',aiphone:'IA Téléphonique','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
+  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',transfertsgerants:'Transferts gérants',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres',aiphone:'IA Téléphonique','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert','gerant-agenda':'Mon dispatch','gerant-clients':'Mes clients & tarifs','gerant-facturation':'Ma facturation','gerant-equipe':'Messagerie équipe',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
   document.getElementById('page-title').textContent=titles[name]||name;
   closeMob();
   if(name==='cartechauffeurs') { setTimeout(initCarteChauffeurs, 300); }
@@ -21856,6 +21899,10 @@ function gp(name, btn) {
   if(name==='gerant-dashboard') { setTimeout(()=>{ try{ renderGerantDashboard(); }catch(e){} }, 150); }
   if(name==='gerant-nouveau') { setTimeout(()=>{ try{ renderGerantNouveau(); }catch(e){} }, 150); }
   if(name==='gerant-chauffeurs') { setTimeout(()=>{ try{ renderGerantChauffeurs(); }catch(e){} }, 200); }
+  if(name==='gerant-agenda') { setTimeout(()=>{ try{ renderGerantAgenda(); }catch(e){} }, 100); }
+  if(name==='gerant-clients') { setTimeout(()=>{ try{ renderGerantClients(); }catch(e){} }, 100); }
+  if(name==='gerant-facturation') { setTimeout(()=>{ try{ renderGerantFacturation(); }catch(e){} }, 100); }
+  if(name==='gerant-equipe') { setTimeout(()=>{ try{ renderGerantEquipe(); }catch(e){} }, 100); }
   if(name==='gerant-vehicules') { setTimeout(()=>{ try{ renderGerantVehicules(); }catch(e){} }, 200); }
   if(name==='aiphone') { setTimeout(()=>{ try{ mobileaAiPhoneOpen(); }catch(e){} }, 150); }
   if(name==='parametres') { setTimeout(()=>{ try{ renderApiKeys(); }catch(e){} try{ renderClientColors(); }catch(e){} try{ loadDriverTimeout(); }catch(e){} try{ majEtatNotif(); }catch(e){} }, 200); }
@@ -22903,12 +22950,12 @@ window.createCourseFromSelectedPax = function(fromId){
   const chosen = sel.map(i => fromCourse.passagers[i]).filter(Boolean);
   if(!chosen.length){ showToast('Passagers introuvables', true); return; }
 
-  // Stocke pour marquage "absent" dans la course d'origine apres creation
-  window._pendingBulkTransferPax = { fromId, paxIndexes: [...sel] };
-
   // Ferme le modal d'edition et ouvre un nouveau transfert pre-rempli
   document.getElementById('edit-course-ov')?.remove();
   openCourseModal();
+  // Stocke (APRES l'ouverture, qui remet ce marqueur a zero) pour marquer ces
+  // passagers "absents" dans la course d'origine une fois la nouvelle creee.
+  window._pendingBulkTransferPax = { fromId, paxIndexes: [...sel], nb: chosen.length };
   setTimeout(() => {
     try {
       const depEl = document.getElementById('fc-dep');
@@ -22931,10 +22978,11 @@ window.createCourseFromSelectedPax = function(fromId){
       const paxTxt = chosen.map(p => [
         p.harrivee||'', p.vol||'', p.terminal||'', p.refClient||'',
         ((p.prenom||'')+' '+(p.nom||'')).trim() + (p.tel?' '+p.tel:'')
-      ].filter(x=>x).join(' / ')).join('\n');
-      const ta = document.getElementById('fc-pax-paste') || document.getElementById('fc-pax');
-      if(ta){ ta.value = paxTxt; try { ta.dispatchEvent(new Event('input')); } catch(e){} }
-      try { if(typeof parsePaxPaste === 'function') parsePaxPaste(); } catch(e){}
+      ].join(' / ')).join('\n');   // 5 colonnes fixes (heure / vol / terminal / ref / nom tel)
+      // Zone "Passagers" du formulaire Nouvelle course = textarea #pax-notes
+      const ta = document.getElementById('pax-notes');
+      if(ta){ ta.value = paxTxt; try { updatePaxCount(); } catch(e){} }
+      else { window._pendingBulkTransferPax = null; showToast('Zone passagers introuvable — recopiez les passagers à la main', true); }
     } catch(e){ console.warn('pre-fill new course error:', e); }
   }, 150);
 
@@ -23909,3 +23957,1287 @@ async function logAuditAccess(opts) {
     window.gp._srCleanPatched = true;
   }
 })();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+//  ESPACE PRIVÉ DU GÉRANT
+//  ---------------------------------------------------------------------------
+//  Donne au gérant les mêmes outils que MOBILEA (agenda/dispatch, clients +
+//  tarifs, facturation, suivi + messagerie), mais pour SON activité, en privé.
+//
+//  RÈGLES DE BASE
+//   • Les options sont activées UNIQUEMENT par l'admin, une case par option.
+//     Elles sont stockées dans /gerant_options/{uid du gérant} : ce nœud n'est
+//     modifiable que par un admin (règle Firebase), le gérant ne peut que le
+//     lire. Cocher une case côté app ne suffit donc pas : c'est le serveur
+//     qui décide.
+//   • Les données commerciales du gérant (clients, tarifs, prix client,
+//     marge, factures) vivent dans /gerant_data/{uid}/… : SEUL ce gérant peut
+//     les lire/écrire (ni admin, ni dispatch, ni un autre gérant).
+//   • La messagerie gérant ↔ chauffeur vit dans /gerant_msgs/{uidGérant}/
+//     {uidChauffeur} : lisible uniquement par ces deux personnes.
+//   • Le transfert lui-même reste dans /courses (il le faut : le chauffeur
+//     qui le réalise doit le recevoir), marqué gPrive:true, SANS le prix
+//     client ni le nom du client facturé quand il est « en compte ».
+// ═══════════════════════════════════════════════════════════════════════════
+
+const G_OPTIONS = [
+  { k:'agenda',      ico:'📅', coul:'#7c3aed', label:'Dispatch / Agenda',
+    desc:'Agenda privé de SES transferts : attribuer à un chauffeur, proposer au réseau, modifier, annuler.' },
+  { k:'clients',     ico:'🏢', coul:'#0891b2', label:'Clients + tarifs',
+    desc:'Son propre carnet de clients et sa propre grille tarifaire (séparés de ceux de MOBILEA).' },
+  { k:'facturation', ico:'🧾', coul:'#b45309', label:'Facturation',
+    desc:'Factures clients au nom de SA société, avec protection anti-double facturation.' },
+  { k:'suivi',       ico:'📍', coul:'#16a34a', label:'Suivi + messagerie',
+    desc:'Tableau de bord, carte + historique de trajets de SES chauffeurs, messagerie privée avec eux.' }
+];
+window._gOpts = null;          // options du gérant connecté (lues sur le serveur)
+window._gGerantLien = null;    // côté chauffeur simple : { gUid, gNom, gChauffeurId }
+
+function gUid() {
+  try { return (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || ''; }
+  catch(e) { return ''; }
+}
+// Une option est active seulement si : rôle chauffeur + gérant + case cochée
+// par l'admin (valeur lue dans /gerant_options, jamais dans le localStorage).
+function gOpt(k) {
+  return !!(typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'chauffeur' && SESSION.gerant === true
+    && window._gOpts && window._gOpts[k] === true);
+}
+function gerantAccesTransferts() {
+  return !!(SESSION && SESSION.role === 'chauffeur' && (SESSION.gerantPro || gOpt('agenda')));
+}
+function gerantAccesDashboard() {
+  return !!(SESSION && SESSION.role === 'chauffeur' && (SESSION.gerantPro || gOpt('suivi') || gOpt('agenda')));
+}
+
+// ── Accès REST direct (sans cache ni file hors-ligne : données privées) ─────
+async function gRest(method, path, body) {
+  const token = await getAuthToken();
+  const opt = { method: method, headers: { 'Content-Type': 'application/json' } };
+  if (body !== undefined) opt.body = JSON.stringify(body);
+  const r = await fetch(FB_URL + '/' + path + '.json' + authParam(token), opt);
+  if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+  return r.json();
+}
+function gArr(o) { return (o && typeof o === 'object') ? Object.keys(o).map(function(k){ return Object.assign({ _id:k }, o[k]); }) : []; }
+function gEur(v) { return (Math.round((parseFloat(v)||0)*100)/100).toLocaleString('fr-FR', { minimumFractionDigits:2, maximumFractionDigits:2 }) + ' €'; }
+function gJourStr(d) { const p = n => String(n).padStart(2,'0'); return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()); }
+function gNorm(s) { return String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,' ').trim(); }
+function gVehNom(v) { return ({berline:'Berline',van:'Van',sprinter:'Sprinter',bus:'Bus',pmr:'PMR',limousine:'Limousine',classes:'Classe S'})[v] || 'Berline'; }
+const G_VEH_OPTS = [['berline','Berline'],['van','Van'],['sprinter','Sprinter'],['bus','Bus'],['pmr','Van PMR'],['limousine','Limousine'],['classes','Classe S']];
+const G_FINIS = ['terminee','payee','facturee'];
+const G_MORTS = ['annulee','noshow'];
+
+// ── Chargement des options (au démarrage de l'espace chauffeur) ─────────────
+async function gOptsCharger() {
+  window._gOpts = null;
+  if (!(SESSION && SESSION.role === 'chauffeur')) return null;
+  let uid = '';
+  for (let i = 0; i < 50 && !uid; i++) { uid = gUid(); if (!uid) await new Promise(r => setTimeout(r, 200)); }
+  if (!uid) return null;
+  try {
+    const o = await gRest('GET', 'gerant_options/' + uid);
+    window._gOpts = (o && typeof o === 'object') ? o : null;
+  } catch(e) { window._gOpts = null; }   // refus / hors-ligne → aucune option (sécurité par défaut)
+  return window._gOpts;
+}
+
+async function gInitEspace() {
+  if (!(SESSION && SESSION.role === 'chauffeur')) return;
+  await gOptsCharger();
+  try { gNavConstruire(); } catch(e) { console.warn('gNavConstruire', e); }
+  try { await gChauffeurLienGerant(); } catch(e) {}
+}
+window.gInitEspace = gInitEspace;
+
+function gNavBtn(p, ico, label, onclick) {
+  const b = document.createElement('button');
+  b.className = 'ni dyn-nav g-nav'; b.dataset.p = p;
+  b.innerHTML = '<i style="width:16px;text-align:center" class="fas ' + ico + '"></i> ' + label;
+  b.onclick = onclick ? function(){ onclick(b); } : function(){ gp(p, b); };
+  return b;
+}
+function gNavConstruire() {
+  const nav = document.getElementById('main-nav'); if (!nav) return;
+  nav.querySelectorAll('.g-nav').forEach(function(b){ b.remove(); });
+  if (!(SESSION && SESSION.role === 'chauffeur' && SESSION.gerant === true && window._gOpts)) return;
+  gPagesCreer();
+  const ancre = nav.querySelector('.dyn-nav[data-p="messagerie"]');
+  const a = [];
+  if (gOpt('agenda')) {
+    a.push(gNavBtn('gerant-agenda', 'fa-calendar-alt', 'Mon dispatch'));
+    if (!nav.querySelector('[data-p="gerant-nouveau"]') && document.getElementById('page-gerant-nouveau'))
+      a.push(gNavBtn('gerant-nouveau', 'fa-plus-circle', 'Nouveau transfert'));
+  }
+  if (gOpt('clients'))     a.push(gNavBtn('gerant-clients', 'fa-building', 'Mes clients & tarifs'));
+  if (gOpt('facturation')) a.push(gNavBtn('gerant-facturation', 'fa-file-invoice', 'Ma facturation'));
+  if (gOpt('suivi')) {
+    if (!nav.querySelector('[data-p="gerant-dashboard"]') && document.getElementById('page-gerant-dashboard'))
+      a.push(gNavBtn('gerant-dashboard', 'fa-chart-line', 'Mon tableau de bord'));
+    if (!nav.querySelector('[data-p="cartechauffeurs"]') && document.getElementById('page-cartechauffeurs'))
+      a.push(gNavBtn('cartechauffeurs', 'fa-map-marked-alt', 'Carte & trajets'));
+    a.push(gNavBtn('gerant-equipe', 'fa-comments', 'Messagerie équipe'));
+    // Historique de trajets : réaffiché pour le gérant, limité à SES chauffeurs
+    // (la liste est déjà filtrée par société et le serveur refuse les autres).
+    try { const hb = document.getElementById('cc-historique-bar'); if (hb) hb.style.display = ''; } catch(e) {}
+  }
+  a.forEach(function(b){ if (ancre) nav.insertBefore(b, ancre); else nav.appendChild(b); });
+}
+
+// Pages créées à la volée (aucune modification de index.html nécessaire).
+function gPagesCreer() {
+  const ref = document.getElementById('page-gerant-transferts') || document.getElementById('page-mescourses') || document.querySelector('.page');
+  const parent = ref ? ref.parentNode : document.querySelector('.main');
+  if (!parent) return;
+  [['gerant-agenda','ga-root'],['gerant-clients','gcl-root'],['gerant-facturation','gf-root'],['gerant-equipe','gm-root']].forEach(function(x){
+    if (document.getElementById('page-' + x[0])) return;
+    const d = document.createElement('div');
+    d.className = 'page'; d.id = 'page-' + x[0];
+    d.innerHTML = '<div id="' + x[1] + '"></div>';
+    parent.appendChild(d);
+  });
+}
+
+// ── Petits composants d'interface ───────────────────────────────────────────
+const G_IN = 'width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #d1d5db;border-radius:10px;font-size:15px;background:#fff;color:#111;font-family:inherit;outline:none';
+const G_LB = 'display:block;font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.4px;margin:12px 0 5px';
+function gChamp(label, html) { return '<label style="' + G_LB + '">' + label + '</label>' + html; }
+function gBtn(txt, onclick, bg, plein) {
+  return '<button onclick="' + onclick + '" style="' + (plein ? 'width:100%;' : '') + 'background:' + (bg || '#b8860b') + ';border:none;border-radius:11px;padding:13px 14px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">' + txt + '</button>';
+}
+function gSheetFermer(id) { const o = document.getElementById(id); if (o) o.remove(); }
+window.gSheetFermer = gSheetFermer;
+function gSheet(id, titre, html) {
+  gSheetFermer(id);
+  const ov = document.createElement('div');
+  ov.id = id; ov.className = 'g-sheet';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:999990;background:rgba(0,0,0,0.55);display:flex;align-items:flex-end;justify-content:center';
+  ov.innerHTML = '<div style="background:#fff;color:#111;border-radius:20px 20px 0 0;width:100%;max-width:620px;max-height:92vh;overflow-y:auto;padding:18px 18px calc(22px + env(safe-area-inset-bottom));box-sizing:border-box">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px">'
+    +   '<div style="font-size:18px;font-weight:800;color:#111">' + titre + '</div>'
+    +   '<button onclick="gSheetFermer(\'' + id + '\')" style="flex-shrink:0;background:#f1f3f5;border:none;border-radius:50%;width:36px;height:36px;font-size:16px;cursor:pointer;color:#111">✕</button>'
+    + '</div>' + html + '</div>';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  return ov;
+}
+function gVal(id) { const e = document.getElementById(id); return e ? String(e.value || '').trim() : ''; }
+function gBandeauPrive(txt) {
+  return '<div style="display:flex;align-items:center;gap:8px;background:rgba(124,58,237,0.10);border:1px solid rgba(124,58,237,0.35);border-radius:10px;padding:9px 12px;font-size:12px;color:var(--white);margin-bottom:14px">'
+    + '<span style="font-size:15px">🔒</span><span>' + txt + '</span></div>';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  STOCKAGE PRIVÉ  /gerant_data/{uid}
+// ═══════════════════════════════════════════════════════════════════════════
+const GP = { uid:'', clients:[], tarifs:[], priv:{}, factures:[], compteurs:{}, at:0, erreur:null };
+
+async function gpCharger(force) {
+  const uid = gUid();
+  if (!uid) { GP.erreur = 'session'; return GP; }
+  if (!force && GP.uid === uid && !GP.erreur && (Date.now() - GP.at) < 20000) return GP;
+  try {
+    const d = await gRest('GET', 'gerant_data/' + uid);
+    GP.uid = uid;
+    GP.clients = gArr(d && d.clients).sort(function(a,b){ return String(a.nom||'').localeCompare(String(b.nom||''), 'fr'); });
+    GP.tarifs = gArr(d && d.tarifs);
+    GP.priv = (d && d.courses_priv) || {};
+    GP.factures = gArr(d && d.factures).sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); });
+    GP.compteurs = (d && d.compteurs) || {};
+    GP.at = Date.now(); GP.erreur = null;
+  } catch(e) {
+    GP.erreur = (e && (e.status === 401 || e.status === 403)) ? 'refus' : 'reseau';
+  }
+  return GP;
+}
+function gpChemin(sub) { return 'gerant_data/' + gUid() + '/' + sub; }
+function gErreurPrive() {
+  if (GP.erreur === 'refus') return 'Accès refusé par le serveur — option non activée par l\'administrateur, ou règles de sécurité pas encore à jour.';
+  if (GP.erreur === 'reseau') return 'Connexion impossible pour le moment — réessayez.';
+  if (GP.erreur === 'session') return 'Session non reconnue — reconnectez-vous.';
+  return '';
+}
+
+// Superpose les champs privés (prix client, client facturé…) sur un transfert.
+function gPrivFusion(c) {
+  if (!c || !c._id) return c;
+  const p = GP.priv[c._id];
+  if (!p) return c;
+  const o = Object.assign({}, c);
+  if (p.prix != null && !(parseFloat(c.prix) > 0)) o.prix = p.prix;
+  if (o.prix != null && o.prixChauffeur != null) o.marge = (parseFloat(o.prix)||0) - (parseFloat(o.prixChauffeur)||0);
+  o._priv = p;
+  return o;
+}
+async function gPrivFusionListe(courses) {
+  if (!(SESSION && SESSION.role === 'chauffeur' && SESSION.gerant && window._gOpts)) return courses;
+  await gpCharger();
+  return (courses || []).map(gPrivFusion);
+}
+window.gPrivFusionListe = gPrivFusionListe;
+
+// Appelé à la création d'un transfert par le gérant : retire du transfert
+// public ce qui doit rester privé et renvoie la fiche privée à enregistrer.
+function gPrivPreparer(base, paiementBord) {
+  if (!gOpt('agenda')) return null;
+  const selCl = document.getElementById('gn-client-prive');
+  const clientId = selCl ? selCl.value : '';
+  const cl = clientId ? GP.clients.find(function(x){ return x._id === clientId; }) : null;
+  const priv = {
+    prix: parseFloat(base.prix) || 0,
+    prixChauffeur: parseFloat(base.prixChauffeur) || 0,
+    clientId: clientId || '',
+    clientNom: cl ? (cl.nom || '') : '',
+    createdAt: new Date().toISOString()
+  };
+  base.gPrive = true;
+  // En compte : le prix client et la marge ne quittent pas l'espace privé.
+  // À bord : le chauffeur encaisse le client, il doit donc connaître le prix.
+  if (!paiementBord) { delete base.prix; delete base.marge; }
+  return priv;
+}
+async function gPrivEnregistrer(courseId, priv) {
+  if (!courseId || !priv) return;
+  await gRest('PUT', gpChemin('courses_priv/' + courseId), priv);
+  GP.priv[courseId] = priv;
+}
+window.gPrivPreparer = gPrivPreparer; window.gPrivEnregistrer = gPrivEnregistrer;
+
+// Mes transferts (ceux que j'ai créés), avec les champs privés superposés.
+async function gMesTransferts() {
+  const uid = gUid();
+  const moi = (SESSION.name || '').trim(), soc = (SESSION.socNom || '').trim();
+  let liste = null;
+  if (uid) liste = await fbQueryEq('courses', 'createdByUid', uid);
+  if (liste === null) {
+    let toutes = [];
+    try { fbInvalidate('courses'); } catch(e) {}
+    try { toutes = await fbGet('courses') || []; } catch(e) {}
+    liste = toutes.filter(function(c){
+      return c && ((uid && c.createdByUid === uid) || (c.creePar === 'gerant' && ((c.createdBy||'').trim() === moi || (soc && (c.soc_nom||'').trim() === soc))));
+    });
+  }
+  liste = liste.filter(function(c){ return c && c.creePar === 'gerant'; });
+  await gpCharger();
+  return liste.map(gPrivFusion);
+}
+
+async function gMaSociete() {
+  let moi = (D.chauffeurs || []).find(function(x){ return x._id === SESSION.chauffeurId; });
+  if (!moi || !moi.soc_nom) {
+    try { const tous = await fbGet('chauffeurs') || []; moi = tous.find(function(x){ return x._id === SESSION.chauffeurId; }) || moi; } catch(e) {}
+  }
+  moi = moi || {};
+  return {
+    nom: (moi.soc_nom || SESSION.socNom || SESSION.name || '').trim(),
+    siret: (moi.soc_siret || '').trim(), adresse: (moi.soc_adresse || '').trim(),
+    tva: (moi.soc_tva || '').trim(), tvaApplicable: String(moi.soc_tvaapp || '').toLowerCase() === 'oui',
+    iban: (moi.soc_iban || '').trim(), tel: (moi.tel || '').trim(), email: (moi.email || SESSION.email || '').trim()
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CÔTÉ ADMIN — cases à cocher dans la fiche chauffeur
+// ═══════════════════════════════════════════════════════════════════════════
+function gAdminBloc() {
+  let bloc = document.getElementById('g-admin-opts');
+  if (bloc) return bloc;
+  const pro = document.getElementById('ch-gerant-pro');
+  const apres = pro ? pro.closest('label') : null;
+  if (!apres) return null;
+  bloc = document.createElement('div');
+  bloc.id = 'g-admin-opts';
+  bloc.style.cssText = 'margin-top:10px;padding:12px;background:#faf5ff;border:1px solid #d8b4fe;border-radius:var(--r-sm)';
+  bloc.innerHTML = '<div style="font-size:13px;font-weight:800;color:#6b21a8;margin-bottom:2px">🔒 Espace privé du gérant</div>'
+    + '<div style="font-size:11px;color:#7e22ce;margin-bottom:8px">Chaque option s\'active séparément. Seul un administrateur peut les modifier. Les données créées par le gérant dans cet espace (clients, tarifs, prix, factures, messages) ne sont visibles que par lui.</div>'
+    + G_OPTIONS.map(function(o){
+        return '<label style="display:flex;align-items:flex-start;gap:10px;padding:8px 4px;cursor:pointer;border-top:1px solid #ede9fe">'
+          + '<input type="checkbox" id="ch-gopt-' + o.k + '" style="width:18px;height:18px;margin-top:2px;cursor:pointer;accent-color:' + o.coul + '">'
+          + '<div><div style="font-size:13px;font-weight:700;color:' + o.coul + '">' + o.ico + ' ' + o.label + '</div>'
+          + '<div style="font-size:11px;color:#6b7280">' + o.desc + '</div></div></label>';
+      }).join('')
+    + '<div id="g-admin-opts-info" style="font-size:11px;color:#b45309;margin-top:6px"></div>';
+  apres.insertAdjacentElement('afterend', bloc);
+  return bloc;
+}
+// À l'ouverture de la fiche : lit les options actuelles sur le serveur.
+async function gAdminOptsOuvrir(chauffeurId) {
+  const bloc = gAdminBloc(); if (!bloc) return;
+  const estAdmin = !!(SESSION && SESSION.role === 'admin');
+  const info = document.getElementById('g-admin-opts-info');
+  G_OPTIONS.forEach(function(o){ const cb = document.getElementById('ch-gopt-' + o.k); if (cb) { cb.checked = false; cb.disabled = true; } });
+  bloc.dataset.chId = chauffeurId || ''; bloc.dataset.pret = '0';
+  if (info) info.textContent = '';
+  if (!estAdmin) { if (info) info.textContent = 'Réservé à l\'administrateur.'; return; }
+  const c = chauffeurId ? (D.chauffeurs || []).find(function(x){ return x._id === chauffeurId; }) : null;
+  if (!c || !c.uid) {
+    G_OPTIONS.forEach(function(o){ const cb = document.getElementById('ch-gopt-' + o.k); if (cb) cb.disabled = false; });
+    bloc.dataset.pret = '1';
+    if (info) info.textContent = c ? 'ℹ️ Ce chauffeur ne s\'est pas encore connecté : les options seront appliquées après sa première connexion (rouvrez sa fiche et enregistrez).' : '';
+    return;
+  }
+  try {
+    const o = await gRest('GET', 'gerant_options/' + c.uid);
+    if (bloc.dataset.chId !== (chauffeurId || '')) return;   // la fiche a changé entre-temps
+    G_OPTIONS.forEach(function(x){ const cb = document.getElementById('ch-gopt-' + x.k); if (cb) { cb.checked = !!(o && o[x.k] === true); cb.disabled = false; } });
+    bloc.dataset.pret = '1';
+  } catch(e) {
+    if (info) info.textContent = '⚠️ Options illisibles (règles de sécurité Firebase pas encore à jour ?). Elles ne seront pas modifiées.';
+  }
+}
+function gAdminOptsLire() {
+  const bloc = document.getElementById('g-admin-opts');
+  if (!bloc || bloc.dataset.pret !== '1') return null;      // non chargé → on ne touche à rien
+  const o = {};
+  G_OPTIONS.forEach(function(x){ const cb = document.getElementById('ch-gopt-' + x.k); o[x.k] = !!(cb && cb.checked); });
+  return o;
+}
+// À l'enregistrement de la fiche (admin uniquement).
+async function gAdminOptsEnregistrer(chauffeurId, data, saisie) {
+  if (!saisie || !(SESSION && SESSION.role === 'admin')) return;
+  const exist = chauffeurId ? (D.chauffeurs || []).find(function(x){ return x._id === chauffeurId; }) : null;
+  const uid = (data && data.uid) || (exist && exist.uid) || '';
+  const uneCochee = G_OPTIONS.some(function(x){ return saisie[x.k]; });
+  if (!uid) { if (uneCochee) showToast('ℹ️ Options gérant : à réenregistrer après la 1re connexion du chauffeur', 'info'); return; }
+  try {
+    if (!(data && data.gerant === true) || !uneCochee) {
+      await gRest('DELETE', 'gerant_options/' + uid);
+      if (uneCochee) showToast('ℹ️ Options privées ignorées : cochez d\'abord « Gérant de la société »', 'info');
+    } else {
+      await gRest('PUT', 'gerant_options/' + uid, Object.assign({}, saisie, {
+        soc: String((data && data.soc_nom) || '').trim(),
+        chauffeurId: chauffeurId || '',
+        par: SESSION.name || 'admin', updatedAt: new Date().toISOString()
+      }));
+    }
+  } catch(e) {
+    showToast('⚠️ Options gérant non enregistrées (règles Firebase à mettre à jour ?)', true);
+  }
+}
+window.gAdminOptsOuvrir = gAdminOptsOuvrir; window.gAdminOptsLire = gAdminOptsLire; window.gAdminOptsEnregistrer = gAdminOptsEnregistrer;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MODULE 1 — MON DISPATCH (agenda privé)
+// ═══════════════════════════════════════════════════════════════════════════
+const GA = { jour: gJourStr(new Date()), liste: [], sel: {}, filtre: 'jour', timer: null };
+
+function gaStatut(c) {
+  const s = c.statut;
+  if (G_MORTS.indexOf(s) >= 0) return { bg:'#9ca3af', lab:'Annulé' };
+  if (G_FINIS.indexOf(s) >= 0) return { bg:'#15803d', lab:'Terminé' };
+  if (['en_route','sur_place','onboard','depose'].indexOf(s) >= 0) return { bg:'#2563eb', lab:'En cours' };
+  if (['offre_ouverte','offre_prioritaire','offre_en_cours','nouvelle'].indexOf(s) >= 0 && !c.chauffeur)
+    return { bg:'#d97706', lab: s === 'offre_prioritaire' ? '⭐ Proposé aux prioritaires' : '🙋 Proposé au réseau' };
+  if (!c.chauffeur) return { bg:'#b45309', lab:'À attribuer' };
+  return { bg:'#7c5cc4', lab: s === 'acceptee' ? 'Accepté' : 'Attribué' };
+}
+function gaActif(c) { return G_MORTS.indexOf(c.statut) < 0 && G_FINIS.indexOf(c.statut) < 0; }
+function gaSansChauffeur(c) { return gaActif(c) && !c.chauffeur; }
+function gaNomPassager(c) {
+  const p = (c.passagers && c.passagers[0]) || null;
+  const n = p ? ((p.prenom||'') + ' ' + (p.nom||'')).trim() : '';
+  return n || c.client || '';
+}
+
+window.renderGerantAgenda = async function(silencieux) {
+  const root = document.getElementById('ga-root'); if (!root) return;
+  if (!gOpt('agenda')) { root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Option non activée par l\'administrateur.</div>'; return; }
+  if (!silencieux && !GA.liste.length) root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Chargement…</div>';
+  try { GA.liste = await gMesTransferts(); } catch(e) { GA.liste = GA.liste || []; }
+  gaDessiner();
+  clearTimeout(GA.timer);
+  GA.timer = setTimeout(function(){
+    const pg = document.getElementById('page-gerant-agenda');
+    if (pg && pg.classList.contains('on') && !document.querySelector('.g-sheet')) window.renderGerantAgenda(true);
+  }, 45000);
+};
+
+function gaDessiner() {
+  const root = document.getElementById('ga-root'); if (!root) return;
+  const auj = gJourStr(new Date());
+  const dSel = new Date(GA.jour + 'T12:00:00');
+  const parJour = {};
+  GA.liste.forEach(function(c){ const j = (c.datetime||'').slice(0,10); if (j) (parJour[j] = parJour[j] || []).push(c); });
+  const aAttr = GA.liste.filter(function(c){ return gaSansChauffeur(c) && (c.datetime||'').slice(0,10) >= auj; });
+  const duJour = (GA.filtre === 'attribuer' ? aAttr : (parJour[GA.jour] || []))
+    .slice().sort(function(a,b){ return String(a.datetime||'').localeCompare(String(b.datetime||'')); });
+
+  // Bandeau des 7 jours (jour choisi au centre)
+  let bande = '';
+  for (let i = -3; i <= 3; i++) {
+    const d = new Date(dSel); d.setDate(d.getDate() + i);
+    const js = gJourStr(d), nb = (parJour[js] || []).filter(function(c){ return G_MORTS.indexOf(c.statut) < 0; }).length;
+    const on = (js === GA.jour && GA.filtre === 'jour');
+    let pts = ''; for (let k = 0; k < Math.min(4, nb); k++) pts += '<span style="width:6px;height:6px;border-radius:50%;background:' + (on ? '#fff' : 'var(--gold)') + ';display:inline-block;margin:0 1px"></span>';
+    bande += '<button onclick="gaAller(\'' + js + '\')" style="flex:1;min-width:0;border:none;border-radius:10px;padding:8px 2px;cursor:pointer;font-family:inherit;background:' + (on ? 'var(--gold)' : (js === auj ? 'var(--card2)' : 'transparent')) + ';color:' + (on ? '#fff' : 'var(--white)') + '">'
+      + '<div style="font-size:11px;opacity:0.8">' + 'DLMMJVS'.charAt(d.getDay()) + '</div>'
+      + '<div style="font-size:18px;font-weight:800">' + d.getDate() + '</div>'
+      + '<div style="height:8px;line-height:8px">' + pts + '</div></button>';
+  }
+
+  const selIds = Object.keys(GA.sel).filter(function(id){ return GA.sel[id] && duJour.some(function(c){ return c._id === id; }); });
+  const titre = GA.filtre === 'attribuer' ? 'À attribuer (à venir)' : dSel.toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
+
+  let h = gBandeauPrive('Espace privé — ces transferts, leurs prix et leurs clients ne sont visibles que par vous.')
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'
+    +   '<button onclick="gaDecaler(-1)" class="btn btn-ghost btn-sm" aria-label="Jour précédent">‹</button>'
+    +   '<div style="flex:1;font-size:17px;font-weight:800;color:var(--white);text-transform:capitalize;min-width:0">' + E(titre) + '</div>'
+    +   '<button onclick="gaDecaler(1)" class="btn btn-ghost btn-sm" aria-label="Jour suivant">›</button>'
+    +   '<button onclick="gaAller(\'' + auj + '\')" class="btn btn-ghost btn-sm">Aujourd\'hui</button>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">'
+    +   '<button onclick="gp(\'gerant-nouveau\')" class="btn btn-p"><i class="fas fa-plus"></i> Nouveau transfert</button>'
+    +   '<button onclick="gaFiltre()" class="btn btn-ghost btn-sm" style="' + (GA.filtre === 'attribuer' ? 'border-color:var(--gold);color:var(--gold)' : '') + '"><i class="fas fa-user-slash"></i> À attribuer <span style="background:#dc2626;color:#fff;border-radius:10px;padding:1px 8px;font-size:11px;font-weight:800;margin-left:4px">' + aAttr.length + '</span></button>'
+    +   '<button onclick="renderGerantAgenda()" class="btn btn-ghost btn-sm" aria-label="Actualiser"><i class="fas fa-sync-alt"></i></button>'
+    +   '<span style="font-size:12px;color:var(--muted)">' + duJour.length + ' transfert' + (duJour.length > 1 ? 's' : '') + '</span>'
+    + '</div>'
+    + '<div style="display:flex;gap:2px;margin-bottom:12px">' + bande + '</div>';
+
+  if (duJour.length) {
+    h += '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:4px 0 10px;cursor:pointer">'
+      + '<input type="checkbox" onchange="gaToutCocher(this.checked)"' + (selIds.length && selIds.length === duJour.length ? ' checked' : '') + ' style="width:18px;height:18px"> Tout sélectionner</label>';
+  }
+  if (selIds.length) {
+    h += '<div style="background:var(--card);border:1px solid var(--gold);border-radius:12px;padding:10px;margin-bottom:12px">'
+      + '<div style="font-size:12px;font-weight:700;color:var(--gold);margin-bottom:8px">' + selIds.length + ' transfert(s) sélectionné(s)</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+      +   '<button onclick="gaLot(\'tous\')" class="btn btn-b btn-sm">🙋 Proposer à tous</button>'
+      +   '<button onclick="gaLot(\'prio\')" class="btn btn-ghost btn-sm">⭐ Prioritaires</button>'
+      +   '<button onclick="gaLot(\'annuler\')" class="btn btn-ghost btn-sm" style="color:#dc2626">🗑 Annuler</button>'
+      + '</div></div>';
+  }
+
+  if (!duJour.length) {
+    h += '<div style="padding:34px 16px;text-align:center;color:var(--muted);font-size:14px;background:var(--card);border-radius:12px">'
+      + (GA.filtre === 'attribuer' ? 'Aucun transfert en attente de chauffeur. 👌' : 'Aucun transfert ce jour-là.') + '</div>';
+  } else {
+    h += duJour.map(function(c){
+      const st = gaStatut(c);
+      const heure = (c.datetime||'').slice(11,16) || '--:--';
+      const jourC = GA.filtre === 'attribuer' ? (new Date(c.datetime).toLocaleDateString('fr-FR', { day:'numeric', month:'short' }) + ' ') : '';
+      const trajet = (c.depart || c.lieu || '?') + ' / ' + (c.arrivee || '?');
+      const quiPaie = (c._priv && c._priv.clientNom) ? c._priv.clientNom : gaNomPassager(c);
+      const ligne3 = c.chauffeur ? ('👤 ' + E(c.chauffeur)) : ('<em style="opacity:0.9">' + E(st.lab) + '</em>');
+      return '<div style="position:relative;margin-bottom:8px">'
+        + '<input type="checkbox" class="ga-chk" data-id="' + c._id + '"' + (GA.sel[c._id] ? ' checked' : '') + ' onchange="gaCocher(\'' + c._id + '\',this.checked)" onclick="event.stopPropagation()" style="position:absolute;left:12px;top:12px;width:28px;height:28px;cursor:pointer;z-index:2">'
+        + '<div onclick="gaDetail(\'' + c._id + '\')" style="background:' + st.bg + ';border-radius:12px;padding:12px 14px 12px 12px;cursor:pointer;color:#fff;min-height:72px;box-shadow:0 2px 6px rgba(0,0,0,0.08);overflow:hidden">'
+        +   '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;padding-left:44px;min-width:0;min-height:28px">'
+        +     '<span style="font-size:16px;font-weight:800;flex-shrink:0">' + E(jourC + heure) + '</span>'
+        +     '<span style="font-size:16px;font-weight:700;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E(trajet) + '</span>'
+        +   '</div>'
+        +   '<div style="font-size:12px;display:flex;align-items:center;overflow:hidden;white-space:nowrap">'
+        +     '<span style="background:rgba(255,255,255,0.22);border-radius:5px;padding:2px 8px;font-weight:800;margin-right:6px;font-size:11.5px">' + gVehNom(c.vehicule) + ' · ' + (c.pax||1) + ' pax</span>'
+        +     '<span style="opacity:0.9;overflow:hidden;text-overflow:ellipsis">' + E(quiPaie) + '</span>'
+        +   '</div>'
+        +   '<div style="font-size:13px;margin-top:3px;font-weight:500">' + ligne3 + '</div>'
+        + '</div></div>';
+    }).join('');
+  }
+  root.innerHTML = h;
+}
+window.gaAller = function(j) { GA.jour = j; GA.filtre = 'jour'; GA.sel = {}; gaDessiner(); };
+window.gaDecaler = function(n) { const d = new Date(GA.jour + 'T12:00:00'); d.setDate(d.getDate() + n); window.gaAller(gJourStr(d)); };
+window.gaFiltre = function() { GA.filtre = (GA.filtre === 'attribuer' ? 'jour' : 'attribuer'); GA.sel = {}; gaDessiner(); };
+window.gaCocher = function(id, on) { GA.sel[id] = !!on; gaDessiner(); };
+window.gaToutCocher = function(on) { document.querySelectorAll('.ga-chk').forEach(function(cb){ GA.sel[cb.dataset.id] = !!on; }); gaDessiner(); };
+
+function gaTrouver(id) { return GA.liste.find(function(c){ return c._id === id; }); }
+
+// Proposition au réseau MOBILEA (tous ou prioritaires) — un ou plusieurs transferts.
+async function gaProposerIds(ids, mode) {
+  const ok = [];
+  for (const id of ids) {
+    const c = gaTrouver(id);
+    if (!c || !gaActif(c)) continue;
+    if (['en_route','sur_place','onboard','depose'].indexOf(c.statut) >= 0) continue;   // course déjà commencée
+    try {
+      await fbUpdate('courses', id, {
+        statut: mode === 'prio' ? 'offre_prioritaire' : 'offre_ouverte',
+        chauffeur:'', chauffeurUid:null, chauffeurId:null, chauffeurTel:null,
+        accepteePar:null, accepteeLe:null, acceptedAt:null, autoDispatched:null,
+        offerCandidateIds:null, offerIndex:null, offerChauffeurId:null, offerExpiresAt:null, offerAttempts:null, autoDispatchDone:null,
+        rappel_15_env:null, rappel_30_env:null, rappel_60_env:null, rappel_120_env:null, rappelEnvoye:null, rappel30Envoye:null,
+        ouvertePar: SESSION.name, ouverteLe: new Date().toISOString(), updatedAt: new Date().toISOString()
+      });
+      ok.push(c);
+    } catch(e) {}
+  }
+  if (ok.length) {
+    try {
+      if (mode === 'prio' && !(D.chauffeurs && D.chauffeurs.length > 1)) { try { D.chauffeurs = await fbGet('chauffeurs') || D.chauffeurs; } catch(e) {} }
+      await notifierOffreChauffeurs(ok, mode === 'prio' ? 'prio' : 'tous');
+    } catch(e) {}
+  }
+  try { fbInvalidate('courses'); } catch(e) {}
+  return ok.length;
+}
+window.gaLot = async function(action) {
+  const ids = Object.keys(GA.sel).filter(function(id){ return GA.sel[id]; });
+  if (!ids.length) { showToast('Aucun transfert sélectionné', true); return; }
+  if (action === 'annuler') {
+    if (!confirm('Annuler ' + ids.length + ' transfert(s) ?')) return;
+    let n = 0;
+    for (const id of ids) { const c = gaTrouver(id); if (!c || !gaActif(c)) continue;
+      try { await fbUpdate('courses', id, { statut:'annulee', annuleePar:SESSION.name, annuleeLe:new Date().toISOString() }); n++; } catch(e) {} }
+    showToast(n + ' transfert(s) annulé(s)');
+  } else {
+    const avecCh = ids.filter(function(id){ const c = gaTrouver(id); return c && c.chauffeur; }).length;
+    if (!confirm('Proposer ' + ids.length + ' transfert(s) ' + (action === 'prio' ? 'aux chauffeurs prioritaires ⭐' : 'à tout le réseau') + ' ?' + (avecCh ? '\n\n⚠️ ' + avecCh + ' ont déjà un chauffeur : il sera retiré.' : ''))) return;
+    showToast('Envoi…', 'info');
+    const n = await gaProposerIds(ids, action);
+    showToast('✅ ' + n + ' transfert(s) proposé(s)');
+  }
+  GA.sel = {};
+  window.renderGerantAgenda(true);
+};
+
+// Fiche d'un transfert + actions
+window.gaDetail = function(id) {
+  const c = gaTrouver(id); if (!c) return;
+  const st = gaStatut(c), actif = gaActif(c);
+  const p = c._priv || {};
+  const prixCl = parseFloat(p.prix != null ? p.prix : c.prix) || 0, prixCh = parseFloat(c.prixChauffeur) || 0;
+  const pass = (c.passagers && c.passagers[0]) || {};
+  const tel = pass.tel || c.tel || '';
+  const ligne = function(a, b){ return b ? '<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #f1f3f5;font-size:14px"><span style="color:#6b7280;flex-shrink:0">' + a + '</span><span style="font-weight:600;text-align:right;word-break:break-word">' + b + '</span></div>' : ''; };
+  let h = '<div style="display:inline-block;background:' + st.bg + ';color:#fff;border-radius:8px;padding:4px 10px;font-size:12px;font-weight:700;margin-bottom:8px">' + E(st.lab) + '</div>'
+    + ligne('Date', c.datetime ? E(new Date(c.datetime).toLocaleString('fr-FR', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })) : '')
+    + ligne('Départ', E(c.depart || c.lieu || ''))
+    + ligne('Arrivée', E(c.arrivee || ''))
+    + ligne('Véhicule', gVehNom(c.vehicule) + ' · ' + (c.pax||1) + ' pax' + (c.bags ? ' · ' + c.bags + ' bag.' : ''))
+    + ligne('Passager', E(gaNomPassager(c)))
+    + ligne('Téléphone', tel ? '<a href="tel:' + E(String(tel).replace(/\s/g,'')) + '" style="color:#1a73e8;text-decoration:none">' + E(tel) + '</a>' : '')
+    + ligne('Vol', E(c.vol || pass.vol || ''))
+    + ligne('Chauffeur', c.chauffeur ? E(c.chauffeur) + (c.chauffeurTel ? ' · <a href="tel:' + E(String(c.chauffeurTel).replace(/\s/g,'')) + '" style="color:#1a73e8;text-decoration:none">' + E(c.chauffeurTel) + '</a>' : '') : '')
+    + ligne('Paiement', estPaiementABord(c) ? '💵 À bord' : '🧾 En compte')
+    + ligne('Notes', E(c.notes || ''))
+    + '<div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:12px;padding:10px 12px;margin:12px 0">'
+    +   '<div style="font-size:11px;font-weight:800;color:#7e22ce;margin-bottom:4px">🔒 PRIVÉ — visible par vous seul</div>'
+    +   ligne('Client facturé', E(p.clientNom || '—'))
+    +   ligne('Prix client TTC', gEur(prixCl))
+    +   ligne('Prix chauffeur', gEur(prixCh))
+    +   ligne('Marge', '<span style="color:' + ((prixCl - prixCh) >= 0 ? '#15803d' : '#dc2626') + '">' + gEur(prixCl - prixCh) + '</span>')
+    +   ligne('Facture', p.factureRef ? E(p.factureRef) : '')
+    + '</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+  const enCours = ['en_route','sur_place','onboard','depose'].indexOf(c.statut) >= 0;
+  if (actif && !enCours) {
+    h += gBtn('👤 Attribuer', 'gaAttribuer(\'' + id + '\')', '#7c3aed')
+      + gBtn('🙋 Proposer à tous', 'gaProposerUn(\'' + id + '\',\'tous\')', '#d97706')
+      + gBtn('⭐ Prioritaires', 'gaProposerUn(\'' + id + '\',\'prio\')', '#b45309')
+      + gBtn('✏️ Modifier', 'gaModifier(\'' + id + '\')', '#2563eb')
+      + gBtn('🔗 Lien externe', 'gaLien(\'' + id + '\')', '#475569')
+      + gBtn('🗑 Annuler', 'gaAnnuler(\'' + id + '\')', '#dc2626');
+  } else if (actif) {
+    h += gBtn('✏️ Modifier', 'gaModifier(\'' + id + '\')', '#2563eb');
+  } else {
+    h += gBtn('✏️ Prix / client', 'gaModifier(\'' + id + '\')', '#2563eb');
+    if (G_MORTS.indexOf(c.statut) >= 0) h += gBtn('🗑 Supprimer', 'gaSupprimer(\'' + id + '\')', '#dc2626');
+  }
+  h += '</div>';
+  gSheet('ga-sheet', 'Transfert', h);
+};
+
+window.gaProposerUn = async function(id, mode) {
+  const c = gaTrouver(id); if (!c) return;
+  if (!confirm((mode === 'prio' ? 'Proposer ce transfert aux chauffeurs prioritaires ⭐ ?' : 'Proposer ce transfert à tout le réseau ?') + (c.chauffeur ? '\n\n⚠️ Le chauffeur actuel (' + c.chauffeur + ') sera retiré.' : ''))) return;
+  const n = await gaProposerIds([id], mode);
+  gSheetFermer('ga-sheet');
+  showToast(n ? '✅ Transfert proposé' : 'Impossible de proposer ce transfert', !n);
+  window.renderGerantAgenda(true);
+};
+window.gaAnnuler = async function(id) {
+  if (!confirm('Annuler ce transfert ?')) return;
+  try {
+    const c = gaTrouver(id);
+    await fbUpdate('courses', id, { statut:'annulee', annuleePar:SESSION.name, annuleeLe:new Date().toISOString() });
+    if (c && c.chauffeurId) { try { await sendPushNotification('❌ Transfert annulé', (c.depart||'') + ' → ' + (c.arrivee||''), null, [c.chauffeurId]); } catch(e) {} }
+    gSheetFermer('ga-sheet'); showToast('Transfert annulé');
+  } catch(e) { showToast('Erreur lors de l\'annulation', true); }
+  window.renderGerantAgenda(true);
+};
+window.gaSupprimer = async function(id) {
+  if (!confirm('Supprimer définitivement ce transfert annulé ?')) return;
+  try {
+    await fbDelete('courses', id);
+    try { await gRest('DELETE', gpChemin('courses_priv/' + id)); delete GP.priv[id]; } catch(e) {}
+    gSheetFermer('ga-sheet'); showToast('Transfert supprimé');
+  } catch(e) { showToast('Suppression impossible', true); }
+  window.renderGerantAgenda(true);
+};
+window.gaLien = async function(id) {
+  const c = gaTrouver(id); if (!c) return;
+  // genererLienExterne cherche le transfert dans D.courses : on l'y place.
+  try { if (!(D.courses || []).some(function(x){ return x._id === id; })) (D.courses = D.courses || []).push(c); } catch(e) {}
+  gSheetFermer('ga-sheet');
+  try { await genererLienExterne(id); } catch(e) { showToast('Lien indisponible', true); }
+};
+
+// Attribution à un chauffeur (les miens d'abord, puis recherche dans le réseau)
+window.gaAttribuer = async function(id) {
+  const c = gaTrouver(id); if (!c) return;
+  let tous = [];
+  try { tous = await fbGet('chauffeurs') || []; } catch(e) {}
+  tous = tous.filter(function(ch){ return !ch.archived && !ch.blocked; });
+  const soc = (SESSION.socNom || '').trim();
+  window._gaCh = {
+    id: id,
+    miens: tous.filter(function(ch){ return soc && (ch.soc_nom||'').trim() === soc; }),
+    reseau: tous.filter(function(ch){ return !(soc && (ch.soc_nom||'').trim() === soc); })
+  };
+  gSheet('ga-sheet', 'Attribuer à un chauffeur',
+    '<input type="text" id="ga-ch-q" placeholder="🔎 Rechercher (nom, téléphone)…" oninput="gaAttribuerListe()" style="' + G_IN + '">'
+    + '<div id="ga-ch-liste" style="margin-top:10px"></div>');
+  window.gaAttribuerListe();
+};
+window.gaAttribuerListe = function() {
+  const box = document.getElementById('ga-ch-liste'); if (!box || !window._gaCh) return;
+  const q = gNorm(gVal('ga-ch-q'));
+  const f = function(l){ return l.filter(function(ch){ return !q || gNorm((ch.prenom||'') + ' ' + (ch.nom||'') + ' ' + (ch.tel||'')).indexOf(q) >= 0; })
+    .sort(function(a,b){ return String(a.prenom||'').localeCompare(String(b.prenom||''), 'fr'); }); };
+  const rang = function(ch){
+    const nom = ((ch.prenom||'') + ' ' + (ch.nom||'')).trim();
+    return '<div onclick="gaAttribuerA(\'' + ch._id + '\')" style="padding:11px 12px;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:6px;cursor:pointer">'
+      + '<div style="font-weight:700;font-size:14px">' + E(nom) + '</div>'
+      + '<div style="font-size:12px;color:#6b7280">' + E(ch.tel || '(pas de téléphone)') + (ch.vehicule ? ' · ' + E(ch.vehicule) : '') + (ch.statut === 'disponible' ? ' · <span style="color:#16a34a">● disponible</span>' : '') + '</div></div>';
+  };
+  const miens = f(window._gaCh.miens), reseau = f(window._gaCh.reseau).slice(0, 60);
+  const titre = function(t){ return '<div style="font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 6px">' + t + '</div>'; };
+  box.innerHTML = titre('👔 Mes chauffeurs (' + miens.length + ')') + (miens.map(rang).join('') || '<div style="font-size:13px;color:#9ca3af;padding:6px 0">Aucun</div>')
+    + titre('🚕 Réseau MOBILEA (' + reseau.length + ')') + (reseau.map(rang).join('') || '<div style="font-size:13px;color:#9ca3af;padding:6px 0">Aucun</div>');
+};
+window.gaAttribuerA = async function(chId) {
+  const ctx = window._gaCh; if (!ctx) return;
+  const ch = ctx.miens.concat(ctx.reseau).find(function(x){ return x._id === chId; });
+  const c = gaTrouver(ctx.id);
+  if (!ch || !c) return;
+  const nom = ((ch.prenom||'') + (ch.nom ? ' ' + ch.nom : '')).trim();
+  if (c.chauffeur && c.chauffeur !== nom && !confirm('Remplacer ' + c.chauffeur + ' par ' + nom + ' ?')) return;
+  try {
+    await fbUpdate('courses', ctx.id, {
+      chauffeur: nom, chauffeurId: ch._id, chauffeurUid: ch.uid || null, chauffeurTel: ch.tel || '',
+      statut: 'attribuee', offerChauffeurId:null, offerExpiresAt:null, offerCandidateIds:null,
+      accepteePar:null, accepteeLe:null, attribueeLe: new Date().toISOString(), updatedAt: new Date().toISOString()
+    });
+    try { await sendPushNotification('🚗 Nouveau transfert', (c.depart||'') + ' → ' + (c.arrivee||'') + (c.datetime ? ' — ' + new Date(c.datetime).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : ''), null, [ch._id], null, { courseId: ctx.id }); } catch(e) {}
+    if (c.chauffeurId && c.chauffeurId !== ch._id) { try { await sendPushNotification('ℹ️ Transfert retiré', (c.depart||'') + ' → ' + (c.arrivee||''), null, [c.chauffeurId]); } catch(e) {} }
+    try { fbInvalidate('courses'); } catch(e) {}
+    gSheetFermer('ga-sheet'); showToast('✅ Attribué à ' + nom);
+  } catch(e) { showToast('Attribution impossible', true); }
+  window.renderGerantAgenda(true);
+};
+
+// Modification d'un transfert (champs publics + champs privés)
+window.gaModifier = async function(id) {
+  const c = gaTrouver(id); if (!c) return;
+  await gpCharger();
+  const p = c._priv || {};
+  const pass = (c.passagers && c.passagers[0]) || {};
+  const fige = !gaActif(c);     // terminé/annulé : seuls prix + client restent modifiables
+  const ro = fige ? ' disabled' : '';
+  const optsCl = '<option value="">— Aucun / particulier —</option>' + GP.clients.map(function(cl){ return '<option value="' + cl._id + '"' + (p.clientId === cl._id ? ' selected' : '') + '>' + E(cl.nom || '') + '</option>'; }).join('');
+  const prixCl = (p.prix != null ? p.prix : (c.prix != null ? c.prix : ''));
+  const h = (fige ? '<div style="font-size:12px;color:#b45309;margin-bottom:6px">Transfert clôturé : seuls le client facturé et les prix restent modifiables.</div>' : '')
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +   '<div>' + gChamp('Date', '<input type="date" id="gam-date" value="' + E((c.datetime||'').slice(0,10)) + '" style="' + G_IN + '"' + ro + '>') + '</div>'
+    +   '<div>' + gChamp('Heure', '<input type="time" id="gam-heure" value="' + E((c.datetime||'').slice(11,16)) + '" style="' + G_IN + '"' + ro + '>') + '</div>'
+    + '</div>'
+    + gChamp('Départ', '<input type="text" id="gam-dep" value="' + E(c.depart || c.lieu || '') + '" maxlength="200" style="' + G_IN + '"' + ro + '>')
+    + gChamp('Arrivée', '<input type="text" id="gam-arr" value="' + E(c.arrivee || '') + '" maxlength="200" style="' + G_IN + '"' + ro + '>')
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +   '<div>' + gChamp('Véhicule', '<select id="gam-veh" style="' + G_IN + '"' + ro + '>' + G_VEH_OPTS.map(function(v){ return '<option value="' + v[0] + '"' + ((c.vehicule||'berline') === v[0] ? ' selected' : '') + '>' + v[1] + '</option>'; }).join('') + '</select>') + '</div>'
+    +   '<div>' + gChamp('Passagers', '<input type="number" id="gam-pax" min="1" max="60" value="' + (parseInt(c.pax)||1) + '" style="' + G_IN + '"' + ro + '>') + '</div>'
+    + '</div>'
+    + gChamp('Passager (nom vu par le chauffeur)', '<input type="text" id="gam-pass" value="' + E(gaNomPassager(c)) + '" maxlength="120" style="' + G_IN + '"' + ro + '>')
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +   '<div>' + gChamp('Téléphone passager', '<input type="tel" id="gam-tel" value="' + E(pass.tel || c.tel || '') + '" maxlength="30" style="' + G_IN + '"' + ro + '>') + '</div>'
+    +   '<div>' + gChamp('N° de vol / train', '<input type="text" id="gam-vol" value="' + E(c.vol || pass.vol || '') + '" maxlength="30" style="' + G_IN + '"' + ro + '>') + '</div>'
+    + '</div>'
+    + gChamp('Notes pour le chauffeur', '<textarea id="gam-notes" rows="2" maxlength="1000" style="' + G_IN + ';resize:vertical"' + ro + '>' + E(c.notes || '') + '</textarea>')
+    + '<div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:12px;padding:4px 12px 12px;margin-top:14px">'
+    +   '<div style="font-size:11px;font-weight:800;color:#7e22ce;margin-top:8px">🔒 PRIVÉ</div>'
+    +   gChamp('Client facturé', '<select id="gam-client" onchange="gamTarif()" style="' + G_IN + '">' + optsCl + '</select>')
+    +   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +     '<div>' + gChamp('Prix client TTC (€)', '<input type="number" id="gam-prix" step="0.01" min="0" value="' + E(String(prixCl)) + '" style="' + G_IN + '">') + '</div>'
+    +     '<div>' + gChamp('Prix chauffeur (€)', '<input type="number" id="gam-prixch" step="0.01" min="0" value="' + E(String(c.prixChauffeur != null ? c.prixChauffeur : '')) + '" style="' + G_IN + '">') + '</div>'
+    +   '</div>'
+    +   (gOpt('clients') ? '<button onclick="gamTarif(true)" style="margin-top:10px;background:none;border:1px dashed #a855f7;border-radius:10px;padding:9px 12px;color:#7e22ce;font-size:13px;font-weight:700;cursor:pointer;width:100%">💶 Appliquer mon tarif</button>' : '')
+    +   gChamp('Paiement', '<select id="gam-pay" style="' + G_IN + '"' + ro + '><option value="compte"' + (estPaiementABord(c) ? '' : ' selected') + '>🧾 En compte (je facture le client)</option><option value="bord"' + (estPaiementABord(c) ? ' selected' : '') + '>💵 À bord (le chauffeur encaisse)</option></select>')
+    + '</div>'
+    + '<div style="margin-top:16px">' + gBtn('💾 Enregistrer', 'gaModifierOK(\'' + id + '\')', '#16a34a', true) + '</div>';
+  gSheet('ga-sheet', 'Modifier le transfert', h);
+};
+// Remplit les prix depuis la grille tarifaire privée (bouton ou changement de client).
+window.gamTarif = function(force) {
+  if (!gOpt('clients')) return;
+  const t = gTarifTrouver(gVal('gam-client'), gVal('gam-dep'), gVal('gam-arr'), gVal('gam-veh'));
+  if (!t) { if (force) showToast('Aucun tarif correspondant dans votre grille', true); return; }
+  const a = document.getElementById('gam-prix'), b = document.getElementById('gam-prixch');
+  if (a && (force || !a.value)) a.value = t.prixClient != null ? t.prixClient : '';
+  if (b && (force || !b.value)) b.value = t.prixChauffeur != null ? t.prixChauffeur : '';
+  if (force) showToast('💶 Tarif appliqué');
+};
+window.gaModifierOK = async function(id) {
+  const c = gaTrouver(id); if (!c) return;
+  const fige = !gaActif(c);
+  const prixCl = parseFloat(gVal('gam-prix')) || 0, prixCh = parseFloat(gVal('gam-prixch')) || 0;
+  const clientId = gVal('gam-client');
+  const cl = clientId ? GP.clients.find(function(x){ return x._id === clientId; }) : null;
+  const bord = fige ? estPaiementABord(c) : (gVal('gam-pay') === 'bord');
+  const pub = { prixChauffeur: prixCh, gPrive: true, updatedAt: new Date().toISOString() };
+  if (!fige) {
+    const date = gVal('gam-date'), heure = gVal('gam-heure'), dep = gVal('gam-dep'), arr = gVal('gam-arr');
+    if (!date || !heure) { showToast('Date et heure obligatoires', true); return; }
+    if (!dep || !arr) { showToast('Départ et arrivée obligatoires', true); return; }
+    const nomPass = gVal('gam-pass') || (dep.split(',')[0] || 'Course');
+    const tel = gVal('gam-tel'), vol = gVal('gam-vol');
+    Object.assign(pub, {
+      datetime: date + 'T' + heure, depart: sanitize(dep, 200), arrivee: sanitize(arr, 200),
+      vehicule: gVal('gam-veh') || 'berline', pax: Math.max(1, parseInt(gVal('gam-pax')) || 1),
+      client: sanitize(nomPass, 120), tel: sanitize(tel, 30), vol: sanitize(vol, 30), notes: sanitize(gVal('gam-notes'), 1000),
+      payMode: bord ? 'direct' : 'simplycab', mode_paiement: bord ? 'onboard' : 'compte'
+    });
+    // Si l'horaire change, les rappels doivent repartir.
+    if (pub.datetime !== c.datetime) Object.assign(pub, { rappel_15_env:null, rappel_30_env:null, rappel_60_env:null, rappel_120_env:null, rappelEnvoye:null, rappel30Envoye:null });
+  }
+  // Prix client : public seulement si le chauffeur doit l'encaisser à bord.
+  if (bord) { pub.prix = prixCl; pub.marge = prixCl - prixCh; } else { pub.prix = null; pub.marge = null; }
+  const priv = Object.assign({}, c._priv || {}, {
+    prix: prixCl, prixChauffeur: prixCh, clientId: clientId || '', clientNom: cl ? (cl.nom || '') : '', updatedAt: new Date().toISOString()
+  });
+  try {
+    await gPrivEnregistrer(id, priv);            // le privé d'abord : s'il est refusé, on ne touche à rien
+  } catch(e) { showToast('⚠️ Enregistrement privé refusé — rien n\'a été modifié', true); return; }
+  try {
+    await fbUpdate('courses', id, pub);
+    if (!fige && c.chauffeurId && (pub.datetime !== c.datetime || pub.depart !== (c.depart||'') || pub.arrivee !== (c.arrivee||''))) {
+      try { await sendPushNotification('✏️ Transfert modifié', pub.depart + ' → ' + pub.arrivee + ' — ' + new Date(pub.datetime).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }), null, [c.chauffeurId], null, { courseId: id }); } catch(e) {}
+    }
+    try { fbInvalidate('courses'); } catch(e) {}
+    gSheetFermer('ga-sheet'); showToast('✅ Transfert enregistré');
+  } catch(e) { showToast('Erreur lors de l\'enregistrement', true); }
+  window.renderGerantAgenda(true);
+};
+
+// Page « Nouveau transfert » : ajoute le choix du client privé + tarif auto.
+async function gNouveauEnrichir() {
+  if (!gOpt('agenda')) return;
+  await gpCharger();
+  const champ = document.getElementById('gn-client'); if (!champ) return;
+  let bloc = document.getElementById('gn-prive-bloc');
+  if (!bloc) {
+    bloc = document.createElement('div');
+    bloc.id = 'gn-prive-bloc';
+    bloc.style.cssText = 'background:rgba(124,58,237,0.08);border:1px solid rgba(124,58,237,0.35);border-radius:12px;padding:12px;margin-bottom:12px';
+    const cible = champ.closest('.fld') || champ;
+    cible.parentNode.insertBefore(bloc, cible);
+  }
+  const garde = gVal('gn-client-prive');
+  bloc.innerHTML = '<div style="font-size:12px;font-weight:800;color:var(--white);margin-bottom:6px">🔒 Client facturé (privé)</div>'
+    + '<select id="gn-client-prive" onchange="gnTarif()" class="fsel" style="width:100%">'
+    +   '<option value="">— Aucun / particulier —</option>'
+    +   GP.clients.map(function(cl){ return '<option value="' + cl._id + '"' + (garde === cl._id ? ' selected' : '') + '>' + E(cl.nom || '') + '</option>'; }).join('')
+    + '</select>'
+    + (gOpt('clients')
+        ? '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button type="button" onclick="gnTarif(true)" class="btn btn-ghost btn-sm">💶 Appliquer mon tarif</button><button type="button" onclick="gp(\'gerant-clients\')" class="btn btn-ghost btn-sm">+ Gérer mes clients</button></div>'
+        : '')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:8px">Le nom de ce client et le prix client restent dans votre espace privé. Le chauffeur ne voit que le nom du passager ci-dessous' + ' et son propre prix.</div>';
+}
+window.gNouveauEnrichir = gNouveauEnrichir;
+window.gnTarif = function(force) {
+  if (!gOpt('clients')) return;
+  const t = gTarifTrouver(gVal('gn-client-prive'), gVal('gn-dep'), gVal('gn-arr'), gVal('gn-veh'));
+  if (!t) { if (force) showToast('Aucun tarif correspondant dans votre grille', true); return; }
+  const a = document.getElementById('gn-prix'), b = document.getElementById('gn-prix-ch');
+  if (a && (force || !a.value)) a.value = t.prixClient != null ? t.prixClient : '';
+  if (b && (force || !b.value)) b.value = t.prixChauffeur != null ? t.prixChauffeur : '';
+  try { gerantMajMarge(); } catch(e) {}
+  if (force) showToast('💶 Tarif appliqué');
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MODULE 2 — MES CLIENTS & TARIFS
+// ═══════════════════════════════════════════════════════════════════════════
+function gLieuOK(lieuTarif, lieu) {
+  const a = gNorm(lieuTarif), b = gNorm(lieu);
+  if (!a || !b) return false;
+  return b.indexOf(a) >= 0 || a.indexOf(b) >= 0;
+}
+// Cherche le meilleur tarif : celui du client d'abord, sinon la grille générale.
+function gTarifTrouver(clientId, dep, arr, veh) {
+  let best = null, score = -1;
+  (GP.tarifs || []).forEach(function(t){
+    if (t.clientId && t.clientId !== clientId) return;            // tarif d'un autre client
+    if (t.vehicule && veh && t.vehicule !== veh) return;
+    const sens = gLieuOK(t.depart, dep) && gLieuOK(t.arrivee, arr);
+    const retour = t.bidir !== false && gLieuOK(t.depart, arr) && gLieuOK(t.arrivee, dep);
+    if (!sens && !retour) return;
+    const s = (t.clientId ? 10 : 0) + (t.vehicule ? 2 : 0) + (sens ? 1 : 0);
+    if (s > score) { score = s; best = t; }
+  });
+  return best;
+}
+
+window.renderGerantClients = async function() {
+  const root = document.getElementById('gcl-root'); if (!root) return;
+  if (!gOpt('clients')) { root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Option non activée par l\'administrateur.</div>'; return; }
+  root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Chargement…</div>';
+  await gpCharger(true);
+  gclDessiner();
+};
+function gclDessiner() {
+  const root = document.getElementById('gcl-root'); if (!root) return;
+  const err = gErreurPrive();
+  const generaux = GP.tarifs.filter(function(t){ return !t.clientId; });
+  let h = gBandeauPrive('Vos clients et vos tarifs ne sont visibles que par vous — ni MOBILEA, ni les chauffeurs, ni un autre gérant n\'y ont accès.')
+    + (err ? '<div style="background:var(--red-dim);color:var(--red);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px">⚠️ ' + E(err) + '</div>' : '')
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">'
+    +   '<button onclick="gclEditer(\'\')" class="btn btn-p"><i class="fas fa-plus"></i> Nouveau client</button>'
+    +   '<input type="text" placeholder="🔎 Rechercher un client…" value="' + E(window._gclQ || '') + '" oninput="window._gclQ=this.value;gclListe()" class="fsel" style="flex:1;min-width:160px">'
+    + '</div><div id="gcl-liste"></div>'
+    + '<div class="sec" style="margin-top:18px"><div class="sec-h"><div class="sec-t">💶 Grille tarifaire générale</div><button onclick="gtarEditer(\'\',\'\')" class="btn btn-ghost btn-sm">+ Tarif</button></div>'
+    +   '<div style="font-size:12px;color:var(--muted);padding:0 4px 8px">S\'applique à tous vos clients qui n\'ont pas de tarif spécifique pour le trajet.</div>'
+    +   '<div>' + (generaux.length ? generaux.map(gtarLigne).join('') : '<div style="font-size:13px;color:var(--muted);padding:10px 4px">Aucun tarif général.</div>') + '</div></div>';
+  root.innerHTML = h;
+  window.gclListe();
+}
+window.gclListe = function() {
+  const box = document.getElementById('gcl-liste'); if (!box) return;
+  const q = gNorm(window._gclQ || '');
+  const clients = GP.clients.filter(function(c){ return !q || gNorm((c.nom||'') + ' ' + (c.contact||'') + ' ' + (c.tel||'') + ' ' + (c.email||'')).indexOf(q) >= 0; });
+  if (!clients.length) { box.innerHTML = '<div style="padding:26px 16px;text-align:center;color:var(--muted);font-size:14px;background:var(--card);border-radius:12px">' + (GP.clients.length ? 'Aucun client trouvé.' : 'Aucun client pour le moment. Ajoutez votre premier client.') + '</div>'; return; }
+  box.innerHTML = clients.map(function(c){
+    const nbT = GP.tarifs.filter(function(t){ return t.clientId === c._id; }).length;
+    return '<div onclick="gclOuvrir(\'' + c._id + '\')" style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:8px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px">'
+      + '<div style="min-width:0"><div style="font-size:15px;font-weight:700;color:var(--white);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E(c.nom || '') + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E([c.contact, c.tel, c.email].filter(Boolean).join(' · ') || '—') + '</div></div>'
+      + '<div style="flex-shrink:0;font-size:12px;color:var(--gold);font-weight:700">' + nbT + ' tarif' + (nbT > 1 ? 's' : '') + ' ›</div></div>';
+  }).join('');
+};
+function gtarLigne(t) {
+  return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 4px;border-top:1px solid var(--border)">'
+    + '<div style="min-width:0"><div style="font-size:13px;font-weight:700;color:var(--white)">' + E(t.depart || '') + ' ' + (t.bidir !== false ? '↔' : '→') + ' ' + E(t.arrivee || '') + '</div>'
+    + '<div style="font-size:12px;color:var(--muted)">' + (t.vehicule ? gVehNom(t.vehicule) : 'Tous véhicules') + ' · client <strong style="color:var(--gold)">' + gEur(t.prixClient) + '</strong> · chauffeur ' + gEur(t.prixChauffeur) + '</div></div>'
+    + '<button onclick="event.stopPropagation();gtarEditer(\'' + t._id + '\',\'' + (t.clientId || '') + '\')" class="btn btn-ghost btn-sm" aria-label="Modifier le tarif"><i class="fas fa-edit"></i></button></div>';
+}
+// Fiche client : coordonnées + ses tarifs
+window.gclOuvrir = function(id) {
+  const c = GP.clients.find(function(x){ return x._id === id; }); if (!c) return;
+  const tarifs = GP.tarifs.filter(function(t){ return t.clientId === id; });
+  const l = function(a, b){ return b ? '<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid #f1f3f5;font-size:14px"><span style="color:#6b7280;flex-shrink:0">' + a + '</span><span style="font-weight:600;text-align:right;word-break:break-word">' + E(b) + '</span></div>' : ''; };
+  const h = l('Contact', c.contact) + l('Téléphone', c.tel) + l('Email', c.email) + l('Adresse', c.adresse) + l('SIRET', c.siret) + l('N° TVA', c.tva) + l('Notes', c.notes)
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 6px"><div style="font-size:13px;font-weight:800">💶 Tarifs de ce client</div>'
+    + '<button onclick="gtarEditer(\'\',\'' + id + '\')" style="background:#f3e8ff;border:none;border-radius:8px;padding:7px 12px;color:#7e22ce;font-weight:700;font-size:13px;cursor:pointer">+ Tarif</button></div>'
+    + (tarifs.length ? tarifs.map(function(t){
+        return '<div onclick="gtarEditer(\'' + t._id + '\',\'' + id + '\')" style="border:1px solid #e5e7eb;border-radius:10px;padding:10px 12px;margin-bottom:6px;cursor:pointer">'
+          + '<div style="font-size:14px;font-weight:700">' + E(t.depart || '') + ' ' + (t.bidir !== false ? '↔' : '→') + ' ' + E(t.arrivee || '') + '</div>'
+          + '<div style="font-size:12px;color:#6b7280">' + (t.vehicule ? gVehNom(t.vehicule) : 'Tous véhicules') + ' · client <strong style="color:#b45309">' + gEur(t.prixClient) + '</strong> · chauffeur ' + gEur(t.prixChauffeur) + '</div></div>';
+      }).join('') : '<div style="font-size:13px;color:#9ca3af;padding:6px 0">Aucun tarif spécifique — la grille générale s\'applique.</div>')
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px">' + gBtn('✏️ Modifier', 'gclEditer(\'' + id + '\')', '#2563eb') + gBtn('🗑 Supprimer', 'gclSupprimer(\'' + id + '\')', '#dc2626') + '</div>';
+  gSheet('gcl-sheet', E(c.nom || 'Client'), h);
+};
+window.gclEditer = function(id) {
+  const c = id ? (GP.clients.find(function(x){ return x._id === id; }) || {}) : {};
+  const f = function(lab, k, type, max){ return gChamp(lab, '<input type="' + (type || 'text') + '" id="gcl-' + k + '" value="' + E(c[k] || '') + '" maxlength="' + (max || 200) + '" style="' + G_IN + '">'); };
+  const h = f('Nom du client / société *', 'nom') + f('Contact', 'contact') + f('Téléphone', 'tel', 'tel', 30) + f('Email', 'email', 'email')
+    + f('Adresse de facturation', 'adresse', 'text', 300) + f('SIRET', 'siret', 'text', 20) + f('N° TVA intracommunautaire', 'tva', 'text', 20)
+    + gChamp('Notes', '<textarea id="gcl-notes" rows="2" maxlength="1000" style="' + G_IN + ';resize:vertical">' + E(c.notes || '') + '</textarea>')
+    + '<div style="margin-top:16px">' + gBtn('💾 Enregistrer', 'gclEnregistrer(\'' + (id || '') + '\')', '#16a34a', true) + '</div>';
+  gSheet('gcl-sheet', id ? 'Modifier le client' : 'Nouveau client', h);
+};
+window.gclEnregistrer = async function(id) {
+  const nom = sanitize(gVal('gcl-nom'), 200);
+  if (!nom) { showToast('Nom du client obligatoire', true); return; }
+  const email = gVal('gcl-email');
+  if (email && !isValidEmail(email)) { showToast('Email invalide', true); return; }
+  const data = { nom: nom, contact: sanitize(gVal('gcl-contact'), 200), tel: sanitize(gVal('gcl-tel'), 30), email: sanitize(email, 200),
+    adresse: sanitize(gVal('gcl-adresse'), 300), siret: sanitize(gVal('gcl-siret'), 20), tva: sanitize(gVal('gcl-tva'), 20),
+    notes: sanitize(gVal('gcl-notes'), 1000), updatedAt: new Date().toISOString() };
+  try {
+    if (id) await gRest('PATCH', gpChemin('clients/' + id), data);
+    else { data.createdAt = data.updatedAt; await gRest('POST', gpChemin('clients'), data); }
+    gSheetFermer('gcl-sheet'); showToast('✅ Client enregistré');
+    await gpCharger(true); gclDessiner();
+  } catch(e) { showToast((e && (e.status === 401 || e.status === 403)) ? '⚠️ Refusé par le serveur (option non activée ?)' : 'Erreur — réessayez', true); }
+};
+window.gclSupprimer = async function(id) {
+  const c = GP.clients.find(function(x){ return x._id === id; }); if (!c) return;
+  const nbT = GP.tarifs.filter(function(t){ return t.clientId === id; }).length;
+  if (!confirm('Supprimer le client « ' + (c.nom||'') + ' »' + (nbT ? ' et ses ' + nbT + ' tarif(s)' : '') + ' ?\n\nLes transferts et factures déjà enregistrés ne sont pas modifiés.')) return;
+  try {
+    await gRest('DELETE', gpChemin('clients/' + id));
+    for (const t of GP.tarifs.filter(function(t){ return t.clientId === id; })) { try { await gRest('DELETE', gpChemin('tarifs/' + t._id)); } catch(e) {} }
+    gSheetFermer('gcl-sheet'); showToast('Client supprimé');
+    await gpCharger(true); gclDessiner();
+  } catch(e) { showToast('Suppression impossible', true); }
+};
+window.gtarEditer = function(id, clientId) {
+  const t = id ? (GP.tarifs.find(function(x){ return x._id === id; }) || {}) : {};
+  const cl = clientId ? GP.clients.find(function(x){ return x._id === clientId; }) : null;
+  const h = '<div style="font-size:13px;color:#6b7280;margin-bottom:4px">' + (cl ? 'Client : <strong>' + E(cl.nom || '') + '</strong>' : 'Grille générale (tous les clients)') + '</div>'
+    + gChamp('Départ * (mot-clé : « CDG », « Disney », une ville…)', '<input type="text" id="gtar-dep" value="' + E(t.depart || '') + '" maxlength="120" style="' + G_IN + '">')
+    + gChamp('Arrivée *', '<input type="text" id="gtar-arr" value="' + E(t.arrivee || '') + '" maxlength="120" style="' + G_IN + '">')
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-top:10px;cursor:pointer"><input type="checkbox" id="gtar-bidir"' + (t.bidir !== false ? ' checked' : '') + ' style="width:18px;height:18px"> Valable dans les deux sens</label>'
+    + gChamp('Véhicule', '<select id="gtar-veh" style="' + G_IN + '"><option value="">Tous véhicules</option>' + G_VEH_OPTS.map(function(v){ return '<option value="' + v[0] + '"' + (t.vehicule === v[0] ? ' selected' : '') + '>' + v[1] + '</option>'; }).join('') + '</select>')
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +   '<div>' + gChamp('Prix client TTC (€) *', '<input type="number" id="gtar-pc" step="0.01" min="0" value="' + E(String(t.prixClient != null ? t.prixClient : '')) + '" style="' + G_IN + '">') + '</div>'
+    +   '<div>' + gChamp('Prix chauffeur (€)', '<input type="number" id="gtar-pch" step="0.01" min="0" value="' + E(String(t.prixChauffeur != null ? t.prixChauffeur : '')) + '" style="' + G_IN + '">') + '</div>'
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:' + (id ? '1fr 1fr' : '1fr') + ';gap:8px;margin-top:16px">' + gBtn('💾 Enregistrer', 'gtarEnregistrer(\'' + (id || '') + '\',\'' + (clientId || '') + '\')', '#16a34a') + (id ? gBtn('🗑 Supprimer', 'gtarSupprimer(\'' + id + '\')', '#dc2626') : '') + '</div>';
+  gSheet('gcl-sheet', id ? 'Modifier le tarif' : 'Nouveau tarif', h);
+};
+window.gtarEnregistrer = async function(id, clientId) {
+  const dep = sanitize(gVal('gtar-dep'), 120), arr = sanitize(gVal('gtar-arr'), 120);
+  const pc = parseFloat(gVal('gtar-pc'));
+  if (!dep || !arr) { showToast('Départ et arrivée obligatoires', true); return; }
+  if (!(pc >= 0)) { showToast('Prix client obligatoire', true); return; }
+  const bid = document.getElementById('gtar-bidir');
+  const data = { clientId: clientId || '', depart: dep, arrivee: arr, bidir: !!(bid && bid.checked), vehicule: gVal('gtar-veh'),
+    prixClient: pc, prixChauffeur: parseFloat(gVal('gtar-pch')) || 0, updatedAt: new Date().toISOString() };
+  try {
+    if (id) await gRest('PATCH', gpChemin('tarifs/' + id), data);
+    else await gRest('POST', gpChemin('tarifs'), data);
+    showToast('✅ Tarif enregistré');
+    await gpCharger(true); gclDessiner();
+    if (clientId) window.gclOuvrir(clientId); else gSheetFermer('gcl-sheet');
+  } catch(e) { showToast((e && (e.status === 401 || e.status === 403)) ? '⚠️ Refusé par le serveur (option non activée ?)' : 'Erreur — réessayez', true); }
+};
+window.gtarSupprimer = async function(id) {
+  const t = GP.tarifs.find(function(x){ return x._id === id; }); if (!t) return;
+  if (!confirm('Supprimer ce tarif ?')) return;
+  try {
+    await gRest('DELETE', gpChemin('tarifs/' + id));
+    showToast('Tarif supprimé');
+    await gpCharger(true); gclDessiner();
+    if (t.clientId) window.gclOuvrir(t.clientId); else gSheetFermer('gcl-sheet');
+  } catch(e) { showToast('Suppression impossible', true); }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MODULE 3 — MA FACTURATION (factures clients au nom de la société du gérant)
+// ═══════════════════════════════════════════════════════════════════════════
+const GF = { lignes: [], coche: {}, soc: null };
+
+window.renderGerantFacturation = async function() {
+  const root = document.getElementById('gf-root'); if (!root) return;
+  if (!gOpt('facturation')) { root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Option non activée par l\'administrateur.</div>'; return; }
+  root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Chargement…</div>';
+  await gpCharger(true);
+  GF.soc = await gMaSociete();
+  const d = new Date(), deb = new Date(d.getFullYear(), d.getMonth(), 1);
+  const err = gErreurPrive();
+  root.innerHTML = gBandeauPrive('Vos factures sont émises au nom de <strong>' + E(GF.soc.nom || 'votre société') + '</strong> et ne sont visibles que par vous.')
+    + (err ? '<div style="background:var(--red-dim);color:var(--red);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px">⚠️ ' + E(err) + '</div>' : '')
+    + ((!GF.soc.siret || !GF.soc.adresse) ? '<div style="background:rgba(217,119,6,0.12);border:1px solid rgba(217,119,6,0.4);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--white);margin-bottom:12px">⚠️ SIRET ou adresse de votre société manquant : demandez à l\'administrateur de compléter votre fiche, ces mentions sont obligatoires sur une facture.</div>' : '')
+    + '<div class="sec"><div class="sec-h"><div class="sec-t">🧾 Nouvelle facture</div></div>'
+    +   '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;padding:4px">'
+    +     '<div class="fld"><label>Client</label><select id="gf-client" class="fsel" style="width:100%"><option value="">— Choisir —</option>' + GP.clients.map(function(c){ return '<option value="' + c._id + '">' + E(c.nom || '') + '</option>'; }).join('') + '<option value="__sans">Transferts sans client</option></select></div>'
+    +     '<div class="fld"><label>Du</label><input type="date" id="gf-du" class="fsel" style="width:100%" value="' + gJourStr(deb) + '"></div>'
+    +     '<div class="fld"><label>Au</label><input type="date" id="gf-au" class="fsel" style="width:100%" value="' + gJourStr(d) + '"></div>'
+    +   '</div>'
+    +   '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);padding:8px 4px;cursor:pointer"><input type="checkbox" id="gf-tous" style="width:17px;height:17px"> Inclure aussi les transferts non terminés</label>'
+    +   '<div style="padding:4px"><button onclick="gfChercher()" class="btn btn-p"><i class="fas fa-search"></i> Rechercher les transferts</button></div>'
+    +   '<div id="gf-resultat" style="padding:4px"></div>'
+    + '</div>'
+    + '<div class="sec" style="margin-top:16px"><div class="sec-h"><div class="sec-t">📚 Factures émises</div><span style="font-size:12px;color:var(--muted)">' + GP.factures.length + '</span></div><div id="gf-histo" style="padding:4px"></div></div>';
+  gfHisto();
+};
+window.gfChercher = async function() {
+  const box = document.getElementById('gf-resultat'); if (!box) return;
+  const clientId = gVal('gf-client'), du = gVal('gf-du'), au = gVal('gf-au');
+  if (!clientId) { showToast('Choisissez un client', true); return; }
+  if (!du || !au || du > au) { showToast('Période invalide', true); return; }
+  box.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted)">Recherche…</div>';
+  await gpCharger(true);
+  if (GP.erreur) { box.innerHTML = '<div style="color:var(--red);font-size:13px;padding:10px 0">⚠️ ' + E(gErreurPrive()) + '</div>'; return; }
+  const tousStatuts = !!(document.getElementById('gf-tous') || {}).checked;
+  const mine = await gMesTransferts();
+  GF.lignes = mine.filter(function(c){
+    const j = (c.datetime||'').slice(0,10);
+    if (!j || j < du || j > au) return false;
+    if (G_MORTS.indexOf(c.statut) >= 0) return false;
+    if (!tousStatuts && G_FINIS.indexOf(c.statut) < 0) return false;
+    const p = c._priv || {};
+    if (p.factureRef) return false;                       // déjà facturé → jamais deux fois
+    return clientId === '__sans' ? !p.clientId : p.clientId === clientId;
+  }).sort(function(a,b){ return String(a.datetime||'').localeCompare(String(b.datetime||'')); });
+  GF.coche = {};
+  GF.lignes.forEach(function(c){ GF.coche[c._id] = (parseFloat(c.prix) || 0) > 0; });
+  gfResultat();
+};
+function gfResultat() {
+  const box = document.getElementById('gf-resultat'); if (!box) return;
+  if (!GF.lignes.length) { box.innerHTML = '<div style="padding:18px 8px;text-align:center;color:var(--muted);font-size:13px">Aucun transfert à facturer sur cette période pour ce client<br>(les transferts déjà facturés n\'apparaissent plus).</div>'; return; }
+  let total = 0, nb = 0;
+  const lignes = GF.lignes.map(function(c){
+    const prix = parseFloat(c.prix) || 0, on = !!GF.coche[c._id];
+    if (on) { total += prix; nb++; }
+    return '<label style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-top:1px solid var(--border);cursor:pointer">'
+      + '<input type="checkbox"' + (on ? ' checked' : '') + ' onchange="gfCocher(\'' + c._id + '\',this.checked)" style="width:19px;height:19px;flex-shrink:0">'
+      + '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700;color:var(--white);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E(new Date(c.datetime).toLocaleDateString('fr-FR', { day:'2-digit', month:'2-digit' })) + ' · ' + E((c.depart||c.lieu||'?') + ' → ' + (c.arrivee||'?')) + '</div>'
+      + '<div style="font-size:11px;color:var(--muted)">' + E(gaNomPassager(c)) + (G_FINIS.indexOf(c.statut) < 0 ? ' · <span style="color:var(--orange)">non terminé</span>' : '') + '</div></div>'
+      + '<div style="flex-shrink:0;font-size:14px;font-weight:800;color:' + (prix > 0 ? 'var(--gold)' : 'var(--red)') + '">' + (prix > 0 ? gEur(prix) : 'prix ?') + '</div></label>';
+  }).join('');
+  box.innerHTML = '<div style="margin-top:12px">' + lignes + '</div>'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding:12px;background:var(--card2);border-radius:12px">'
+    +   '<div><div style="font-size:12px;color:var(--muted)">' + nb + ' transfert(s) sélectionné(s)</div><div style="font-size:20px;font-weight:800;color:var(--white)">' + gEur(total) + ' TTC</div></div>'
+    +   '<button onclick="gfGenerer()" class="btn btn-p"' + (nb ? '' : ' disabled') + '><i class="fas fa-file-invoice"></i> Générer la facture</button>'
+    + '</div>';
+}
+window.gfCocher = function(id, on) { GF.coche[id] = !!on; gfResultat(); };
+
+window.gfGenerer = async function() {
+  const sel = GF.lignes.filter(function(c){ return GF.coche[c._id]; });
+  if (!sel.length) { showToast('Aucun transfert sélectionné', true); return; }
+  if (sel.some(function(c){ return !((parseFloat(c.prix) || 0) > 0); })) { showToast('Un transfert sélectionné n\'a pas de prix client — complétez-le dans Mon dispatch', true); return; }
+  const clientId = gVal('gf-client');
+  const cl = clientId && clientId !== '__sans' ? GP.clients.find(function(x){ return x._id === clientId; }) : null;
+  if (!confirm('Générer la facture pour ' + sel.length + ' transfert(s) ?\n\nIls seront marqués comme facturés et ne pourront plus être facturés une seconde fois.')) return;
+  // Relecture stricte du compteur et des fiches privées juste avant d'émettre.
+  await gpCharger(true);
+  if (GP.erreur) { showToast('⚠️ ' + gErreurPrive(), true); return; }
+  if (sel.some(function(c){ return GP.priv[c._id] && GP.priv[c._id].factureRef; })) { showToast('Un de ces transferts vient d\'être facturé — relancez la recherche', true); return; }
+  const annee = new Date().getFullYear();
+  const cle = 'facture_' + annee;
+  const num = (parseInt(GP.compteurs[cle]) || 0) + 1;
+  const numero = 'F' + annee + '-' + String(num).padStart(4, '0');
+  const soc = GF.soc || await gMaSociete();
+  let totalTTC = 0;
+  const lignes = sel.map(function(c){
+    const ttc = Math.round((parseFloat(c.prix) || 0) * 100) / 100; totalTTC += ttc;
+    return { courseId: c._id, date: c.datetime || '', trajet: (c.depart||c.lieu||'') + ' → ' + (c.arrivee||''), passager: gaNomPassager(c), ref: c.ref || '', vehicule: c.vehicule || '', ttc: ttc };
+  });
+  totalTTC = Math.round(totalTTC * 100) / 100;
+  // Les prix saisis sont TTC : on en extrait le HT et la TVA (jamais ajoutée par-dessus).
+  const totalHT = soc.tvaApplicable ? Math.round(totalTTC / (1 + TVA) * 100) / 100 : totalTTC;
+  const fact = {
+    numero: numero, date: new Date().toISOString(), du: gVal('gf-du'), au: gVal('gf-au'),
+    clientId: cl ? cl._id : '', clientNom: cl ? (cl.nom || '') : 'Client',
+    client: cl ? { nom: cl.nom||'', adresse: cl.adresse||'', siret: cl.siret||'', tva: cl.tva||'', contact: cl.contact||'' } : { nom:'Client' },
+    emetteur: soc, lignes: lignes, tvaApplicable: !!soc.tvaApplicable,
+    totalHT: totalHT, tva: Math.round((totalTTC - totalHT) * 100) / 100, totalTTC: totalTTC, payee: false
+  };
+  try {
+    await gRest('PUT', gpChemin('compteurs/' + cle), num);
+    const r = await gRest('POST', gpChemin('factures'), fact);
+    fact._id = r && r.name;
+    for (const l of lignes) {
+      const priv = Object.assign({}, GP.priv[l.courseId] || {}, { factureRef: numero, factureId: fact._id || '', factureLe: fact.date });
+      try { await gRest('PATCH', gpChemin('courses_priv/' + l.courseId), { factureRef: numero, factureId: fact._id || '', factureLe: fact.date }); GP.priv[l.courseId] = priv; } catch(e) {}
+    }
+    showToast('✅ Facture ' + numero + ' créée');
+    await gpCharger(true);
+    GF.lignes = []; gfResultat(); gfHisto();
+    gfImprimer(fact);
+  } catch(e) { showToast((e && (e.status === 401 || e.status === 403)) ? '⚠️ Refusé par le serveur (option non activée ?)' : 'Erreur lors de la création de la facture', true); }
+};
+function gfHisto() {
+  const box = document.getElementById('gf-histo'); if (!box) return;
+  if (!GP.factures.length) { box.innerHTML = '<div style="padding:16px 8px;text-align:center;color:var(--muted);font-size:13px">Aucune facture émise.</div>'; return; }
+  box.innerHTML = GP.factures.map(function(f){
+    return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 2px;border-top:1px solid var(--border);flex-wrap:wrap">'
+      + '<div style="min-width:0;flex:1"><div style="font-size:14px;font-weight:800;color:var(--white)">' + E(f.numero || '') + ' · ' + E(f.clientNom || '') + '</div>'
+      + '<div style="font-size:12px;color:var(--muted)">' + E(f.date ? new Date(f.date).toLocaleDateString('fr-FR') : '') + ' · ' + ((f.lignes||[]).length) + ' transfert(s) · <strong style="color:var(--gold)">' + gEur(f.totalTTC) + '</strong> · ' + (f.payee ? '<span style="color:var(--green)">payée ✓</span>' : '<span style="color:var(--orange)">en attente</span>') + '</div></div>'
+      + '<div style="display:flex;gap:6px;flex-shrink:0">'
+      +   '<button onclick="gfVoir(\'' + f._id + '\')" class="btn btn-ghost btn-sm" aria-label="Voir / imprimer">🖨️</button>'
+      +   '<button onclick="gfPayee(\'' + f._id + '\')" class="btn btn-ghost btn-sm" aria-label="Basculer payée">' + (f.payee ? '↩︎' : '✓ Payée') + '</button>'
+      +   '<button onclick="gfSupprimer(\'' + f._id + '\')" class="btn btn-ghost btn-sm" style="color:var(--red)" aria-label="Supprimer">🗑</button>'
+      + '</div></div>';
+  }).join('');
+}
+window.gfVoir = function(id) { const f = GP.factures.find(function(x){ return x._id === id; }); if (f) gfImprimer(f); };
+window.gfPayee = async function(id) {
+  const f = GP.factures.find(function(x){ return x._id === id; }); if (!f) return;
+  try { await gRest('PATCH', gpChemin('factures/' + id), { payee: !f.payee, payeeLe: !f.payee ? new Date().toISOString() : null }); f.payee = !f.payee; gfHisto(); }
+  catch(e) { showToast('Erreur — réessayez', true); }
+};
+window.gfSupprimer = async function(id) {
+  const f = GP.factures.find(function(x){ return x._id === id; }); if (!f) return;
+  if (!confirm('Supprimer la facture ' + (f.numero||'') + ' ?\n\nSes transferts redeviendront facturables. Le numéro ne sera pas réutilisé.')) return;
+  try {
+    for (const l of (f.lignes || [])) {
+      const p = GP.priv[l.courseId];
+      if (p && p.factureRef === f.numero) { try { await gRest('PATCH', gpChemin('courses_priv/' + l.courseId), { factureRef:null, factureId:null, factureLe:null }); } catch(e) {} }
+    }
+    await gRest('DELETE', gpChemin('factures/' + id));
+    showToast('Facture supprimée');
+    await gpCharger(true); gfHisto();
+  } catch(e) { showToast('Suppression impossible', true); }
+};
+function gfImprimer(f) {
+  const em = f.emetteur || {}, cl = f.client || {};
+  const lignes = (f.lignes || []).map(function(l){
+    const ht = f.tvaApplicable ? (l.ttc / (1 + TVA)) : l.ttc;
+    return '<tr><td>' + E(l.date ? new Date(l.date).toLocaleDateString('fr-FR') : '') + '</td><td>' + E(l.trajet || '') + (l.passager ? '<br><span class="s">' + E(l.passager) + '</span>' : '') + '</td><td class="r">' + ht.toFixed(2) + ' €</td></tr>';
+  }).join('');
+  const per = (f.du && f.au) ? ('Période du ' + new Date(f.du + 'T12:00:00').toLocaleDateString('fr-FR') + ' au ' + new Date(f.au + 'T12:00:00').toLocaleDateString('fr-FR')) : '';
+  openPrintableDoc('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Facture ' + E(f.numero || '') + '</title><style>'
+    + 'body{font-family:Helvetica,Arial,sans-serif;color:#111;margin:0;padding:32px;font-size:13px}h1{font-size:26px;margin:0 0 4px}'
+    + '.top{display:flex;justify-content:space-between;gap:24px;margin-bottom:28px}.bx{font-size:12px;line-height:1.6}.bx strong{font-size:14px}'
+    + '.cl{background:#f6f6f6;border-radius:8px;padding:12px 14px;min-width:220px}table{width:100%;border-collapse:collapse;margin-top:10px}'
+    + 'th{text-align:left;font-size:11px;text-transform:uppercase;color:#666;border-bottom:2px solid #111;padding:8px 6px}td{padding:8px 6px;border-bottom:1px solid #e5e5e5;vertical-align:top}'
+    + '.r{text-align:right;white-space:nowrap}.s{color:#777;font-size:11px}.tot{margin-top:16px;margin-left:auto;width:260px}.tot div{display:flex;justify-content:space-between;padding:5px 0}'
+    + '.tot .f{border-top:2px solid #111;font-size:16px;font-weight:800;margin-top:4px;padding-top:8px}.pied{margin-top:36px;font-size:10.5px;color:#666;line-height:1.6}'
+    + '@media print{body{padding:12mm}}</style></head><body>'
+    + '<div class="top"><div class="bx"><strong>' + E(em.nom || '') + '</strong><br>' + E(em.adresse || '') + (em.siret ? '<br>SIRET : ' + E(em.siret) : '') + (em.tva ? '<br>TVA : ' + E(em.tva) : '') + (em.tel ? '<br>' + E(em.tel) : '') + (em.email ? '<br>' + E(em.email) : '') + '</div>'
+    + '<div class="bx" style="text-align:right"><h1>FACTURE</h1>N° ' + E(f.numero || '') + '<br>Date : ' + E(f.date ? new Date(f.date).toLocaleDateString('fr-FR') : '') + (per ? '<br>' + E(per) : '') + '</div></div>'
+    + '<div class="cl bx" style="margin-left:auto;width:max-content;max-width:60%"><span class="s">Facturé à</span><br><strong>' + E(cl.nom || '') + '</strong>' + (cl.contact ? '<br>' + E(cl.contact) : '') + (cl.adresse ? '<br>' + E(cl.adresse) : '') + (cl.siret ? '<br>SIRET : ' + E(cl.siret) : '') + (cl.tva ? '<br>TVA : ' + E(cl.tva) : '') + '</div>'
+    + '<table><thead><tr><th>Date</th><th>Prestation de transport</th><th class="r">Montant ' + (f.tvaApplicable ? 'HT' : '') + '</th></tr></thead><tbody>' + lignes + '</tbody></table>'
+    + '<div class="tot"><div><span>' + (f.tvaApplicable ? 'Total HT' : 'Total') + '</span><span>' + (parseFloat(f.totalHT)||0).toFixed(2) + ' €</span></div>'
+    + (f.tvaApplicable ? '<div><span>TVA 10 %</span><span>' + (parseFloat(f.tva)||0).toFixed(2) + ' €</span></div>' : '')
+    + '<div class="f"><span>' + (f.tvaApplicable ? 'Total TTC' : 'Net à payer') + '</span><span>' + (parseFloat(f.totalTTC)||0).toFixed(2) + ' €</span></div></div>'
+    + '<div class="pied">' + (f.tvaApplicable ? '' : 'TVA non applicable — art. 293 B du CGI.<br>') + (em.iban ? 'Règlement par virement — IBAN : ' + E(em.iban) + '<br>' : '')
+    + 'Paiement à réception. En cas de retard, pénalités au taux légal en vigueur et indemnité forfaitaire de recouvrement de 40 €.</div>'
+    + '</body></html>');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MODULE 4 — MESSAGERIE PRIVÉE gérant ↔ chauffeur
+//  /gerant_msgs/{uidGérant}/{uidChauffeur}/m/{id} = { de:'g'|'c', t, at, nom }
+//  /gerant_msgs/{uidGérant}/{uidChauffeur}/lu/{g|c} = horodatage de lecture
+// ═══════════════════════════════════════════════════════════════════════════
+const GM = { fils: {}, equipe: [], fil: null, timer: null };
+
+window.renderGerantEquipe = async function() {
+  const root = document.getElementById('gm-root'); if (!root) return;
+  if (!gOpt('suivi')) { root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Option non activée par l\'administrateur.</div>'; return; }
+  root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Chargement…</div>';
+  let tous = [];
+  try { tous = await fbGet('chauffeurs') || []; } catch(e) {}
+  const soc = (SESSION.socNom || '').trim();
+  GM.equipe = tous.filter(function(ch){ return soc && (ch.soc_nom||'').trim() === soc && !ch.archived && ch._id !== SESSION.chauffeurId; })
+    .sort(function(a,b){ return String(a.prenom||'').localeCompare(String(b.prenom||''), 'fr'); });
+  let err = '';
+  try { GM.fils = (await gRest('GET', 'gerant_msgs/' + gUid())) || {}; } catch(e) { GM.fils = {}; err = 'Messagerie indisponible (règles de sécurité pas encore à jour ?).'; }
+  let h = gBandeauPrive('Messagerie privée avec vos chauffeurs — chaque conversation n\'est lisible que par vous et le chauffeur concerné.')
+    + (err ? '<div style="background:var(--red-dim);color:var(--red);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px">⚠️ ' + E(err) + '</div>' : '');
+  if (!GM.equipe.length) h += '<div style="padding:26px 16px;text-align:center;color:var(--muted);font-size:14px;background:var(--card);border-radius:12px">Aucun chauffeur rattaché à votre société.</div>';
+  else h += GM.equipe.map(function(ch){
+    const nom = ((ch.prenom||'') + (ch.nom ? ' ' + ch.nom : '')).trim();
+    const fil = ch.uid ? GM.fils[ch.uid] : null;
+    const msgs = gArr(fil && fil.m).sort(function(a,b){ return (a.at||0) - (b.at||0); });
+    const dern = msgs[msgs.length - 1];
+    const lu = (fil && fil.lu && fil.lu.g) || 0;
+    const nonLus = msgs.filter(function(m){ return m.de === 'c' && (m.at||0) > lu; }).length;
+    return '<div ' + (ch.uid ? 'onclick="gmOuvrir(\'' + ch.uid + '\')"' : '') + ' style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;' + (ch.uid ? 'cursor:pointer' : 'opacity:0.55') + '">'
+      + '<div style="width:40px;height:40px;border-radius:50%;background:var(--gold);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;flex-shrink:0">' + E((nom.charAt(0) || '?').toUpperCase()) + '</div>'
+      + '<div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;color:var(--white)">' + E(nom) + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (ch.uid ? (dern ? E((dern.de === 'g' ? 'Vous : ' : '') + (dern.t || '')) : 'Aucun message') : 'Ne s\'est pas encore connecté à l\'application') + '</div></div>'
+      + (nonLus ? '<span style="background:#dc2626;color:#fff;border-radius:11px;padding:2px 9px;font-size:12px;font-weight:800;flex-shrink:0">' + nonLus + '</span>' : '')
+      + '</div>';
+  }).join('');
+  root.innerHTML = h;
+};
+
+// Ouvre un fil. Côté gérant : gmOuvrir(uidChauffeur). Côté chauffeur : gmOuvrirGerant().
+window.gmOuvrir = function(chUid) {
+  const ch = GM.equipe.find(function(x){ return x.uid === chUid; }); if (!ch) return;
+  gmFil({ gUid: gUid(), cUid: chUid, moi: 'g', titre: ((ch.prenom||'') + (ch.nom ? ' ' + ch.nom : '')).trim(), cibleId: ch._id });
+};
+window.gmOuvrirGerant = function() {
+  const l = window._gGerantLien; if (!l) return;
+  gmFil({ gUid: l.gUid, cUid: gUid(), moi: 'c', titre: '👔 ' + l.gNom, cibleId: l.gChauffeurId });
+};
+function gmFil(ctx) {
+  GM.fil = ctx;
+  gSheetFermer('gm-sheet');
+  const ov = document.createElement('div');
+  ov.id = 'gm-sheet'; ov.className = 'g-sheet';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:999990;background:#fff;display:flex;flex-direction:column';
+  ov.innerHTML = '<div style="flex-shrink:0;display:flex;align-items:center;gap:10px;padding:calc(12px + env(safe-area-inset-top)) 14px 12px;border-bottom:1px solid #e5e7eb;background:#fff">'
+    + '<button onclick="gmFermer()" style="background:#f1f3f5;border:none;border-radius:50%;width:38px;height:38px;font-size:17px;cursor:pointer;color:#111">‹</button>'
+    + '<div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:800;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E(ctx.titre) + '</div><div style="font-size:11px;color:#7e22ce">🔒 Conversation privée</div></div></div>'
+    + '<div id="gm-msgs" style="flex:1;overflow-y:auto;padding:14px;background:#f6f7f9"></div>'
+    + '<div style="flex-shrink:0;display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid #e5e7eb;background:#fff">'
+    +   '<input type="text" id="gm-input" placeholder="Votre message…" maxlength="1000" onkeydown="if(event.key===\'Enter\'){gmEnvoyer();}" style="' + G_IN + ';flex:1">'
+    +   '<button onclick="gmEnvoyer()" style="background:#b8860b;border:none;border-radius:10px;padding:0 18px;color:#fff;font-weight:800;font-size:15px;cursor:pointer">➤</button>'
+    + '</div>';
+  document.body.appendChild(ov);
+  gmCharger(true);
+  clearInterval(GM.timer);
+  GM.timer = setInterval(function(){ if (document.getElementById('gm-sheet')) gmCharger(false); else clearInterval(GM.timer); }, 7000);
+}
+window.gmFermer = function() {
+  clearInterval(GM.timer); GM.fil = null; gSheetFermer('gm-sheet');
+  const pg = document.getElementById('page-gerant-equipe');
+  if (pg && pg.classList.contains('on')) window.renderGerantEquipe();
+  try { gChauffeurLienGerant(); } catch(e) {}
+};
+async function gmCharger(bas) {
+  const ctx = GM.fil; if (!ctx) return;
+  const box = document.getElementById('gm-msgs'); if (!box) return;
+  let fil = null;
+  try { fil = await gRest('GET', 'gerant_msgs/' + ctx.gUid + '/' + ctx.cUid); }
+  catch(e) { box.innerHTML = '<div style="text-align:center;color:#dc2626;font-size:13px;padding:20px">Conversation indisponible pour le moment.</div>'; return; }
+  if (GM.fil !== ctx) return;
+  const msgs = gArr(fil && fil.m).sort(function(a,b){ return (a.at||0) - (b.at||0); });
+  const sig = msgs.length + ':' + (msgs.length ? msgs[msgs.length-1]._id : '');
+  if (sig !== ctx.sig) {
+    ctx.sig = sig;
+    const presBas = bas || (box.scrollHeight - box.scrollTop - box.clientHeight < 80);
+    let jourPrec = '';
+    box.innerHTML = msgs.length ? msgs.map(function(m){
+      const moi = (m.de === ctx.moi), d = new Date(m.at || 0), j = d.toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' });
+      const sep = (j !== jourPrec) ? '<div style="text-align:center;font-size:11px;color:#9ca3af;margin:10px 0 6px">' + E(j) + '</div>' : '';
+      jourPrec = j;
+      return sep + '<div style="display:flex;justify-content:' + (moi ? 'flex-end' : 'flex-start') + ';margin-bottom:6px">'
+        + '<div style="max-width:78%;background:' + (moi ? '#b8860b' : '#fff') + ';color:' + (moi ? '#fff' : '#111') + ';border-radius:14px;padding:9px 12px;font-size:14.5px;line-height:1.35;box-shadow:0 1px 2px rgba(0,0,0,0.08);word-break:break-word;white-space:pre-wrap">'
+        + E(m.t || '') + '<div style="font-size:10px;opacity:0.7;text-align:right;margin-top:3px">' + E(d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' })) + '</div></div></div>';
+    }).join('') : '<div style="text-align:center;color:#9ca3af;font-size:13px;padding:30px 10px">Aucun message. Écrivez le premier.</div>';
+    if (presBas) box.scrollTop = box.scrollHeight;
+  }
+  // Marquer comme lu de mon côté s'il y a du nouveau venant de l'autre.
+  const luMoi = (fil && fil.lu && fil.lu[ctx.moi]) || 0;
+  if (msgs.some(function(m){ return m.de !== ctx.moi && (m.at||0) > luMoi; })) {
+    try { await gRest('PUT', 'gerant_msgs/' + ctx.gUid + '/' + ctx.cUid + '/lu/' + ctx.moi, Date.now()); } catch(e) {}
+  }
+}
+window.gmEnvoyer = async function() {
+  const ctx = GM.fil, inp = document.getElementById('gm-input');
+  if (!ctx || !inp) return;
+  const t = sanitize(inp.value, 1000);
+  if (!t) return;
+  inp.value = '';
+  try {
+    await gRest('POST', 'gerant_msgs/' + ctx.gUid + '/' + ctx.cUid + '/m', { de: ctx.moi, t: t, at: Date.now(), nom: SESSION.name || '' });
+    await gmCharger(true);
+    if (ctx.cibleId) { try { await sendPushNotification('💬 ' + (SESSION.name || 'Message'), t.slice(0, 140), null, [ctx.cibleId]); } catch(e) {} }
+  } catch(e) { inp.value = t; showToast('Message non envoyé — réessayez', true); }
+};
+
+// Côté CHAUFFEUR (non gérant) : si le gérant de sa société a la messagerie,
+// un bouton « Mon gérant » apparaît dans son menu.
+async function gChauffeurLienGerant() {
+  const nav = document.getElementById('main-nav'); if (!nav) return;
+  if (!(SESSION && SESSION.role === 'chauffeur') || SESSION.gerant === true) return;
+  const soc = (SESSION.socNom || '').trim(), moi = gUid();
+  if (!soc || !moi) return;
+  let lien = window._gGerantLien;
+  if (!lien) {
+    let tous = [];
+    try { tous = await fbGet('chauffeurs') || []; } catch(e) {}
+    const g = tous.find(function(ch){ return ch.gerant === true && ch.uid && ch.uid !== moi && !ch.archived && (ch.soc_nom||'').trim() === soc; });
+    if (!g) return;
+    let actif = false;
+    try { actif = (await gRest('GET', 'gerant_options/' + g.uid + '/suivi')) === true; } catch(e) { actif = false; }
+    if (!actif) return;
+    lien = window._gGerantLien = { gUid: g.uid, gNom: ((g.prenom||'') + (g.nom ? ' ' + g.nom : '')).trim(), gChauffeurId: g._id };
+  }
+  let nonLus = 0;
+  try {
+    const fil = await gRest('GET', 'gerant_msgs/' + lien.gUid + '/' + moi);
+    const lu = (fil && fil.lu && fil.lu.c) || 0;
+    nonLus = gArr(fil && fil.m).filter(function(m){ return m.de === 'g' && (m.at||0) > lu; }).length;
+  } catch(e) {}
+  let btn = nav.querySelector('.g-nav-gerant');
+  if (!btn) {
+    btn = gNavBtn('gerant-fil', 'fa-user-tie', 'Mon gérant', function(){ closeMob(); window.gmOuvrirGerant(); });
+    btn.classList.add('g-nav-gerant');
+    const ancre = nav.querySelector('.dyn-nav[data-p="messagerie"]');
+    if (ancre) nav.insertBefore(btn, ancre); else nav.appendChild(btn);
+  }
+  btn.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-user-tie"></i> Mon gérant' + (nonLus ? ' <span style="background:#dc2626;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;font-weight:800;margin-left:6px">' + nonLus + '</span>' : '');
+}
+// Vérification périodique des nouveaux messages du gérant (léger : 1 lecture / 2 min).
+setInterval(function(){ try { if (window._gGerantLien && !document.getElementById('gm-sheet') && document.visibilityState === 'visible') gChauffeurLienGerant(); } catch(e) {} }, 120000);
