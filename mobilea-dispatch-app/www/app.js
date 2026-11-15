@@ -10273,6 +10273,7 @@ window.exportRapportCSV = function(){
     rows.push([ c.datetime||'', c.client||'', (c.depart||c.lieu||''), (c.arrivee||''), c.vehicule||'', c.pax||1, c.chauffeur||'', c.statut||'', (c.prix!=null?c.prix:''), (c.prixChauffeur!=null?c.prixChauffeur:'') ].map(esc).join(';'));
   });
   var csv = '﻿' + rows.join('\r\n'); // BOM : accents corrects dans Excel
+  if (gEstNatif()) { gExporterFichier('rapport-mobilea-' + new Date().toISOString().slice(0,10) + '.csv', csv, 'text/csv'); return; }
   try {
     var blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
     var url = URL.createObjectURL(blob);
@@ -11004,6 +11005,8 @@ window.renderGerantTransferts = async function(){
       +   '<div style="color:var(--muted)">🚕 Chauffeur : '+(c.chauffeur?('<span style="color:#16a34a;font-weight:700">'+E(c.chauffeur)+'</span>'):'<span style="color:#f59e0b;font-weight:700">en attente d\'acceptation</span>')+'</div>'
       + '</div>'
       + contactHtml(c)
+      + (gerantAccesTransferts() ? '<button onclick="gaDepuisListe(\''+c._id+'\',\'mod\')" style="margin-top:10px;margin-right:8px;background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:8px 14px;font-size:12px;color:#1d4ed8;font-weight:700;cursor:pointer">✏️ Modifier</button>'
+          + '<button onclick="gaDepuisListe(\''+c._id+'\',\'dup\')" style="margin-top:10px;margin-right:8px;background:#ecfeff;border:1px solid #67e8f9;border-radius:8px;padding:8px 14px;font-size:12px;color:#0e7490;font-weight:700;cursor:pointer">📄 Dupliquer</button>' : '')
       + (canRepropose ? '<button onclick="gerantReproposerTransfert(\''+c._id+'\')" style="margin-top:10px;margin-right:8px;background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:8px 14px;font-size:12px;color:#c2410c;font-weight:700;cursor:pointer">🔄 Reproposer au réseau</button>' : '')
       + (canCancel ? '<button onclick="gerantAnnulerTransfert(\''+c._id+'\')" style="margin-top:10px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:8px 14px;font-size:12px;color:#dc2626;font-weight:700;cursor:pointer">Annuler ce transfert</button>' : '')
       + '</div>';
@@ -22611,6 +22614,7 @@ window.exportExcel = function() {
     csv += row.map(v=>`"${v}"`).join(';') + '\n';
   });
 
+  if (gEstNatif()) { gExporterFichier(`black-limousine-${new Date().toISOString().slice(0,10)}.csv`, csv, 'text/csv'); return; }
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -24167,6 +24171,7 @@ function _srDownloadCsv(rows, filename) {
       return s;
     }).join(',');
   }).join('\n');
+  if (gEstNatif()) { gExporterFichier(filename, '﻿' + csv, 'text/csv'); return; }
   var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
@@ -24613,7 +24618,7 @@ function gaStatut(c) {
   if (G_MORTS.indexOf(s) >= 0) return { bg:'#9ca3af', lab:'Annulé' };
   if (G_FINIS.indexOf(s) >= 0) return { bg:'#15803d', lab:'Terminé' };
   if (['en_route','sur_place','onboard','depose'].indexOf(s) >= 0) return { bg:'#2563eb', lab:'En cours' };
-  if (['offre_ouverte','offre_prioritaire','offre_en_cours','nouvelle'].indexOf(s) >= 0 && !c.chauffeur)
+  if (['offre_ouverte','offre_prioritaire','offre_en_cours'].indexOf(s) >= 0 && !c.chauffeur)
     return { bg:'#d97706', lab: s === 'offre_prioritaire' ? '⭐ Proposé aux prioritaires' : '🙋 Proposé au réseau' };
   if (!c.chauffeur) return { bg:'#b45309', lab:'À attribuer' };
   return { bg:'#7c5cc4', lab: s === 'acceptee' ? 'Accepté' : 'Attribué' };
@@ -24708,7 +24713,7 @@ function gaDessiner() {
       const terms = c.terminaux ? String(c.terminaux).replace(/CDG/g,'') : '';
       const trajet = raccourcirLieu(c.depart || c.lieu || '?') + ' / ' + raccourcirLieu(c.arrivee || '?') + (terms ? ' / ' + terms : '');
       const quiPaie = (c._priv && c._priv.clientNom) ? c._priv.clientNom : (c.client || gaNomPassager(c));
-      const pax = (c.passagers && c.passagers.length) || c.pax || 1;
+      const pax = Math.max((c.passagers && c.passagers.length) || 0, parseInt(c.pax) || 1);
       const special = (!gaActif(c) || (!c.chauffeur && st.lab !== 'À attribuer')) ? st.lab : '';
       const ligne3 = c.chauffeur ? ('<span style="font-weight:500">👤 ' + E(c.chauffeur) + '</span>' + (special ? ' <span style="opacity:0.8">· ' + E(special) + '</span>' : ''))
         : ('<em style="opacity:0.75;font-weight:500">' + E(special || 'À assigner') + '</em>');
@@ -24824,12 +24829,13 @@ window.gaDetail = function(id) {
       + gBtn('🙋 Proposer à tous', 'gaProposerUn(\'' + id + '\',\'tous\')', '#d97706')
       + gBtn('⭐ Prioritaires', 'gaProposerUn(\'' + id + '\',\'prio\')', '#b45309')
       + gBtn('✏️ Modifier', 'gaModifier(\'' + id + '\')', '#2563eb')
+      + gBtn('📄 Dupliquer', 'gaDupliquer(\'' + id + '\')', '#0891b2')
       + gBtn('🔗 Lien externe', 'gaLien(\'' + id + '\')', '#475569')
       + gBtn('🗑 Annuler', 'gaAnnuler(\'' + id + '\')', '#dc2626');
   } else if (actif) {
-    h += gBtn('✏️ Modifier', 'gaModifier(\'' + id + '\')', '#2563eb');
+    h += gBtn('✏️ Modifier', 'gaModifier(\'' + id + '\')', '#2563eb') + gBtn('📄 Dupliquer', 'gaDupliquer(\'' + id + '\')', '#0891b2');
   } else {
-    h += gBtn('✏️ Prix / client', 'gaModifier(\'' + id + '\')', '#2563eb');
+    h += gBtn('✏️ Prix / client', 'gaModifier(\'' + id + '\')', '#2563eb') + gBtn('📄 Dupliquer', 'gaDupliquer(\'' + id + '\')', '#0891b2');
     if (G_MORTS.indexOf(c.statut) >= 0) h += gBtn('🗑 Supprimer', 'gaSupprimer(\'' + id + '\')', '#dc2626');
   }
   h += '</div>';
@@ -24975,14 +24981,53 @@ window.gamTarif = function(force) {
   if (b && (force || !b.value)) b.value = t.prixChauffeur != null ? t.prixChauffeur : '';
   if (force) showToast('💶 Tarif appliqué');
 };
+// Dupliquer un transfert : copie sans chauffeur, puis ouverture de « Modifier »
+// pour choisir la nouvelle date.
+window.gaDupliquer = async function(id) {
+  const c = gaTrouver(id); if (!c) return;
+  if (!gerantAccesTransferts()) { showToast('Accès non autorisé', true); return; }
+  const uid = gUid(); if (!uid) { showToast('Session non reconnue — reconnectez-vous', true); return; }
+  const n = {};
+  ['type','client','tel','vol','datetime','depart','arrivee','lieu','duree','vehicule','pax','bags','prixChauffeur','payMode','mode_paiement','commissionMode','passagers','terminaux','notes','soc_nom','donneurOrdre','pickupLat','pickupLng','dropLat','dropLng','trajetKm','trajetMin','trajetApprox'].forEach(function(k){ if (c[k] !== undefined && c[k] !== null) n[k] = c[k]; });
+  const prive = gOpt('agenda'), bord = estPaiementABord(c);
+  const p = c._priv || {};
+  const prixCl = parseFloat(p.prix != null ? p.prix : c.prix) || 0, prixCh = parseFloat(c.prixChauffeur) || 0;
+  if (prive) n.gPrive = true;
+  if (bord || !prive) { n.prix = prixCl; n.marge = prixCl - prixCh; }
+  Object.assign(n, { statut:'nouvelle', chauffeur:'', ref:(typeof genRefVal === 'function' ? genRefVal() : ''), createdBy:SESSION.name, creePar:'gerant', createdByUid:uid, createdAt:new Date().toISOString(), dupliqueDe:id });
+  showToast('Duplication…');
+  let nid = null;
+  try { nid = await fbPush('courses', n); } catch(e) {}
+  if (!nid) { showToast('⚠️ Duplication refusée par le serveur', true); return; }
+  if (prive) {
+    try { await gPrivEnregistrer(nid, { prix:prixCl, prixChauffeur:prixCh, clientId:p.clientId || '', clientNom:p.clientNom || '', createdAt:new Date().toISOString() }); }
+    catch(e) { showToast('⚠️ Copie créée, mais le prix client privé n\'a pas pu être enregistré', true); }
+  }
+  try { fbInvalidate('courses'); } catch(e) {}
+  try { GA.liste = await gMesTransferts(); } catch(e) {}
+  gSheetFermer('ga-sheet');
+  gJT('✅ Transfert dupliqué — choisissez la nouvelle date', nid);
+  try { gaDessiner(); } catch(e) {}
+  try { const pg = document.getElementById('page-gerant-transferts'); if (pg && pg.classList.contains('on')) renderGerantTransferts(); } catch(e) {}
+  if (gaTrouver(nid)) window.gaModifier(nid);
+};
+// Depuis la page « Mes transferts » : ouvrir Modifier / Dupliquer.
+window.gaDepuisListe = async function(id, action) {
+  if (!gerantAccesTransferts()) { showToast('Accès non autorisé', true); return; }
+  if (!gaTrouver(id)) { try { GA.liste = await gMesTransferts(); } catch(e) {} }
+  if (!gaTrouver(id)) { showToast('Transfert introuvable', true); return; }
+  if (action === 'dup') window.gaDupliquer(id); else window.gaModifier(id);
+};
 window.gaModifierOK = async function(id) {
   const c = gaTrouver(id); if (!c) return;
+  const prive = gOpt('agenda');   // sans l'option « Dispatch », le transfert reste classique (prix non privé)
   const fige = !gaActif(c);
   const prixCl = parseFloat(gVal('gam-prix')) || 0, prixCh = parseFloat(gVal('gam-prixch')) || 0;
   const clientId = gVal('gam-client');
   const cl = clientId ? GP.clients.find(function(x){ return x._id === clientId; }) : null;
   const bord = fige ? estPaiementABord(c) : (gVal('gam-pay') === 'bord');
-  const pub = { prixChauffeur: prixCh, gPrive: true, updatedAt: new Date().toISOString() };
+  const pub = { prixChauffeur: prixCh, updatedAt: new Date().toISOString() };
+  if (prive) pub.gPrive = true;
   if (!fige) {
     const date = gVal('gam-date'), heure = gVal('gam-heure'), dep = gVal('gam-dep'), arr = gVal('gam-arr');
     if (!date || !heure) { showToast('Date et heure obligatoires', true); return; }
@@ -24999,13 +25044,15 @@ window.gaModifierOK = async function(id) {
     if (pub.datetime !== c.datetime) Object.assign(pub, { rappel_15_env:null, rappel_30_env:null, rappel_60_env:null, rappel_120_env:null, rappelEnvoye:null, rappel30Envoye:null });
   }
   // Prix client : public seulement si le chauffeur doit l'encaisser à bord.
-  if (bord) { pub.prix = prixCl; pub.marge = prixCl - prixCh; } else { pub.prix = null; pub.marge = null; }
+  if (bord || !prive) { pub.prix = prixCl; pub.marge = prixCl - prixCh; } else { pub.prix = null; pub.marge = null; }
   const priv = Object.assign({}, c._priv || {}, {
     prix: prixCl, prixChauffeur: prixCh, clientId: clientId || '', clientNom: cl ? (cl.nom || '') : '', updatedAt: new Date().toISOString()
   });
-  try {
-    await gPrivEnregistrer(id, priv);            // le privé d'abord : s'il est refusé, on ne touche à rien
-  } catch(e) { showToast('⚠️ Enregistrement privé refusé — rien n\'a été modifié', true); return; }
+  if (prive) {
+    try {
+      await gPrivEnregistrer(id, priv);            // le privé d'abord : s'il est refusé, on ne touche à rien
+    } catch(e) { showToast('⚠️ Enregistrement privé refusé — rien n\'a été modifié', true); return; }
+  }
   try {
     await fbUpdate('courses', id, pub);
     if (!fige && c.chauffeurId && (pub.datetime !== c.datetime || pub.depart !== (c.depart||'') || pub.arrivee !== (c.arrivee||''))) {
@@ -25014,6 +25061,8 @@ window.gaModifierOK = async function(id) {
     try { fbInvalidate('courses'); } catch(e) {}
     gSheetFermer('ga-sheet'); gJT('✅ Transfert enregistré', (typeof id === 'string') ? id : '');
   } catch(e) { showToast('Erreur lors de l\'enregistrement', true); }
+  try { GA.liste = await gMesTransferts(); } catch(e) {}
+  try { const pg = document.getElementById('page-gerant-transferts'); if (pg && pg.classList.contains('on')) renderGerantTransferts(); } catch(e) {}
   window.renderGerantAgenda(true);
 };
 
@@ -25056,9 +25105,19 @@ window.gnTarif = function(force) {
 // ═══════════════════════════════════════════════════════════════════════════
 //  MODULE 2 — MES CLIENTS & TARIFS
 // ═══════════════════════════════════════════════════════════════════════════
+const G_ALIAS = { cdg:['cdg','roissy','charles de gaulle'], orly:['orly'], disney:['disney','chessy','marne la vallee'], gare:['gare'], paris:['paris'] };
+function gLieuTags(s) {
+  const n = ' ' + gNorm(s) + ' ';
+  let t = Object.keys(G_ALIAS).filter(function(k){ return G_ALIAS[k].some(function(w){ return n.indexOf(w) >= 0; }); });
+  // « Paris Charles de Gaulle », « Gare de Lyon, Paris » : l'aéroport / la gare priment sur « Paris ».
+  if (t.length > 1) t = t.filter(function(k){ return k !== 'paris'; });
+  return t;
+}
 function gLieuOK(lieuTarif, lieu) {
   const a = gNorm(lieuTarif), b = gNorm(lieu);
   if (!a || !b) return false;
+  const ta = gLieuTags(lieuTarif), tb = gLieuTags(lieu);
+  if (ta.length && tb.length) return ta.some(function(k){ return tb.indexOf(k) >= 0; });
   return b.indexOf(a) >= 0 || a.indexOf(b) >= 0;
 }
 // Cherche le meilleur tarif : celui du client d'abord, sinon la grille générale.
@@ -25081,43 +25140,178 @@ window.renderGerantClients = async function() {
   if (!gOpt('clients')) { root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Option non activée par l\'administrateur.</div>'; return; }
   root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Chargement…</div>';
   await gpCharger(true);
+  if (!GA.liste.length) { try { GA.liste = await gMesTransferts(); } catch(e) {} }   // activité par client
   gclDessiner();
 };
+// ── Écran « Mes clients & tarifs » : MÊME présentation que MOBILEA ──────────
+//  · tableau Clients (Société, Contact, Téléphone, Email, Infos légales, Activité, Actions)
+//  · « Grille tarifaire par client » : trajets × véhicules, prix saisis dans le tableau.
+const GT = { client:'', extra:[] };
 function gclDessiner() {
   const root = document.getElementById('gcl-root'); if (!root) return;
   const err = gErreurPrive();
-  const generaux = GP.tarifs.filter(function(t){ return !t.clientId; });
-  let h = gBandeauPrive('Vos clients et vos tarifs ne sont visibles que par vous — ni MOBILEA, ni les chauffeurs, ni un autre gérant n\'y ont accès.')
+  if (GT.client && !GP.clients.some(function(c){ return c._id === GT.client; })) GT.client = '';
+  root.innerHTML = gBandeauPrive('Vos clients et vos tarifs ne sont visibles que par vous — ni MOBILEA, ni les chauffeurs, ni un autre gérant n\'y ont accès.')
     + (err ? '<div style="background:var(--red-dim);color:var(--red);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px">⚠️ ' + E(err) + '</div>' : '')
-    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">'
-    +   '<button onclick="gclEditer(\'\')" class="btn btn-p"><i class="fas fa-plus"></i> Nouveau client</button>'
-    +   '<input type="text" placeholder="🔎 Rechercher un client…" value="' + E(window._gclQ || '') + '" oninput="window._gclQ=this.value;gclListe()" class="fsel" style="flex:1;min-width:160px">'
-    + '</div><div id="gcl-liste"></div>'
-    + '<div class="sec" style="margin-top:18px"><div class="sec-h"><div class="sec-t">💶 Grille tarifaire générale</div><button onclick="gtarEditer(\'\',\'\')" class="btn btn-ghost btn-sm">+ Tarif</button></div>'
-    +   '<div style="font-size:12px;color:var(--muted);padding:0 4px 8px">S\'applique à tous vos clients qui n\'ont pas de tarif spécifique pour le trajet.</div>'
-    +   '<div>' + (generaux.length ? generaux.map(gtarLigne).join('') : '<div style="font-size:13px;color:var(--muted);padding:10px 4px">Aucun tarif général.</div>') + '</div></div>';
-  root.innerHTML = h;
+    + '<div class="sec"><div class="sec-h"><div class="sec-t"><i class="fas fa-users"></i> Clients</div><div class="sec-a">'
+    +   '<div class="sbw"><i class="fas fa-search"></i><input type="text" placeholder="Rechercher..." value="' + E(window._gclQ || '') + '" oninput="window._gclQ=this.value;gclListe()" maxlength="200"></div>'
+    +   '<button class="btn btn-p btn-sm" onclick="gclEditer(\'\')"><i class="fas fa-plus"></i> Ajouter</button></div></div>'
+    +   '<div class="tw"><table><thead><tr><th>Société</th><th>Contact</th><th>Téléphone</th><th>Email</th><th>Infos légales</th><th>Activité</th><th>Actions</th></tr></thead><tbody id="gcl-liste"></tbody></table></div></div>'
+    + '<div class="sec" style="margin-top:16px"><div class="sec-h"><div class="sec-t"><i class="fas fa-building" style="color:var(--gold)"></i> Grille tarifaire par client</div>'
+    +   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +     '<select id="gt-client" onchange="gtChoisir(this.value)" style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:8px 12px;color:var(--white);font-size:13px;max-width:220px">'
+    +       '<option value="">Grille générale (tous clients)</option>' + GP.clients.map(function(c){ return '<option value="' + c._id + '"' + (GT.client === c._id ? ' selected' : '') + '>' + E(c.nom || '') + '</option>'; }).join('') + '</select>'
+    +     '<button class="btn btn-p btn-sm" onclick="gtEnregistrer()"><i class="fas fa-save"></i> Enregistrer</button></div></div>'
+    +   '<div style="padding:16px"><div style="font-size:12px;color:var(--muted);margin-bottom:14px">Prix par trajet et par véhicule. Tous les montants en € TTC. La grille d\'un client passe avant la grille générale. Laissez une ligne vide si vous ne proposez pas ce véhicule.</div>'
+    +   '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:300px"><thead><tr style="background:var(--dark)">'
+    +     '<th style="padding:8px;text-align:left;color:var(--gold)">Trajet / Véhicule</th><th style="padding:8px 4px;text-align:center;color:var(--white)">Prix CLIENT (€)</th><th style="padding:8px 4px;text-align:center;color:var(--green)">Prix CHAUFFEUR (€)</th></tr></thead>'
+    +     '<tbody id="gt-body"></tbody></table></div>'
+    +   '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">'
+    +     '<button class="btn btn-ghost btn-sm" onclick="gtAjouterTrajet()"><i class="fas fa-plus"></i> Ajouter un trajet</button>'
+    +     '<button class="btn btn-ghost btn-sm" onclick="gtTypes()"><i class="fas fa-list"></i> Ajouter les trajets types</button>'
+    +     '<button class="btn btn-p btn-sm" onclick="gtEnregistrer()" style="margin-left:auto"><i class="fas fa-save"></i> Enregistrer la grille</button></div></div></div>';
   window.gclListe();
+  gtDessiner();
 }
 window.gclListe = function() {
-  const box = document.getElementById('gcl-liste'); if (!box) return;
+  const tb = document.getElementById('gcl-liste'); if (!tb) return;
   const q = gNorm(window._gclQ || '');
-  const clients = GP.clients.filter(function(c){ return !q || gNorm((c.nom||'') + ' ' + (c.contact||'') + ' ' + (c.tel||'') + ' ' + (c.email||'')).indexOf(q) >= 0; });
-  if (!clients.length) { box.innerHTML = '<div style="padding:26px 16px;text-align:center;color:var(--muted);font-size:14px;background:var(--card);border-radius:12px">' + (GP.clients.length ? 'Aucun client trouvé.' : 'Aucun client pour le moment. Ajoutez votre premier client.') + '</div>'; return; }
-  box.innerHTML = clients.map(function(c){
+  const clients = GP.clients.filter(function(c){ return !q || gNorm((c.nom||'') + ' ' + (c.contact||'') + ' ' + (c.tel||'') + ' ' + (c.email||'') + ' ' + (c.siret||'')).indexOf(q) >= 0; });
+  if (!clients.length) { tb.innerHTML = '<tr><td colspan="7" class="t-empty"><i class="fas fa-building"></i><p>' + (GP.clients.length ? 'Aucun client trouvé' : 'Aucun client') + '</p></td></tr>'; return; }
+  tb.innerHTML = clients.map(function(c){
+    const mes = (GA.liste || []).filter(function(x){ return x._priv && x._priv.clientId === c._id && G_MORTS.indexOf(x.statut) < 0; });
+    const ca = mes.filter(function(x){ return G_FINIS.indexOf(x.statut) >= 0; }).reduce(function(s, x){ return s + (parseFloat(x.prix) || 0); }, 0);
     const nbT = GP.tarifs.filter(function(t){ return t.clientId === c._id; }).length;
-    return '<div onclick="gclOuvrir(\'' + c._id + '\')" style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:8px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px">'
-      + '<div style="min-width:0"><div style="font-size:15px;font-weight:700;color:var(--white);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E(c.nom || '') + '</div>'
-      + '<div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E([c.contact, c.tel, c.email].filter(Boolean).join(' · ') || '—') + '</div></div>'
-      + '<div style="flex-shrink:0;font-size:12px;color:var(--gold);font-weight:700">' + nbT + ' tarif' + (nbT > 1 ? 's' : '') + ' ›</div></div>';
+    return '<tr><td><div style="display:flex;align-items:center;gap:8px">'
+      + '<div style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;flex-shrink:0">' + E(String(c.nom || '?').slice(0,2).toUpperCase()) + '</div>'
+      + '<div><div style="font-weight:700;font-size:13px">' + E(c.nom || '') + '</div>' + (c.notes ? '<div style="font-size:10px;color:var(--muted);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + E(c.notes) + '</div>' : '') + '</div></div></td>'
+      + '<td style="font-size:11px">' + E(c.contact || '—') + '</td>'
+      + '<td style="font-size:11px;white-space:nowrap">' + E(c.tel || '—') + '</td>'
+      + '<td style="font-size:11px">' + E(c.email || '—') + '</td>'
+      + '<td>' + (c.siret ? '<div style="font-size:10px;color:var(--muted2)">SIRET: ' + E(c.siret) + '</div>' : '') + (c.tva ? '<div style="font-size:10px;color:var(--muted2)">TVA: ' + E(c.tva) + '</div>' : '') + (c.adresse ? '<div style="font-size:10px;color:var(--muted2)">📍 ' + E(c.adresse) + '</div>' : '') + ((!c.siret && !c.tva && !c.adresse) ? '<span style="font-size:11px;color:var(--muted)">—</span>' : '') + '</td>'
+      + '<td style="white-space:nowrap"><div style="font-size:12px;font-weight:700">' + mes.length + ' transfert' + (mes.length > 1 ? 's' : '') + '</div><div style="font-size:10px;color:var(--gold)">' + gEur(ca) + ' CA</div><div style="font-size:10px;color:var(--muted)">' + nbT + ' tarif' + (nbT > 1 ? 's' : '') + '</div></td>'
+      + '<td style="white-space:nowrap"><button class="btn btn-ghost btn-xs" onclick="gclEditer(\'' + c._id + '\')" title="Modifier" aria-label="Modifier"><i class="fas fa-edit"></i></button> '
+      +   '<button class="btn btn-ghost btn-xs" onclick="gtChoisir(\'' + c._id + '\',true)" title="Sa grille tarifaire" aria-label="Grille tarifaire"><i class="fas fa-euro-sign"></i></button> '
+      +   '<button class="btn btn-ghost btn-xs" onclick="gclSupprimer(\'' + c._id + '\')" title="Supprimer" aria-label="Supprimer" style="color:var(--red)"><i class="fas fa-trash"></i></button></td></tr>';
   }).join('');
 };
-function gtarLigne(t) {
-  return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 4px;border-top:1px solid var(--border)">'
-    + '<div style="min-width:0"><div style="font-size:13px;font-weight:700;color:var(--white)">' + E(t.depart || '') + ' ' + (t.bidir !== false ? '↔' : '→') + ' ' + E(t.arrivee || '') + '</div>'
-    + '<div style="font-size:12px;color:var(--muted)">' + (t.vehicule ? gVehNom(t.vehicule) : 'Tous véhicules') + ' · client <strong style="color:var(--gold)">' + gEur(t.prixClient) + '</strong> · chauffeur ' + gEur(t.prixChauffeur) + '</div></div>'
-    + '<button onclick="event.stopPropagation();gtarEditer(\'' + t._id + '\',\'' + (t.clientId || '') + '\')" class="btn btn-ghost btn-sm" aria-label="Modifier le tarif"><i class="fas fa-edit"></i></button></div>';
+// ── Grille tarifaire (comme MOBILEA : un bloc par trajet, une ligne par véhicule)
+function gtCle(t) { return gNorm(t.depart) + '|' + gNorm(t.arrivee) + '|' + (t.bidir !== false ? 1 : 0); }
+function gtGroupes() {
+  const m = {}, ordre = [];
+  GP.tarifs.filter(function(t){ return (t.clientId || '') === GT.client; }).forEach(function(t){
+    const k = gtCle(t);
+    if (!m[k]) { m[k] = { depart:t.depart || '', arrivee:t.arrivee || '', bidir:t.bidir !== false, rows:{} }; ordre.push(k); }
+    m[k].rows[t.vehicule || ''] = t;
+  });
+  GT.extra.forEach(function(x){ const k = gtCle(x); if (!m[k]) { m[k] = { depart:x.depart, arrivee:x.arrivee, bidir:x.bidir !== false, rows:{} }; ordre.push(k); } });
+  return ordre.map(function(k){ return m[k]; });
 }
+function gtDessiner() {
+  const body = document.getElementById('gt-body'); if (!body) return;
+  const gr = gtGroupes();
+  if (!gr.length) { body.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:26px;color:var(--muted);font-size:13px">Aucun trajet dans cette grille.<br>Utilisez « Ajouter les trajets types » ou « Ajouter un trajet ».</td></tr>'; return; }
+  const IN = 'width:74px;max-width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:6px 4px;color:var(--white);font-size:13px;text-align:center';
+  const VEHS = (typeof GRID_VEHS !== 'undefined') ? GRID_VEHS : [{ key:'berline', label:'🚗 Berline' }, { key:'van', label:'🚐 Van' }];
+  body.innerHTML = gr.map(function(g, gi){
+    const vehs = (g.rows[''] ? [{ key:'', label:'🚘 Tous véhicules' }] : []).concat(VEHS);
+    return '<tr style="background:var(--card2)"><td colspan="3" style="padding:6px 8px"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+      + '<span style="font-weight:700;color:var(--gold);font-size:11px;text-transform:uppercase;letter-spacing:1px">' + E(g.depart) + ' ' + (g.bidir ? '↔' : '→') + ' ' + E(g.arrivee) + '</span>'
+      + '<button class="btn btn-ghost btn-xs" onclick="gtSupprimerTrajet(' + gi + ')" title="Supprimer ce trajet" aria-label="Supprimer ce trajet" style="color:var(--red)"><i class="fas fa-trash"></i></button></div></td></tr>'
+      + vehs.map(function(v){
+          const t = g.rows[v.key] || {};
+          return '<tr class="gt-row" data-g="' + gi + '" data-v="' + v.key + '" data-id="' + (t._id || '') + '" style="border-bottom:1px solid var(--border)">'
+            + '<td style="padding:6px 8px;color:var(--white2)">' + v.label + '</td>'
+            + '<td style="padding:6px 4px;text-align:center"><input type="number" class="gt-pc" step="0.01" min="0" inputmode="decimal" value="' + (t.prixClient != null ? E(String(t.prixClient)) : '') + '" aria-label="Prix client" style="' + IN + '"></td>'
+            + '<td style="padding:6px 4px;text-align:center"><input type="number" class="gt-pch" step="0.01" min="0" inputmode="decimal" value="' + (t.prixChauffeur != null && t._id ? E(String(t.prixChauffeur)) : '') + '" aria-label="Prix chauffeur" style="' + IN + '"></td></tr>';
+        }).join('');
+  }).join('');
+}
+window.gtChoisir = function(id, descendre) {
+  GT.client = id || ''; GT.extra = [];
+  const s = document.getElementById('gt-client'); if (s) s.value = GT.client;
+  gtDessiner();
+  if (descendre && s) { try { s.scrollIntoView({ behavior:'smooth', block:'start' }); } catch(e) {} }
+};
+window.gtAjouterTrajet = function() {
+  gSheet('gcl-sheet', 'Ajouter un trajet',
+    gChamp('Départ * (mot-clé : « CDG », « Disney », une ville…)', '<input type="text" id="gt-dep" maxlength="120" style="' + G_IN + '">')
+    + gChamp('Arrivée *', '<input type="text" id="gt-arr" maxlength="120" style="' + G_IN + '">')
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-top:10px;cursor:pointer"><input type="checkbox" id="gt-bidir" checked style="width:18px;height:18px"> Valable dans les deux sens</label>'
+    + '<div style="margin-top:16px">' + gBtn('Ajouter à la grille', 'gtAjouterTrajetOK()', '#16a34a', true) + '</div>');
+};
+window.gtAjouterTrajetOK = function() {
+  const dep = sanitize(gVal('gt-dep'), 120), arr = sanitize(gVal('gt-arr'), 120);
+  if (!dep || !arr) { showToast('Départ et arrivée obligatoires', true); return; }
+  const b = document.getElementById('gt-bidir');
+  gtGarderSaisie();
+  GT.extra.push({ depart:dep, arrivee:arr, bidir: !!(b && b.checked) });
+  gSheetFermer('gcl-sheet'); gtDessiner(); gtRemettreSaisie();
+  showToast('Trajet ajouté — saisissez les prix puis « Enregistrer »');
+};
+window.gtTypes = function() {
+  gtGarderSaisie();
+  [['Disney','CDG'],['Disney','Orly'],['Disney','Gare'],['Disney','Chessy'],['Paris','CDG'],['Paris','Orly'],['CDG','Orly']].forEach(function(x){ GT.extra.push({ depart:x[0], arrivee:x[1], bidir:true }); });
+  gtDessiner(); gtRemettreSaisie();
+  showToast('Trajets types ajoutés — saisissez les prix puis « Enregistrer »');
+};
+// Conserve ce qui est tapé mais pas encore enregistré quand la grille est redessinée.
+function gtGarderSaisie() {
+  const gr = gtGroupes(); GT._saisie = {};
+  document.querySelectorAll('#gt-body .gt-row').forEach(function(tr){
+    const g = gr[parseInt(tr.dataset.g)]; if (!g) return;
+    GT._saisie[gtCle(g) + '#' + tr.dataset.v] = [tr.querySelector('.gt-pc').value, tr.querySelector('.gt-pch').value];
+  });
+}
+function gtRemettreSaisie() {
+  const gr = gtGroupes(), s = GT._saisie || {};
+  document.querySelectorAll('#gt-body .gt-row').forEach(function(tr){
+    const g = gr[parseInt(tr.dataset.g)]; if (!g) return;
+    const v = s[gtCle(g) + '#' + tr.dataset.v]; if (!v) return;
+    tr.querySelector('.gt-pc').value = v[0]; tr.querySelector('.gt-pch').value = v[1];
+  });
+  GT._saisie = null;
+}
+window.gtSupprimerTrajet = async function(gi) {
+  const g = gtGroupes()[gi]; if (!g) return;
+  const ids = Object.keys(g.rows).map(function(k){ return g.rows[k]._id; }).filter(Boolean);
+  if (ids.length && !confirm('Supprimer le trajet « ' + g.depart + ' / ' + g.arrivee + ' » et ses ' + ids.length + ' prix ?')) return;
+  gtGarderSaisie();
+  try {
+    for (const id of ids) await gRest('DELETE', gpChemin('tarifs/' + id));
+    const k = gtCle(g); GT.extra = GT.extra.filter(function(x){ return gtCle(x) !== k; });
+    if (ids.length) { gJournal('Trajet supprimé de la grille — ' + g.depart + ' / ' + g.arrivee); await gpCharger(true); window.gclListe(); }
+    gtDessiner(); gtRemettreSaisie();
+    showToast('Trajet retiré de la grille');
+  } catch(e) { showToast(gErrServ(e), true); }
+};
+window.gtEnregistrer = async function() {
+  if (!gOpt('clients')) { showToast('Option non activée par l\'administrateur', true); return; }
+  const gr = gtGroupes(); let n = 0, err = null;
+  const lignes = [];
+  document.querySelectorAll('#gt-body .gt-row').forEach(function(tr){
+    const g = gr[parseInt(tr.dataset.g)]; if (!g) return;
+    lignes.push({ g:g, v:tr.dataset.v, id:tr.dataset.id, pc:String(tr.querySelector('.gt-pc').value || '').trim(), pch:String(tr.querySelector('.gt-pch').value || '').trim() });
+  });
+  for (const l of lignes) {
+    try {
+      if (l.pc === '' && l.pch === '') { if (l.id) { await gRest('DELETE', gpChemin('tarifs/' + l.id)); n++; } continue; }
+      const pc = parseFloat(l.pc.replace(',', '.')) || 0, pch = parseFloat(l.pch.replace(',', '.')) || 0;
+      const ex = l.id ? l.g.rows[l.v] : null;
+      if (ex && parseFloat(ex.prixClient) === pc && (parseFloat(ex.prixChauffeur) || 0) === pch) continue;   // inchangé
+      const data = { clientId: GT.client || '', depart: l.g.depart, arrivee: l.g.arrivee, bidir: l.g.bidir, vehicule: l.v, prixClient: pc, prixChauffeur: pch, updatedAt: new Date().toISOString() };
+      if (l.id) await gRest('PATCH', gpChemin('tarifs/' + l.id), data); else await gRest('POST', gpChemin('tarifs'), data);
+      n++;
+    } catch(e) { err = e; }
+  }
+  if (err) { showToast(gErrServ(err), true); }
+  else {
+    const cl = GT.client ? GP.clients.find(function(c){ return c._id === GT.client; }) : null;
+    gJT(n ? '✅ Grille tarifaire enregistrée — ' + (cl ? (cl.nom || '') : 'grille générale') : 'Aucune modification à enregistrer');
+  }
+  GT.extra = [];
+  await gpCharger(true); window.gclListe(); gtDessiner();
+};
 // Fiche client : coordonnées + ses tarifs
 window.gclOuvrir = function(id) {
   const c = GP.clients.find(function(x){ return x._id === id; }); if (!c) return;
@@ -25197,7 +25391,7 @@ window.gtarEnregistrer = async function(id, clientId) {
     else await gRest('POST', gpChemin('tarifs'), data);
     gJT('✅ Tarif enregistré');
     await gpCharger(true); gclDessiner();
-    if (clientId) window.gclOuvrir(clientId); else gSheetFermer('gcl-sheet');
+    gSheetFermer('gcl-sheet');
   } catch(e) { showToast((e && (e.status === 401 || e.status === 403)) ? '⚠️ Refusé par le serveur (option non activée ?)' : 'Erreur — réessayez', true); }
 };
 window.gtarSupprimer = async function(id) {
@@ -25207,7 +25401,7 @@ window.gtarSupprimer = async function(id) {
     await gRest('DELETE', gpChemin('tarifs/' + id));
     gJT('Tarif supprimé');
     await gpCharger(true); gclDessiner();
-    if (t.clientId) window.gclOuvrir(t.clientId); else gSheetFermer('gcl-sheet');
+    gSheetFermer('gcl-sheet');
   } catch(e) { showToast('Suppression impossible', true); }
 };
 
@@ -25654,11 +25848,48 @@ window.grExport = function() {
     const p = parseFloat(c.prix) || 0, pc = parseFloat(c.prixChauffeur) || 0;
     return [(c.datetime || '').slice(0,10), (c.datetime || '').slice(11,16), (c._priv && c._priv.clientNom) || c.client || '', c.depart || c.lieu || '', c.arrivee || '', gVehNom(c.vehicule), c.chauffeur || '', c.statut || '', p.toFixed(2).replace('.', ','), pc.toFixed(2).replace('.', ','), (p - pc).toFixed(2).replace('.', ',')].map(q).join(';');
   })).join('\r\n');
-  try {
-    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type:'text/csv;charset=utf-8' })); a.download = 'rapport-' + GR.mois + '.csv';
-    document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-  } catch(e) { showToast('Export impossible sur cet appareil', true); }
+  gExporterFichier('rapport-' + GR.mois + '.csv', csv, 'text/csv');
+  gJournal('Export CSV du rapport ' + GR.mois);
 };
+// Enregistre / partage un fichier. Dans l'app iPhone, le téléchargement
+// classique ne fait rien : on passe par le partage iOS (« Enregistrer dans
+// Fichiers », Mail, WhatsApp…). Sur ordinateur : téléchargement normal.
+async function gExporterFichier(nom, contenu, mime) {
+  mime = mime || 'text/plain';
+  const natif = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  if (natif) {
+    try {
+      const P = window.Capacitor.Plugins || {};
+      if (P.Share && P.Filesystem) {
+        const w = await P.Filesystem.writeFile({ path: nom, data: contenu, directory: 'CACHE', encoding: 'utf8' });
+        await P.Share.share({ title: nom, url: w.uri, dialogTitle: 'Enregistrer ou envoyer le fichier' });
+        return true;
+      }
+    } catch(e) { if (e && /cancel/i.test(String(e.message || e))) return false; }
+  }
+  try {
+    const file = new File([contenu], nom, { type: mime });
+    if ((natif || /iPhone|iPad|iPod/i.test(navigator.userAgent || '')) && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: nom });
+      return true;
+    }
+  } catch(e) { if (e && e.name === 'AbortError') return false; }
+  if (natif) {
+    // Dernier recours dans l'app : afficher le contenu pour le copier.
+    try { await navigator.clipboard.writeText(contenu); showToast('📋 Export copié — collez-le dans Notes, Mail ou Numbers'); return true; } catch(e) {}
+    showToast('Export impossible sur cet appareil', true); return false;
+  }
+  try {
+    const url = URL.createObjectURL(new Blob([contenu], { type: mime + ';charset=utf-8' }));
+    const a = document.createElement('a'); a.href = url; a.download = nom;
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 1500);
+    showToast('📥 Fichier téléchargé : ' + nom);
+    return true;
+  } catch(e) { showToast('Export impossible sur cet appareil', true); return false; }
+}
+window.gExporterFichier = gExporterFichier;
+function gEstNatif() { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); }
 
 // ── Sous-traitants & partenaires (carnet privé) ─────────────────────────────
 window.renderGerantPartenaires = async function() {
