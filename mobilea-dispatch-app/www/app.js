@@ -14,6 +14,40 @@ function escHtml(str) {
 }
 const E = escHtml;
 
+// Texte destiné à une chaîne JavaScript placée dans un attribut onclick="f('…')".
+function JA(str) {
+  return escHtml(String(str == null ? '' : str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/[\r\n\u2028\u2029]+/g, ' '));
+}
+
+// ── BOUCLIER ANTI-INJECTION (défense en profondeur) ──────────────────────────
+// Tout ce qui est LU dans la base passe par ici : le caractère « < » est
+// remplacé par « ‹ ». Un nom, une note ou un message piégé (écrit directement
+// dans la base en contournant l'app) ne peut donc plus devenir une balise
+// HTML ni un script dans l'écran de l'admin, même à un endroit où l'affichage
+// aurait oublié d'échapper le texte.
+function fbNeutre(v, prof) {
+  if (typeof v === 'string') return v.indexOf('<') >= 0 ? v.replace(/</g, '\u2039') : v;
+  if (v && typeof v === 'object' && (prof || 0) < 14) {
+    for (const k in v) {
+      const x = v[k];
+      if (typeof x === 'string') { if (x.indexOf('<') >= 0) v[k] = x.replace(/</g, '\u2039'); }
+      else if (x && typeof x === 'object') fbNeutre(x, (prof || 0) + 1);
+    }
+  }
+  return v;
+}
+(function(){
+  try {
+    const jsonOrig = Response.prototype.json;
+    Response.prototype.json = function() {
+      const u = this.url || '';
+      const p = jsonOrig.call(this);
+      if (u.indexOf('firebasedatabase.app') < 0 && u.indexOf('firebaseio.com') < 0) return p;
+      return p.then(function(d){ try { return fbNeutre(d); } catch(e) { return d; } });
+    };
+  } catch(e) {}
+})();
+
 // ── SANITISATION DES ENTRÉES ──
 // Nettoie une chaîne avant de la sauvegarder dans Firebase
 function sanitize(str, maxLen) {
@@ -496,7 +530,7 @@ function startCoursesListener() {
 
     const wrap = (query, key, label) => {
       const cb = query.on('value', (snap) => {
-        const val = snap.val();
+        const val = fbNeutre(snap.val());
         _listenerBuckets[key] = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
         const now = Date.now();
         if(now - _lastListenerRun < 800) return;
@@ -586,7 +620,7 @@ function startPointagesListener() {
   try {
     _pointagesListenerRef = window.fbDB.ref('pointages');
     _pointagesListenerCb = _pointagesListenerRef.on('value', (snap) => {
-      const val = snap.val();
+      const val = fbNeutre(snap.val());
       const arr = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
       // Rafraîchir le cache pour que fbGet('pointages') renvoie le frais.
       try { _fbCache.set('pointages', { t: Date.now(), data: arr.map(o=>({...o})) }); } catch(e){}
@@ -642,7 +676,7 @@ function startMessagesListener() {
   try {
     _messagesListenerRef = window.fbDB.ref('messages');
     _messagesListenerCb = _messagesListenerRef.on('value', (snap) => {
-      const val = snap.val();
+      const val = fbNeutre(snap.val());
       const arr = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
       // Trier par date pour que "dernier message" soit fiable partout.
       arr.sort((a,b) => new Date(a.at||0) - new Date(b.at||0));
@@ -703,7 +737,7 @@ function startChauffeursListener() {
   try {
     _chauffeursListenerRef = window.fbDB.ref('chauffeurs');
     _chauffeursListenerCb = _chauffeursListenerRef.on('value', (snap) => {
-      const val = snap.val();
+      const val = fbNeutre(snap.val());
       const arr = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
       D.chauffeurs = arr;
       try { _fbCache.set('chauffeurs', { t: Date.now(), data: arr.map(o=>({...o})) }); } catch(e){}
@@ -4769,7 +4803,7 @@ window.viewCourseDetail = function(id) {
       </div>`:''}
 
       <!-- Voir tous les transferts du client -->
-      <div onclick="document.getElementById('course-detail-ov').remove();viewClientCourses('${(c.client||'').replace(/'/g,"\\'")}')"
+      <div onclick="document.getElementById('course-detail-ov').remove();viewClientCourses('${JA(c.client||'')}')"
         style="margin-top:18px;padding:14px 16px;background:#f0f7ff;border:1px solid #cfe3ff;border-radius:14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between">
         <div>
           <div style="font-size:11px;font-weight:700;color:#1a73e8;letter-spacing:0.5px;text-transform:uppercase">📅 Historique client</div>
@@ -5726,7 +5760,7 @@ window.autoDispatch = function(courseId) {
           }
           return `<div data-chname="${name.toLowerCase()}" style="display:flex;align-items:center;gap:12px;padding:12px;background:#f8f9fa;border-radius:12px;margin-bottom:8px;cursor:pointer;border:2px solid transparent;transition:all 0.15s"
             onmouseover="this.style.borderColor='#b8860b'" onmouseout="this.style.borderColor='transparent'"
-            onclick="doAutoDispatch('${courseId}','${name}',this.closest('div[style*=fixed]'))">
+            onclick="doAutoDispatch('${JA(courseId)}','${JA(name)}',this.closest('div[style*=fixed]'))">
             <div style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#b8860b,#d4a017);display:flex;align-items:center;justify-content:center;font-family:'Inter',sans-serif;font-weight:800;font-size:14px;color:#fff;flex-shrink:0">${av}</div>
             <div style="flex:1">
               <div style="font-size:14px;font-weight:700;color:#111">${name}</div>
@@ -6961,13 +6995,13 @@ function renderChauffeurs() {
       <div class="ic-h">
         <div style="width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,${c.vehicule==='van'||c.vehicule==='sprinter'?'var(--blue),var(--purple)':'var(--gold),var(--orange)'});display:flex;align-items:center;justify-content:center;font-family:'Inter',sans-serif;font-weight:700;font-size:14px;color:var(--black);flex-shrink:0">${av}</div>
         <div style="flex:1;min-width:0">
-          <div class="ic-t">${name}</div>
+          <div class="ic-t">${E(name)}</div>
           <div class="ic-s">${vI(c.vehicule)}</div>
           ${c.tel?`<div style="font-size:10px;color:var(--muted)">${E(c.tel)}</div>`:''}
         </div>
         ${sBdg(c.statut||'disponible')}
       </div>
-      ${active?`<div style="padding:6px 9px;background:var(--blue-dim);border-radius:var(--r-xs);font-size:11px;color:var(--blue);margin-bottom:9px"><i class="fas fa-route"></i> ${active.client}</div>`:''}
+      ${active?`<div style="padding:6px 9px;background:var(--blue-dim);border-radius:var(--r-xs);font-size:11px;color:var(--blue);margin-bottom:9px"><i class="fas fa-route"></i> ${E(active.client)}</div>`:''}
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;padding-top:10px;border-top:1px solid var(--border);margin-bottom:10px">
         <div style="text-align:center"><div class="text-gold fw7 ff-syne" style="font-size:15px">${courses.length}</div><div style="font-size:10px;color:var(--muted)">Courses</div></div>
         <div style="text-align:center"><div class="text-gold fw7 ff-syne" style="font-size:15px">${ca.toFixed(0)}€</div><div style="font-size:10px;color:var(--muted)">CA TTC</div></div>
@@ -8257,7 +8291,7 @@ function renderVehicules() {
     <div class="ic" style="${isOld?'border-color:var(--orange)':''}">
       <div class="ic-h">
         <div style="width:38px;height:38px;border-radius:var(--r-xs);background:var(--blue-dim);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">🚗</div>
-        <div><div class="ic-t">${v.marque||'—'} ${v.modele||''}</div><div class="ic-s">${v.immat||'—'}</div></div>
+        <div><div class="ic-t">${E(v.marque||'—')} ${E(v.modele||'')}</div><div class="ic-s">${E(v.immat||'—')}</div></div>
         ${sBdg(v.statut||'actif')}
       </div>
       ${isOld?`<div style="background:var(--orange-dim);border:1px solid rgba(240,147,74,0.4);border-radius:var(--r-xs);padding:7px 10px;font-size:11px;color:var(--orange);margin-bottom:10px;display:flex;align-items:center;gap:6px"><i class="fas fa-exclamation-triangle"></i> Véhicule de <strong>${age} ans</strong> — vérifier la conformité VTC</div>`:''}
@@ -8342,7 +8376,7 @@ function renderClients() {
       </td>
       <td>
         <div style="font-size:11px">${E(c.contact||'—')}</div>
-        ${c.poste?`<div style="font-size:10px;color:var(--muted)">${c.poste}</div>`:''}
+        ${c.poste?`<div style="font-size:10px;color:var(--muted)">${E(c.poste)}</div>`:''}
       </td>
       <td style="font-size:11px">${E(c.tel||'—')}</td>
       <td style="font-size:11px">
@@ -8350,9 +8384,9 @@ function renderClients() {
         ${c.emailFac?`<div style="color:var(--muted)">${E(c.emailFac)}</div>`:''}
       </td>
       <td>
-        ${c.siret?`<div style="font-size:10px;color:var(--muted2)">SIRET: ${c.siret}</div>`:''}
-        ${c.tva?`<div style="font-size:10px;color:var(--muted2)">TVA: ${c.tva}</div>`:''}
-        ${c.ville?`<div style="font-size:10px;color:var(--muted2)">📍 ${c.cp||''} ${c.ville}</div>`:''}
+        ${c.siret?`<div style="font-size:10px;color:var(--muted2)">SIRET: ${E(c.siret)}</div>`:''}
+        ${c.tva?`<div style="font-size:10px;color:var(--muted2)">TVA: ${E(c.tva)}</div>`:''}
+        ${c.ville?`<div style="font-size:10px;color:var(--muted2)">📍 ${E(c.cp||'')} ${E(c.ville)}</div>`:''}
       </td>
       <td>
         ${sBdg(c.type||'corporate')}
@@ -8656,7 +8690,7 @@ function populateGridClientSelect() {
   D.clients.forEach(c => { if(c.commercial || c.nom) clientNames.add(c.commercial || c.nom); });
   const sorted = [...clientNames].filter(Boolean).sort();
   sel.innerHTML = '<option value="">— Choisir un client —</option>' +
-    sorted.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('');
+    sorted.map(n => `<option value="${E(n)}">${E(n)}</option>`).join('');
 }
 
 async function loadClientGrid() {
@@ -9015,7 +9049,7 @@ function renderTarifs() {
           ${t.attente?`<div style="font-size:10px;color:var(--blue);margin-top:3px">⏱ Attente : ${t.attente}</div>`:''}
         </div>`).join('')}
       <div style="padding:8px 14px;display:flex;justify-content:flex-end">
-        <button class="btn btn-d btn-xs" onclick="delClientTarifs('${clientName}')"><i class="fas fa-trash"></i> Supprimer</button>
+        <button class="btn btn-d btn-xs" onclick="delClientTarifs('${JA(clientName)}')"><i class="fas fa-trash"></i> Supprimer</button>
       </div>
     </div>`).join('');
 }
@@ -9027,7 +9061,7 @@ window.openTarifModal = function(id) {
   D.clients.forEach(c => clientNames.add(c.commercial || c.nom));
   const sorted = [...clientNames].filter(Boolean).sort();
   sel.innerHTML = '<option value="">— Choisir un client —</option>' +
-    sorted.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('');
+    sorted.map(n => `<option value="${E(n)}">${E(n)}</option>`).join('');
 
   const fields = ['tf-dep','tf-arr','tf-berline','tf-van','tf-sprinter','tf-bus','tf-pmr','tf-limousine',
     'tf-ch-berline','tf-ch-van','tf-ch-sprinter','tf-ch-bus','tf-ch-pmr','tf-ch-limousine','tf-nuit','tf-min','tf-dept-dep','tf-dept-arr'];
@@ -9134,7 +9168,7 @@ function populateInvoiceSelects() {
   const sorted = [...clientNames].filter(Boolean).sort();
   const currentVal = clSel.value;
   clSel.innerHTML = '<option value="">— Choisir un client —</option>' +
-    sorted.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('');
+    sorted.map(n => `<option value="${E(n)}">${E(n)}</option>`).join('');
   if(currentVal) clSel.value = currentVal;
 
   // Par défaut : dates du mois en cours si non déjà remplies
@@ -9461,8 +9495,8 @@ window.generateInvoicePDF = function() {
       <div style="font-size:15px;font-weight:700">${cl?.nom||inv.clientName}</div>
       ${cl?.adresse?`<div>${E(cl.adresse)}</div>`:''}
       ${(cl?.cp||cl?.ville)?`<div>${cl?.cp||''} ${cl?.ville||''}</div>`:''}
-      ${cl?.siret?`<div style="color:#888;font-size:11px;margin-top:3px">SIRET : ${cl.siret}</div>`:''}
-      ${cl?.tva?`<div style="color:#888;font-size:11px">TVA : ${cl.tva}</div>`:''}
+      ${cl?.siret?`<div style="color:#888;font-size:11px;margin-top:3px">SIRET : ${E(cl.siret)}</div>`:''}
+      ${cl?.tva?`<div style="color:#888;font-size:11px">TVA : ${E(cl.tva)}</div>`:''}
     </div>
     <table>
       <thead><tr>
@@ -9812,7 +9846,7 @@ function renderRapports() {
   if(rc){rc.innerHTML=top.length?top.map(([name,ca])=>`
     <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
       <div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--orange));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;font-family:'Inter',sans-serif;color:var(--black)">${name.slice(0,2).toUpperCase()}</div>
-      <div style="flex:1"><div style="font-size:12px;font-weight:600">${name}</div>
+      <div style="flex:1"><div style="font-size:12px;font-weight:600">${E(name)}</div>
         <div class="prog"><div class="prog-fill" style="width:${top[0][1]?((ca/top[0][1])*100).toFixed(0):0}%;background:linear-gradient(90deg,var(--gold),var(--orange))"></div></div>
       </div>
       <div class="text-gold fw7 ff-syne" style="font-size:12px">${ca.toFixed(0)}€</div>
@@ -10319,7 +10353,7 @@ function renderPlanning() {
     const name=ch.prenom+(ch.nom?' '+ch.nom:'');
     const mine=tc.filter(c=>c.chauffeur===name);
     return`<div style="display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:center;margin-bottom:7px;padding:8px;background:var(--card2);border-radius:var(--r-xs);border:1px solid var(--border)">
-      <div style="font-size:12px;font-weight:600">${name}</div>
+      <div style="font-size:12px;font-weight:600">${E(name)}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap">
         ${mine.length?mine.map(c=>`<div style="padding:4px 8px;background:var(--card);border:1px solid var(--border2);border-radius:var(--r-xs);font-size:10px;border-left:3px solid ${c.type==='mad'?'var(--orange)':'var(--gold)'}"><strong>${fdt(c.datetime).split(' ')[1]||'?'}</strong> — ${E(c.client)}</div>`).join(''):`<div style="font-size:11px;color:var(--muted)">Pas de course</div>`}
       </div>
@@ -13508,13 +13542,13 @@ function renderConvList() {
     // Clignotement doux sur les conversations non lues et non ouvertes, pour
     // attirer l'attention de l'admin/dispatch sur un message en attente.
     const _clignote = unread>0 && !isActive && (SESSION.role==='admin' || SESSION.role==='dispatch');
-    return `<div onclick="openConv('${c.id}','${c.name}','${c.role}')" class="${_clignote?'conv-unread':''}"
+    return `<div data-cid="${E(c.id)}" data-cname="${E(c.name)}" data-crole="${E(c.role)}" onclick="openConv(this.dataset.cid,this.dataset.cname,this.dataset.crole)" class="${_clignote?'conv-unread':''}"
       style="padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);${isActive?'background:var(--gold-dim);':(_clignote?'':'background:transparent;')}transition:background 0.15s"
       onmouseover="if('${c.id}'!==currentConv&&!this.classList.contains('conv-unread'))this.style.background='rgba(255,255,255,0.03)'" onmouseout="if('${c.id}'!==currentConv&&!this.classList.contains('conv-unread'))this.style.background='transparent'">
       <div style="width:36px;height:36px;border-radius:50%;background:${bgColor};display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">${c.icon}</div>
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;font-weight:${unread>0?'800':'600'};display:flex;justify-content:space-between;align-items:center;gap:6px">
-          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</span>
+          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${E(c.name)}</span>
           <div style="display:flex;gap:4px;align-items:center;flex-shrink:0">
             ${c.courseRef?`<span style="font-size:9px;color:var(--gold);background:var(--gold-dim);padding:1px 5px;border-radius:8px">${c.courseRef}</span>`:''}
             ${last?`<span style="font-size:10px;color:${unread>0?'var(--gold)':'var(--muted)'}">${_heureMsg(last.at)}</span>`:''}
@@ -14402,7 +14436,7 @@ function renderDirigeant() {
   if(bcEl) bcEl.innerHTML = topChauff.length ? topChauff.map(([name,d])=>`
     <div style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <div style="font-size:12px;font-weight:600">${name}</div>
+        <div style="font-size:12px;font-weight:600">${E(name)}</div>
         <div style="display:flex;gap:8px;align-items:center">
           <span style="font-size:10px;color:var(--muted)">${d.nb} course${d.nb!==1?'s':''}</span>
           <span class="text-gold fw7 ff-syne" style="font-size:13px">${d.ca.toFixed(0)}€</span>
@@ -15399,7 +15433,7 @@ window.confirmClientCancel = async function(courseId) {
     // relit pour retrouver le bon chauffeur (par nom ou par UID).
     if(!drvId) {
       try {
-        const _chs = await fbGet('chauffeurs') || [];
+        const _chs = await fbChauffeursPourClient();
         const _n = _normNom(c.chauffeur);
         const _f = _chs.find(x => _normNom((x.prenom||'')+' '+(x.nom||'')) === _n || (c.chauffeurUid && x.uid === c.chauffeurUid));
         if(_f) { drvId = _f._id; drvInfo = drvInfo || _f; }
@@ -15599,8 +15633,8 @@ function renderClientPortal() {
         const clientNavBtn = (cliNavAddr && !SESSION.isPartenaire) ? `<div style="margin-top:10px">
           <div style="font-size:10px;color:var(--muted2);margin-bottom:5px">📍 Rejoindre le point de prise en charge</div>
           <div style="display:flex;gap:8px">
-            <button onclick="openNav('waze',${c.pickupLat||'null'},${c.pickupLng||'null'},'${(c.depart||c.lieu||'').replace(/'/g,"\\'")}')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(0,180,255,0.12);border:1px solid rgba(0,180,255,0.4);border-radius:8px;padding:9px;color:#00b4ff;font-size:12px;font-weight:700;cursor:pointer">🗺️ Waze</button>
-            <button onclick="openNav('gmaps',${c.pickupLat||'null'},${c.pickupLng||'null'},'${(c.depart||c.lieu||'').replace(/'/g,"\\'")}')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(52,168,83,0.12);border:1px solid rgba(52,168,83,0.4);border-radius:8px;padding:9px;color:#34a853;font-size:12px;font-weight:700;cursor:pointer">🗺️ Maps</button>
+            <button onclick="openNav('waze',${parseFloat(c.pickupLat)||'null'},${parseFloat(c.pickupLng)||'null'},'${JA(c.depart||c.lieu||'')}')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(0,180,255,0.12);border:1px solid rgba(0,180,255,0.4);border-radius:8px;padding:9px;color:#00b4ff;font-size:12px;font-weight:700;cursor:pointer">🗺️ Waze</button>
+            <button onclick="openNav('gmaps',${parseFloat(c.pickupLat)||'null'},${parseFloat(c.pickupLng)||'null'},'${JA(c.depart||c.lieu||'')}')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(52,168,83,0.12);border:1px solid rgba(52,168,83,0.4);border-radius:8px;padding:9px;color:#34a853;font-size:12px;font-weight:700;cursor:pointer">🗺️ Maps</button>
           </div>
         </div>` : '';
         const autoAssignNote = (c.autoDispatched || c.autoDispatchDone) ? `<div style="margin-top:8px;font-size:10px;color:var(--gold)"><i class="fas fa-robot"></i> Chauffeur assigné automatiquement — le plus proche disponible${c.etaMinutes?` • arrivée estimée ~${c.etaMinutes} min (Google Maps)`:''}</div>` : '';
@@ -17268,8 +17302,8 @@ window.openClientCourseDetail = function(courseId) {
       ${(cliNavAddr && !SESSION.isPartenaire)?`<div style="margin-top:14px">
         <div style="font-size:11px;color:#999;margin-bottom:6px">📍 Rejoindre le point de prise en charge</div>
         <div style="display:flex;gap:8px">
-          <button onclick="openNav('waze',${c.pickupLat||'null'},${c.pickupLng||'null'},'${(c.depart||c.lieu||'').replace(/'/g,"\\'")}')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:#eaf7ff;border:1px solid #00b4ff55;border-radius:8px;padding:11px;color:#00b4ff;font-size:13px;font-weight:700;cursor:pointer">🗺️ Waze</button>
-          <button onclick="openNav('gmaps',${c.pickupLat||'null'},${c.pickupLng||'null'},'${(c.depart||c.lieu||'').replace(/'/g,"\\'")}')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:#eafaef;border:1px solid #34a85355;border-radius:8px;padding:11px;color:#34a853;font-size:13px;font-weight:700;cursor:pointer">🗺️ Maps</button>
+          <button onclick="openNav('waze',${parseFloat(c.pickupLat)||'null'},${parseFloat(c.pickupLng)||'null'},'${JA(c.depart||c.lieu||'')}')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:#eaf7ff;border:1px solid #00b4ff55;border-radius:8px;padding:11px;color:#00b4ff;font-size:13px;font-weight:700;cursor:pointer">🗺️ Waze</button>
+          <button onclick="openNav('gmaps',${parseFloat(c.pickupLat)||'null'},${parseFloat(c.pickupLng)||'null'},'${JA(c.depart||c.lieu||'')}')" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:#eafaef;border:1px solid #34a85355;border-radius:8px;padding:11px;color:#34a853;font-size:13px;font-weight:700;cursor:pointer">🗺️ Maps</button>
         </div>
       </div>`:''}
 
@@ -19739,7 +19773,7 @@ window.refreshClientMap = function() {
   (async () => {
     let sourceChauffeurs = D.chauffeurs;
     if(!sourceChauffeurs || sourceChauffeurs.length === 0) {
-      try { sourceChauffeurs = await fbGet('chauffeurs'); } catch(e) { sourceChauffeurs = []; }
+      try { sourceChauffeurs = await fbChauffeursPourClient(); } catch(e) { sourceChauffeurs = []; }
     }
     const tracked = [];
     myActiveCourses.forEach(c=>{
@@ -20689,7 +20723,7 @@ window.toggleGPS = async function() {
     arreterSuiviGPS();
     const name = SESSION.name;
     const ch = D.chauffeurs.find(c=>(c.prenom+(c.nom?' '+c.nom:''))===name);
-    if(ch) await fbUpdate('chauffeurs', ch._id, {gps:null, gpsActive:false});
+    if(ch) { await fbUpdate('chauffeurs', ch._id, {gps:null, gpsActive:false}); try { chPubMaj(ch, null, false); } catch(e){} }
     const btn = document.getElementById('gps-btn');
     const st = document.getElementById('gps-status');
     if(btn){btn.innerHTML='<i class="fas fa-map-marker-alt"></i> Partager ma position';btn.style.borderColor='';btn.style.color='';}
@@ -20747,6 +20781,7 @@ async function sendGPS(pos) {
   try { await checkArriveeClient(pos.coords.latitude, pos.coords.longitude); } catch(e){}
   // Historique de déplacement : enregistre un point (throttlé) pour rejouer le trajet.
   try { await enregistrerTrace(ch._id, pos.coords.latitude, pos.coords.longitude, { acc:_acc, vit:_vit, cap:h }); } catch(e){}
+  try { chPubMaj(ch, { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:_acc, at:new Date().toISOString(), heading:h, speed:_vit }, true); } catch(e){}
 }
 
 // Enregistre la trace GPS du chauffeur. Seuils réduits pour un suivi plus fin :
@@ -20756,6 +20791,32 @@ async function sendGPS(pos) {
 // détaillé. Rangé par jour : gps_trails/<chauffeurId>/<AAAAMMJJ>/<HHMMSS>.
 // Un premier point est toujours enregistré à l'ouverture (even if no last).
 window._lastTrace = window._lastTrace || {};
+// ── FICHE PUBLIQUE MINIMALE DU CHAUFFEUR (/chauffeurs_pub/{id}) ─────────────
+// Le client qui suit sa course n'a besoin que du prénom, du véhicule et de la
+// position — pas de la fiche complète (email, société, IBAN…). L'app du
+// chauffeur recopie donc ici le strict nécessaire ; la fiche complète pourra
+// ensuite être fermée aux clients (règles « étape 2 »).
+async function chPubMaj(ch, gps, actif) {
+  if (!ch || !ch._id) return;
+  const o = { gpsActive: !!actif, gps: gps || null, majAt: new Date().toISOString() };
+  ['prenom','nom','tel','uid','vehicule','immat','marque','modele','couleur','photo','statut','note','langues'].forEach(function(k){
+    const v = ch[k]; if (v !== undefined && v !== null && typeof v !== 'object' && String(v).length <= 300) o[k] = v;
+  });
+  if (!actif) o.statut = 'indisponible';
+  try {
+    await fetch(`${FB_URL}/chauffeurs_pub/${ch._id}.json${authParam(await getAuthToken())}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(o) });
+  } catch(e) {}
+}
+// Lecture côté CLIENT : la fiche publique d'abord ; l'ancienne lecture complète
+// seulement si la fiche publique est encore vide (chauffeurs pas encore à jour).
+async function fbChauffeursPourClient() {
+  let pub = [], tous = [];
+  try { pub = await fbGet('chauffeurs_pub') || []; } catch(e) {}
+  try { tous = await fbGet('chauffeurs') || []; } catch(e) {}     // refusé (liste vide) une fois l'étape 2 publiée
+  const vus = {}; pub.forEach(function(c){ vus[c._id] = 1; });
+  return pub.concat(tous.filter(function(c){ return !vus[c._id]; }));
+}
+
 async function enregistrerTrace(driverId, lat, lng, extra){
   if(!driverId || !lat || !lng) return;
   extra = extra || {};
@@ -21079,7 +21140,7 @@ window.refreshLiveMap = async function() {
         ${plaqueM?`<div style="font-size:11px;margin-bottom:4px"><span style="background:#1e3a8a;color:#fff;border-radius:3px;padding:1px 7px;font-weight:700;letter-spacing:0.5px">🇫🇷 ${plaqueM}</span></div>`:''}
         <div style="font-size:11px;color:#666;margin-bottom:3px">📍 ${c.gps.lat.toFixed(5)}, ${c.gps.lng.toFixed(5)}</div>
         <div style="font-size:11px;color:#666;margin-bottom:6px">Précision : ~${c.gps.acc||'?'}m</div>
-        ${course?`<div style="font-size:11px;background:#f8f7f4;padding:5px 8px;border-radius:4px;border-left:3px solid #c9a84c"><strong>Transfert :</strong> ${course.client||''}<br>${course.depart||course.lieu||''}${course.arrivee?' → '+course.arrivee:''}</div>`:'<div style="font-size:11px;color:#2ecc8a">● Disponible</div>'}
+        ${course?`<div style="font-size:11px;background:#f8f7f4;padding:5px 8px;border-radius:4px;border-left:3px solid #c9a84c"><strong>Transfert :</strong> ${E(course.client||'')}<br>${E(course.depart||course.lieu||'')}${course.arrivee?' → '+E(course.arrivee):''}</div>`:'<div style="font-size:11px;color:#2ecc8a">● Disponible</div>'}
         <div style="margin-top:8px">
           <a href="https://www.google.com/maps?q=${c.gps.lat},${c.gps.lng}" target="_blank"
             style="font-size:11px;color:#5b9cf6;text-decoration:none">Ouvrir dans Maps →</a>
@@ -21126,7 +21187,7 @@ window.refreshLiveMap = async function() {
         const dep = course.depart||course.lieu||'';
         const arr = course.arrivee||course.duree||'';
         const trajet = (dep||arr) ? `${dep}${arr?' → '+arr:''}` : (course.client||'Course');
-        transfert = `<div style="font-size:10px;color:var(--gold);margin-top:3px">🚗 ${course.client||''}</div><div style="font-size:10px;color:var(--muted2);margin-top:1px">${trajet}</div>`;
+        transfert = `<div style="font-size:10px;color:var(--gold);margin-top:3px">🚗 ${E(course.client||'')}</div><div style="font-size:10px;color:var(--muted2);margin-top:1px">${E(trajet)}</div>`;
       } else {
         transfert = '<div style="font-size:10px;color:var(--green);margin-top:3px">● Disponible</div>';
       }
@@ -23034,7 +23095,7 @@ window.transferPax = function(courseId, paxIndex) {
         <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Vers une course existante</div>
         <select id="transfer-dest" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-sm);padding:10px 12px;color:var(--white);font-size:13px;outline:none">
           <option value="">— Choisir une course —</option>
-          ${otherCourses.map(x=>`<option value="${x._id}">${fdt(x.datetime)} — ${x.client} (${vI(x.vehicule)}) ${x.chauffeur?'→ '+x.chauffeur:''}</option>`).join('')}
+          ${otherCourses.map(x=>`<option value="${E(x._id)}">${fdt(x.datetime)} — ${E(x.client||'')} (${vI(x.vehicule)}) ${x.chauffeur?'→ '+E(x.chauffeur):''}</option>`).join('')}
         </select>
       </div>
       <div style="margin-bottom:16px;text-align:center;color:var(--muted);font-size:12px">— ou —</div>
@@ -23268,7 +23329,7 @@ window.mergeCourse = function(id) {
         <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Course à fusionner</div>
         <select id="merge-dest" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:var(--r-sm);padding:10px 12px;color:var(--white);font-size:13px;outline:none">
           <option value="">— Choisir —</option>
-          ${others.map(x=>`<option value="${x._id}">${fdt(x.datetime)} — ${x.client} — ${(x.passagers||[]).length} pax — ${vI(x.vehicule)} ${x.chauffeur?'→ '+x.chauffeur:''}</option>`).join('')}
+          ${others.map(x=>`<option value="${E(x._id)}">${fdt(x.datetime)} — ${E(x.client||'')} — ${(x.passagers||[]).length} pax — ${vI(x.vehicule)} ${x.chauffeur?'→ '+E(x.chauffeur):''}</option>`).join('')}
         </select>
       </div>
     </div>
