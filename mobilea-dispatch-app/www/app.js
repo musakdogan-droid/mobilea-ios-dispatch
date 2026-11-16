@@ -22257,12 +22257,23 @@ function switchTab(t){document.querySelectorAll('.ltab').forEach(x=>x.classList.
 let _extToken = null, _extCourse = null;
 
 async function extApi(action, extra) {
-  const r = await fetch(COURSE_LINK_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, token: _extToken, ...(extra||{}) }),
-  });
-  return await r.json();
+  // Ne jamais rester bloqué sur « Chargement… » : toute panne donne un message
+  // clair avec un code, pour savoir quoi réparer.
+  let r;
+  try {
+    r = await fetch(COURSE_LINK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, token: _extToken, ...(extra||{}) }),
+    });
+  } catch(e) {
+    return { ok:false, panne:true, error:'Service du lien injoignable (code L1)' };
+  }
+  let d = null;
+  try { d = await r.json(); } catch(e) {}
+  if (d && typeof d === 'object' && ('ok' in d)) return d;
+  if (r.status === 404) return { ok:false, panne:true, error:'Service du lien non installé (code L2)' };
+  return { ok:false, panne:true, error:'Service du lien en erreur (code L3-' + r.status + ')' };
 }
 
 async function openExternalCoursePage(token) {
@@ -22275,7 +22286,7 @@ async function openExternalCoursePage(token) {
   const res = await extApi('get');
   if(!res.ok) {
     root.innerHTML = extMessage(res.fini ? '✅' : '⚠️', res.error || 'Lien invalide',
-      res.fini ? 'Cette course n\'est plus active.' : 'Vérifiez le lien reçu, ou contactez le dispatch.');
+      res.fini ? 'Cette course n\'est plus active.' : (res.panne ? 'Le lien est bon, mais le service est en panne. Merci de prévenir le dispatch en donnant ce code.' : 'Vérifiez le lien reçu, ou contactez le dispatch.'));
     return;
   }
   _extCourse = res.course;
