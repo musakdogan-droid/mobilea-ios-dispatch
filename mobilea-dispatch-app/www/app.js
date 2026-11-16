@@ -4732,6 +4732,7 @@ window.viewCourseDetail = function(id) {
           <button onclick="document.getElementById('cd-menu').style.display=document.getElementById('cd-menu').style.display==='block'?'none':'block'" style="background:none;border:none;font-size:28px;cursor:pointer;color:#333;padding:6px">⋯</button>
           <div id="cd-menu" style="display:none;position:absolute;right:0;top:36px;background:#fff;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.18);overflow:hidden;min-width:200px;z-index:10;border:1px solid #e8e8e8">
             <button onclick="duplicateCourse('${c._id}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;border-bottom:1px solid #f0f0f0;padding:14px 18px;font-size:15px;color:#222;cursor:pointer;text-align:left">Dupliquer <span>📋</span></button>
+            ${(parseFloat(c.prix)>0 && !stripeCoursePayee(c)) ? `<button onclick="document.getElementById('course-detail-ov').remove();payLienCourse('${c._id}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;border-bottom:1px solid #f0f0f0;padding:14px 18px;font-size:15px;color:#222;cursor:pointer;text-align:left">Lien de paiement <span>💳</span></button>` : ''}
             <button onclick="document.getElementById('course-detail-ov').remove();delCourse('${c._id}')" style="display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:none;padding:14px 18px;font-size:15px;color:#d93025;cursor:pointer;text-align:left">Supprimer <span>🗑️</span></button>
           </div>
         </div>
@@ -9637,6 +9638,7 @@ function renderFact() {
       <td>${sBdg(c.statut)}</td>
       <td>
         <button class="btn btn-ghost btn-xs" onclick="printFac('${c._id}','${num}')" aria-label="Imprimer"><i class="fas fa-print" aria-hidden="true"></i></button>
+        ${(ttc>0 && !stripeCoursePayee(c)) ? `<button class="btn btn-ghost btn-xs" onclick="payLienCourse('${c._id}')" title="Lien de paiement par carte" aria-label="Lien de paiement"><i class="fas fa-credit-card" aria-hidden="true"></i></button>` : (c.paiement_mode==='carte_en_ligne' ? '<span title="Payé par carte en ligne" style="font-size:12px">💳✓</span>' : '')}
         <button class="btn btn-g btn-xs" onclick="updStatut('${c._id}','payee')" aria-label="Valider"><i class="fas fa-check" aria-hidden="true"></i></button>
       </td>
     </tr>`;
@@ -15613,6 +15615,7 @@ function renderClientPortal() {
           ${canEdit ? `<button onclick="openEditBooking('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(200,169,110,0.12);border:1px solid rgba(200,169,110,0.4);border-radius:6px;color:#c8a96e;font-size:12px;font-weight:600;cursor:pointer">${t('modify')}</button>` : ''}
           ${paymentFailed ? `<button onclick="retryStripePayment('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.4);border-radius:6px;color:#ef4444;font-size:12px;font-weight:600;cursor:pointer">${t('retry_payment')}</button>` : ''}
           ${paymentPending && !paymentFailed ? `<button onclick="retryStripePayment('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.4);border-radius:6px;color:#22c55e;font-size:12px;font-weight:600;cursor:pointer">${t('pay_now')}</button>` : ''}
+          ${(!paymentFailed && !paymentPending && !stripeCoursePayee(c) && parseFloat(c.prix)>0 && !['annulee','noshow'].includes(c.statut)) ? `<button onclick="clPayerCourse('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.4);border-radius:6px;color:#16a34a;font-size:12px;font-weight:600;cursor:pointer">💳 Payer par carte</button>` : ''}
           ${canCancel ? `<button onclick="openCancelCourseModal('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:6px;color:#ef4444;font-size:12px;font-weight:600;cursor:pointer">✕ Annuler la course</button>` : ''}
           <button onclick="clPartagerCourse('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(37,99,235,0.1);border:1px solid rgba(37,99,235,0.35);border-radius:6px;color:#2563eb;font-size:12px;font-weight:600;cursor:pointer">📤 Partager</button>
         </div>`;
@@ -17967,6 +17970,8 @@ window.submitClientBooking=async function(){
   } else {
     // Pas de paiement en ligne → on envoie directement au chauffeur/dispatch
     await lancerDispatch();
+    // Partenaire / client en compte : proposer de régler tout de suite par carte.
+    try { if (!isParticulier && newId && cbCurrentPrix > 0) setTimeout(function(){ clProposerCarte(newId, cbCurrentPrix); }, 900); } catch(e) {}
   }
 };
 
@@ -22206,7 +22211,7 @@ function gp(name, btn) {
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('on'));
   const pg=document.getElementById('page-'+name);if(pg)pg.classList.add('on');
   if(btn)btn.classList.add('on');
-  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',transfertsgerants:'Transferts gérants',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres',aiphone:'IA Téléphonique','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert','gerant-agenda':'Mon dispatch','gerant-clients':'Mes clients & tarifs','gerant-facturation':'Ma facturation','gerant-equipe':'Messagerie équipe','gerant-planning':'Mon planning','gerant-pointage':'Pointage & véhicules','gerant-rapports':'Mes rapports','gerant-historique':'Mon historique','gerant-partenaires':'Mes sous-traitants','gerant-parametres':'Mes paramètres',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
+  const titles={dashboard:'Dashboard',dispatch:'Dispatch',planning:'Planning',transfertsgerants:'Transferts gérants',chauffeurs:'Chauffeurs',vehicules:'Véhicules',cartechauffeurs:'Carte chauffeurs',pointage:'Pointage & Véhicules',soustraitants:'Sous-traitants & Partenaires',clients:'Clients',tarifs:'Tarifs',facturation:'Facturation',rapports:'Rapports',comptes:'Comptes Dispatch',historique:'Historique',parametres:'Paramètres',aiphone:'IA Téléphonique','gerant-dashboard':'Mon tableau de bord','gerant-transferts':'Mes transferts','gerant-nouveau':'Nouveau transfert','gerant-agenda':'Mon dispatch','gerant-clients':'Mes clients & tarifs','gerant-facturation':'Ma facturation','gerant-equipe':'Messagerie équipe','gerant-planning':'Mon planning','gerant-pointage':'Pointage & véhicules','gerant-rapports':'Mes rapports','gerant-historique':'Mon historique','gerant-partenaires':'Mes sous-traitants','gerant-parametres':'Mes paramètres','gerant-abo':'Mon abonnement',mescourses:'Mes courses',messagerie:'Messagerie',dirigeant:'Dashboard Dirigeant',reservation:'App Cliente',revenus:'Mes revenus','comptes-clients':'Comptes Clients',clientportal:'Mon espace',clienthistorique:'Historique'};
   document.getElementById('page-title').textContent=titles[name]||name;
   closeMob();
   if(name==='cartechauffeurs') { setTimeout(initCarteChauffeurs, 300); }
@@ -22219,7 +22224,7 @@ function gp(name, btn) {
   if(name==='gerant-clients') { setTimeout(()=>{ try{ renderGerantClients(); }catch(e){} }, 100); }
   if(name==='gerant-facturation') { setTimeout(()=>{ try{ renderGerantFacturation(); }catch(e){} }, 100); }
   if(name==='gerant-equipe') { setTimeout(()=>{ try{ renderGerantEquipe(); }catch(e){} }, 100); }
-  if(/^gerant-(planning|pointage|rapports|historique|partenaires|parametres)$/.test(name)) { setTimeout(()=>{ try{ gPageRendre(name); }catch(e){} }, 100); }
+  if(/^gerant-(planning|pointage|rapports|historique|partenaires|parametres|abo)$/.test(name)) { setTimeout(()=>{ try{ gPageRendre(name); }catch(e){} }, 100); }
   if(name==='gerant-vehicules') { setTimeout(()=>{ try{ renderGerantVehicules(); }catch(e){} }, 200); }
   if(name==='aiphone') { setTimeout(()=>{ try{ mobileaAiPhoneOpen(); }catch(e){} }, 150); }
   if(name==='parametres') { setTimeout(()=>{ try{ renderApiKeys(); }catch(e){} try{ renderClientColors(); }catch(e){} try{ loadDriverTimeout(); }catch(e){} try{ majEtatNotif(); }catch(e){} }, 200); }
@@ -24435,6 +24440,7 @@ function gNavConstruire() {
   if (gOpt('soustraitants')) a.push(gNavBtn('gerant-partenaires', 'fa-handshake', 'Mes sous-traitants'));
   if (gOpt('historique'))    a.push(gNavBtn('gerant-historique', 'fa-history', 'Mon historique'));
   if (gOpt('parametres'))    a.push(gNavBtn('gerant-parametres', 'fa-cog', 'Mes paramètres'));
+  if (G_OPTIONS.some(function(o){ return gOpt(o.k); })) a.push(gNavBtn('gerant-abo', 'fa-credit-card', 'Mon abonnement'));
   a.forEach(function(b){ if (ancre) nav.insertBefore(b, ancre); else nav.appendChild(b); });
   // Les options viennent d'arriver : rafraîchir les pages gérant déjà affichées.
   try {
@@ -24449,7 +24455,7 @@ function gPagesCreer() {
   const ref = document.getElementById('page-gerant-transferts') || document.getElementById('page-mescourses') || document.querySelector('.page');
   const parent = ref ? ref.parentNode : document.querySelector('.main');
   if (!parent) return;
-  [['gerant-agenda','ga-root'],['gerant-clients','gcl-root'],['gerant-facturation','gf-root'],['gerant-equipe','gm-root'],['gerant-planning','gpl-root'],['gerant-pointage','gpt-root'],['gerant-rapports','grp-root'],['gerant-historique','ghi-root'],['gerant-partenaires','gst-root'],['gerant-parametres','gpa-root']].forEach(function(x){
+  [['gerant-agenda','ga-root'],['gerant-clients','gcl-root'],['gerant-facturation','gf-root'],['gerant-equipe','gm-root'],['gerant-planning','gpl-root'],['gerant-pointage','gpt-root'],['gerant-rapports','grp-root'],['gerant-historique','ghi-root'],['gerant-partenaires','gst-root'],['gerant-parametres','gpa-root'],['gerant-abo','gab-root']].forEach(function(x){
     if (document.getElementById('page-' + x[0])) return;
     const d = document.createElement('div');
     d.className = 'page'; d.id = 'page-' + x[0];
@@ -24678,6 +24684,16 @@ async function gAdminOptsEnregistrer(chauffeurId, data, saisie) {
     showToast('⚠️ Options gérant non enregistrées (règles Firebase à mettre à jour ?)', true);
   }
 }
+// Stripe : afficher l'abonnement à l'ouverture, l'aligner après enregistrement.
+const _gAdminOptsOuvrirBase = gAdminOptsOuvrir, _gAdminOptsEnregistrerBase = gAdminOptsEnregistrer;
+gAdminOptsOuvrir = async function(chauffeurId) {
+  await _gAdminOptsOuvrirBase(chauffeurId);
+  try { const c = chauffeurId ? (D.chauffeurs || []).find(function(x){ return x._id === chauffeurId; }) : null; await gabAdminAfficher(c && c.uid ? c.uid : ''); } catch(e) {}
+};
+gAdminOptsEnregistrer = async function(chauffeurId, data, saisie) {
+  await _gAdminOptsEnregistrerBase(chauffeurId, data, saisie);
+  try { const uid = (data && data.uid) || ((D.chauffeurs || []).find(function(x){ return x._id === chauffeurId; }) || {}).uid; if (uid) gabSync(uid); } catch(e) {}
+};
 window.gAdminOptsOuvrir = gAdminOptsOuvrir; window.gAdminOptsLire = gAdminOptsLire; window.gAdminOptsEnregistrer = gAdminOptsEnregistrer;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -26033,10 +26049,219 @@ window.gpaEnregistrer = async function() {
   catch(e) { showToast(gErrServ(e), true); }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  STRIPE — liens de paiement, paiement en ligne des courses, abonnement des
+//  gérants. La clé secrète reste dans le worker « mobilea-stripe » : l'app ne
+//  fait que demander un lien, Stripe héberge la page de paiement.
+// ═══════════════════════════════════════════════════════════════════════════
+const STRIPE_WORKER = 'https://mobilea-stripe.mus-akdogan.workers.dev';
+async function stripeApi(chemin, corps) {
+  let idToken = null;
+  try { idToken = await getAuthToken(); } catch(e) {}
+  if (!idToken) return { error: 'Session expirée — reconnectez-vous' };
+  let r;
+  try {
+    r = await fetch(STRIPE_WORKER + chemin, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(Object.assign({ idToken: idToken }, corps || {})) });
+  } catch(e) { return { error: 'Service de paiement injoignable' }; }
+  let d = null; try { d = await r.json(); } catch(e) {}
+  if (!d) return { error: r.status === 404 ? 'Service de paiement non installé (worker mobilea-stripe)' : 'Service de paiement en erreur (' + r.status + ')' };
+  return d;
+}
+function stripeOuvrir(url) {
+  try { const w = window.open(url, '_blank'); if (w) return; } catch(e) {}
+  try { window.location.href = url; } catch(e) {}
+}
+function stripeCoursePayee(c) { return !c || c.statut === 'payee' || ['paye','payé','en_ligne'].indexOf(c.paiement_statut) >= 0; }
+function stripeTelPropre(t) { let s = String(t || '').replace(/[^\d+]/g, ''); if (s.indexOf('0') === 0 && s.length === 10) s = '+33' + s.slice(1); return s; }
+
+// ── DISPATCH / ADMIN : lien de paiement à envoyer au client ─────────────────
+window.payLien = async function(courseIds, tel, libelle) {
+  const ids = (Array.isArray(courseIds) ? courseIds : [courseIds]).filter(Boolean);
+  if (!ids.length) { showToast('Aucune course à régler', true); return; }
+  showToast('Création du lien de paiement…');
+  const r = await stripeApi('/checkout', { courseIds: ids, libelle: libelle || '' });
+  if (!r || !r.url) { showToast('⚠️ ' + ((r && r.error) || 'Lien de paiement impossible'), true); return; }
+  const montant = new Intl.NumberFormat('fr-FR', { style:'currency', currency:'EUR' }).format(r.montant || 0);
+  const msg = 'Bonjour, voici le lien pour régler ' + (r.nb > 1 ? 'vos ' + r.nb + ' transferts' : 'votre transfert') + ' MOBILEA (' + montant + ') par carte, en paiement sécurisé : ' + r.url;
+  window._payLienMsg = msg; window._payLienUrl = r.url;
+  const t = stripeTelPropre(tel);
+  gSheet('pay-sheet', '💳 Lien de paiement',
+    '<div style="text-align:center;font-size:26px;font-weight:800;margin:4px 0 2px">' + E(montant) + '</div>'
+    + '<div style="text-align:center;font-size:12px;color:#666;margin-bottom:12px">' + r.nb + ' transfert' + (r.nb > 1 ? 's' : '') + ' · le lien n\'expire pas et ne peut être payé qu\'une fois</div>'
+    + '<input type="text" readonly value="' + E(r.url) + '" onclick="this.select()" style="' + G_IN + ';font-size:12px;margin-bottom:12px" aria-label="Lien de paiement">'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +   gBtn('📋 Copier', 'payLienCopier()', '#475569')
+    +   '<a href="https://wa.me/' + E(t.replace('+', '')) + '?text=' + encodeURIComponent(msg) + '" target="_blank" rel="noopener" style="flex:1;min-width:120px;text-align:center;background:#16a34a;color:#fff;border-radius:10px;padding:11px;font-size:14px;font-weight:600;text-decoration:none">WhatsApp</a>'
+    +   '<a href="sms:' + E(t) + '?&body=' + encodeURIComponent(msg) + '" style="flex:1;min-width:120px;text-align:center;background:#2563eb;color:#fff;border-radius:10px;padding:11px;font-size:14px;font-weight:600;text-decoration:none">SMS</a>'
+    + '</div>'
+    + '<div style="font-size:11px;color:#888;margin-top:12px;line-height:1.5">Dès que le client a payé, le transfert passe automatiquement en « payé ».</div>');
+  try { addLog('Lien de paiement créé — ' + montant + ' (' + r.nb + ' course(s))'); } catch(e) {}
+};
+window.payLienCopier = async function() {
+  try { await navigator.clipboard.writeText(window._payLienMsg || window._payLienUrl || ''); showToast('📋 Message et lien copiés'); }
+  catch(e) { showToast('Copie impossible — sélectionnez le lien à la main', true); }
+};
+window.payLienCourse = function(id) {
+  const c = (D.courses || []).find(function(x){ return x._id === id; });
+  if (!c) { showToast('Course introuvable', true); return; }
+  if (stripeCoursePayee(c)) { showToast('Cette course est déjà payée'); return; }
+  if (!(parseFloat(c.prix) > 0)) { showToast('Aucun prix sur cette course', true); return; }
+  window.payLien([id], c.tel || '', c.client || '');
+};
+
+// ── CLIENT / PARTENAIRE : payer ses courses par carte ───────────────────────
+function stripeMesCoursesAPayer() {
+  return (D.courses || []).filter(function(c){ return c && !stripeCoursePayee(c) && parseFloat(c.prix) > 0 && ['annulee','noshow'].indexOf(c.statut) < 0; });
+}
+window.clPayerCourse = function(id) {
+  const c = (D.courses || []).find(function(x){ return x._id === id; });
+  if (!c) return;
+  const autres = stripeMesCoursesAPayer().filter(function(x){ return x._id !== id; });
+  const eur = function(n){ return new Intl.NumberFormat('fr-FR', { style:'currency', currency:'EUR' }).format(n || 0); };
+  if (!autres.length) { window.clPayerIds([id]); return; }
+  const total = autres.reduce(function(s, x){ return s + (parseFloat(x.prix) || 0); }, parseFloat(c.prix) || 0);
+  window._clPayIds = [id].concat(autres.map(function(x){ return x._id; }));
+  gSheet('pay-sheet', '💳 Payer par carte',
+    '<div style="font-size:13px;color:#555;margin-bottom:14px">Vous avez ' + (autres.length + 1) + ' transferts à régler.</div>'
+    + '<div style="display:flex;flex-direction:column;gap:10px">'
+    + gBtn('Payer ce transfert — ' + eur(parseFloat(c.prix) || 0), 'clPayerIds([\'' + id + '\'])', '#2563eb', true)
+    + gBtn('Tout régler — ' + eur(total) + ' (' + (autres.length + 1) + ' transferts)', 'clPayerIds(window._clPayIds)', '#16a34a', true)
+    + '</div><div style="font-size:11px;color:#888;margin-top:12px;text-align:center">🔒 Paiement sécurisé par Stripe</div>');
+};
+window.clPayerIds = async function(ids) {
+  try { gSheetFermer('pay-sheet'); } catch(e) {}
+  showToast('Ouverture du paiement sécurisé…');
+  const r = await stripeApi('/checkout', { courseIds: ids });
+  if (!r || !r.url) { showToast('⚠️ ' + ((r && r.error) || 'Paiement indisponible'), true); return; }
+  stripeOuvrir(r.url);
+};
+// Après une réservation « sur facture » (partenaire) : proposer la carte.
+window.clProposerCarte = function(courseId, montant) {
+  if (!courseId || !(montant > 0)) return;
+  const eur = new Intl.NumberFormat('fr-FR', { style:'currency', currency:'EUR' }).format(montant);
+  gSheet('pay-sheet', 'Réservation enregistrée ✓',
+    '<div style="font-size:14px;color:#333;margin-bottom:14px;line-height:1.5">Votre transfert est bien enregistré. Vous pouvez le régler tout de suite par carte, ou le laisser sur votre facture.</div>'
+    + '<div style="display:flex;flex-direction:column;gap:10px">'
+    + gBtn('💳 Payer maintenant par carte — ' + eur, 'clPayerIds([\'' + courseId + '\'])', '#16a34a', true)
+    + gBtn('Sur facture (plus tard)', 'gSheetFermer(\'pay-sheet\')', '#64748b', true)
+    + '</div><div style="font-size:11px;color:#888;margin-top:12px;text-align:center">🔒 Paiement sécurisé par Stripe</div>');
+};
+
+// ── ABONNEMENT DES GÉRANTS ──────────────────────────────────────────────────
+const GAB = { tarifs: {}, abo: null, abos: {} };
+function gabTotal(opts, tarifs) {
+  let t = 0; const lignes = [];
+  G_OPTIONS.forEach(function(o){ if (opts && opts[o.k] === true) { const p = parseFloat(tarifs && tarifs[o.k]) || 0; lignes.push({ o:o, prix:p }); t += p; } });
+  return { total: Math.round(t * 100) / 100, lignes: lignes };
+}
+function gabStatutHtml(abo, total) {
+  if (!(total > 0)) return '<span style="color:#6b7280">Gratuit — aucune option payante</span>';
+  if (!abo || !abo.statut) return '<span style="color:#b45309;font-weight:700">⏳ Non souscrit</span>';
+  const d = function(x){ try { return new Date(x).toLocaleDateString('fr-FR'); } catch(e) { return ''; } };
+  if (abo.statut === 'actif') return '<span style="color:#15803d;font-weight:700">✅ Actif</span>' + (abo.dernierPaiement ? ' · payé le ' + d(abo.dernierPaiement) : '') + (abo.prochaineEcheance ? ' · prochaine échéance ' + d(abo.prochaineEcheance) : '')
+    + (Math.abs((parseFloat(abo.montant) || 0) - total) > 0.009 ? '<br><span style="color:#b45309">Montant prélevé : ' + gEur(abo.montant) + ' — sera aligné à la prochaine échéance</span>' : '');
+  if (abo.statut === 'impaye') return '<span style="color:#dc2626;font-weight:800">⚠️ IMPAYÉ</span>' + (abo.impayeLe ? ' depuis le ' + d(abo.impayeLe) : '');
+  if (abo.statut === 'resilie') return '<span style="color:#dc2626;font-weight:700">Résilié</span>';
+  return E(abo.statut);
+}
+// Admin : état de l'abonnement dans la fiche du gérant + réglage des prix
+async function gabAdminAfficher(uid) {
+  const bloc = document.getElementById('g-admin-opts'); if (!bloc) return;
+  let z = document.getElementById('g-admin-abo');
+  if (!z) { z = document.createElement('div'); z.id = 'g-admin-abo'; z.style.cssText = 'margin-top:10px;padding:10px;background:#fff;border:1px solid #e9d5ff;border-radius:8px;font-size:12px;color:#374151;line-height:1.6'; bloc.appendChild(z); }
+  if (!(SESSION && SESSION.role === 'admin')) { z.style.display = 'none'; return; }
+  z.style.display = ''; z.dataset.uid = uid || '';
+  z.innerHTML = 'Abonnement : chargement…';
+  try { GAB.tarifs = await gRest('GET', 'gerant_abo_tarifs') || {}; } catch(e) { GAB.tarifs = {}; }
+  let abo = null; if (uid) { try { abo = await gRest('GET', 'gerant_abos/' + uid); } catch(e) {} }
+  z.dataset.abo = JSON.stringify(abo || {});
+  gabAdminMaj();
+  G_OPTIONS.forEach(function(o){ const cb = document.getElementById('ch-gopt-' + o.k); if (cb && !cb.dataset.gab) { cb.dataset.gab = '1'; cb.addEventListener('change', gabAdminMaj); } });
+}
+function gabAdminMaj() {
+  const z = document.getElementById('g-admin-abo'); if (!z || z.style.display === 'none') return;
+  const opts = {}; G_OPTIONS.forEach(function(o){ const cb = document.getElementById('ch-gopt-' + o.k); opts[o.k] = !!(cb && cb.checked); });
+  const t = gabTotal(opts, GAB.tarifs);
+  let abo = {}; try { abo = JSON.parse(z.dataset.abo || '{}'); } catch(e) {}
+  z.innerHTML = '<div style="font-weight:800;color:#6b21a8;margin-bottom:2px">💳 Abonnement mensuel (Stripe)</div>'
+    + '<div>Total des options cochées : <b>' + gEur(t.total) + ' / mois</b></div>'
+    + '<div>' + gabStatutHtml(abo, t.total) + '</div>'
+    + '<button type="button" class="btn btn-ghost btn-xs" style="margin-top:6px" onclick="gabPrixOuvrir()"><i class="fas fa-euro-sign"></i> Prix des options (tous les gérants)</button>';
+}
+window.gabPrixOuvrir = function() {
+  if (!(SESSION && SESSION.role === 'admin')) { showToast('Réservé à l\'administrateur', true); return; }
+  gSheet('gab-sheet', '💶 Prix mensuel des options',
+    '<div style="font-size:12px;color:#555;margin-bottom:10px">Prix en € TTC par mois, communs à tous les gérants. 0 = option gratuite. L\'abonnement d\'un gérant = la somme des options que vous lui avez cochées.</div>'
+    + G_OPTIONS.map(function(o){ return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid #eee"><span style="flex:1;font-size:13px;color:' + o.coul + ';font-weight:600">' + o.ico + ' ' + o.label + '</span>'
+        + '<input type="number" id="gab-p-' + o.k + '" min="0" step="0.01" inputmode="decimal" value="' + (parseFloat(GAB.tarifs[o.k]) > 0 ? E(String(GAB.tarifs[o.k])) : '') + '" placeholder="0" aria-label="Prix ' + E(o.label) + '" style="' + G_IN + ';width:96px;text-align:right"></div>'; }).join('')
+    + '<div style="margin-top:14px">' + gBtn('💾 Enregistrer les prix', 'gabPrixEnregistrer()', '#16a34a', true) + '</div>'
+    + '<div style="font-size:11px;color:#888;margin-top:10px">Un changement de prix s\'applique aux nouveaux abonnements. Pour un gérant déjà abonné, rouvrez sa fiche et enregistrez : son abonnement sera aligné à la prochaine échéance.</div>');
+};
+window.gabPrixEnregistrer = async function() {
+  if (!(SESSION && SESSION.role === 'admin')) return;
+  const data = {}; G_OPTIONS.forEach(function(o){ const v = Math.max(0, parseFloat(String(gVal('gab-p-' + o.k)).replace(',', '.')) || 0); data[o.k] = Math.round(v * 100) / 100; });
+  try { await gRest('PUT', 'gerant_abo_tarifs', data); GAB.tarifs = data; gSheetFermer('gab-sheet'); showToast('✅ Prix des options enregistrés'); gabAdminMaj(); }
+  catch(e) { showToast('⚠️ Enregistrement refusé (règles Firebase à publier ?)', true); }
+};
+// Admin : après avoir enregistré les options d'un gérant, aligner son abonnement.
+async function gabSync(uid) {
+  if (!uid || !(SESSION && SESSION.role === 'admin')) return;
+  try {
+    const r = await stripeApi('/abo-sync', { uid: uid });
+    if (r && r.resilie) showToast('Abonnement Stripe du gérant résilié (plus d\'option payante)');
+    else if (r && r.montant) showToast('Abonnement du gérant mis à jour : ' + gEur(r.montant) + ' / mois');
+  } catch(e) {}
+}
+// Admin : alerte s'il y a des abonnements impayés
+async function gabAlerteAdmin() {
+  if (!(SESSION && SESSION.role === 'admin')) return;
+  try {
+    const abos = await gRest('GET', 'gerant_abos') || {};
+    GAB.abos = abos;
+    const imp = Object.keys(abos).filter(function(u){ return abos[u] && abos[u].statut === 'impaye'; });
+    if (!imp.length) return;
+    const noms = imp.map(function(u){ const c = (D.chauffeurs || []).find(function(x){ return x.uid === u; }); return c ? ((c.prenom || '') + ' ' + (c.nom || '')).trim() : 'un gérant'; });
+    showToast('⚠️ Abonnement impayé : ' + noms.join(', '), true);
+  } catch(e) {}
+}
+// Gérant : page « Mon abonnement »
+window.renderGerantAbo = async function() {
+  const root = document.getElementById('gab-root'); if (!root) return;
+  gCharg(root);
+  const uid = gUid();
+  try { GAB.tarifs = await gRest('GET', 'gerant_abo_tarifs') || {}; } catch(e) { GAB.tarifs = {}; }
+  try { GAB.abo = uid ? await gRest('GET', 'gerant_abos/' + uid) : null; } catch(e) { GAB.abo = null; }
+  const t = gabTotal(window._gOpts || {}, GAB.tarifs), abo = GAB.abo || {};
+  const actif = abo.statut === 'actif';
+  root.innerHTML = gCarte('<div style="font-size:13px;font-weight:700;color:var(--white);margin-bottom:8px">Mes options</div>'
+      + (t.lignes.length ? t.lignes.map(function(l){ return '<div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid var(--border2);font-size:13px;color:var(--white)"><span>' + l.o.ico + ' ' + E(l.o.label) + '</span><span style="white-space:nowrap;color:' + (l.prix > 0 ? 'var(--white)' : 'var(--muted)') + '">' + (l.prix > 0 ? gEur(l.prix) : 'Inclus') + '</span></div>'; }).join('')
+        : '<div style="font-size:13px;color:var(--muted)">Aucune option activée par l\'administrateur.</div>')
+      + '<div style="display:flex;justify-content:space-between;padding:10px 0 0;margin-top:4px;border-top:2px solid var(--border2);font-size:15px;font-weight:800;color:var(--white)"><span>Total</span><span>' + gEur(t.total) + ' / mois</span></div>')
+    + gCarte('<div style="font-size:13px;font-weight:700;color:var(--white);margin-bottom:6px">Mon abonnement</div>'
+      + '<div style="font-size:13px;color:var(--white);line-height:1.6">' + gabStatutHtml(abo, t.total) + '</div>'
+      + ((t.total > 0 && !actif) ? '<div style="margin-top:12px">' + gBtn(abo.statut === 'impaye' ? '💳 Régulariser mon abonnement — ' + gEur(t.total) + ' / mois' : '💳 S\'abonner par carte — ' + gEur(t.total) + ' / mois', 'gabSouscrire()', '#16a34a', true) + '</div>' : '')
+      + '<div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5">🔒 Paiement sécurisé par Stripe, prélevé chaque mois sur votre carte. Pour modifier vos options ou résilier, contactez MOBILEA.</div>');
+};
+window.gabSouscrire = async function() {
+  showToast('Ouverture du paiement sécurisé…');
+  const r = await stripeApi('/abo-checkout', {});
+  if (!r || !r.url) { showToast('⚠️ ' + ((r && r.error) || 'Abonnement indisponible'), true); return; }
+  stripeOuvrir(r.url);
+};
+
+// Admin : vérifier une fois, après le démarrage, s'il y a des abonnements impayés.
+setTimeout(function gabVerifier(){
+  try {
+    if (window._gabVu) return;
+    if (typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'admin' && (D.chauffeurs || []).length) { window._gabVu = 1; gabAlerteAdmin(); return; }
+  } catch(e) {}
+  setTimeout(gabVerifier, 6000);
+}, 8000);
+
 // Aiguillage des nouvelles pages (appelé par le routeur gp)
 window.gPageRendre = function(name) {
   const f = { 'gerant-planning': window.renderGerantPlanning, 'gerant-pointage': window.renderGerantPointage, 'gerant-rapports': window.renderGerantRapports,
-    'gerant-historique': window.renderGerantHistorique, 'gerant-partenaires': window.renderGerantPartenaires, 'gerant-parametres': window.renderGerantParametres }[name];
+    'gerant-historique': window.renderGerantHistorique, 'gerant-partenaires': window.renderGerantPartenaires, 'gerant-parametres': window.renderGerantParametres, 'gerant-abo': window.renderGerantAbo }[name];
   if (f) { try { f(); } catch(e) { console.warn(name, e); } }
 };
 
