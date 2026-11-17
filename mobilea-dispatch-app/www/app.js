@@ -4403,9 +4403,25 @@ function renderAgenda() {
     }).join('');
   }
 
-  // Courses du jour triées par heure
-  const toutesCourses = D.courses.filter(c=>c.datetime&&c.datetime.startsWith(selStr))
-    .sort((a,b)=>a.datetime.localeCompare(b.datetime));
+  // ★ RECHERCHE : chauffeur, client ou passager (nom, prénom, morceau de nom).
+  // Quand un texte est saisi, on cherche sur TOUTES les dates (pas seulement le
+  // jour affiché) : à venir d'abord (du plus proche au plus lointain), puis les
+  // transferts passés (du plus récent au plus ancien).
+  const _rq = agendaNormRech(window.agendaRecherche || '');
+  let toutesCourses;
+  if (_rq) {
+    const mots = _rq.split(' ').filter(Boolean);
+    const auj = new Date(); auj.setMinutes(auj.getMinutes() - auj.getTimezoneOffset());
+    const aujStr = auj.toISOString().slice(0,10);
+    const trouvees = D.courses.filter(c => c && c.datetime && agendaCourseCorrespond(c, mots));
+    const aVenir = trouvees.filter(c => c.datetime.slice(0,10) >= aujStr).sort((a,b)=>a.datetime.localeCompare(b.datetime));
+    const passees = trouvees.filter(c => c.datetime.slice(0,10) < aujStr).sort((a,b)=>b.datetime.localeCompare(a.datetime));
+    toutesCourses = aVenir.concat(passees).slice(0, 300);
+    window._agendaRechPassesDes = aVenir.length;
+  } else {
+    toutesCourses = D.courses.filter(c=>c.datetime&&c.datetime.startsWith(selStr))
+      .sort((a,b)=>a.datetime.localeCompare(b.datetime));
+  }
 
   // Filtre "Non attribués" (toggle via le bouton à côté du compteur)
   const filtreNonAttribue = !!window.agendaFiltreNonAttribue;
@@ -4418,7 +4434,9 @@ function renderAgenda() {
 
   const cnt = document.getElementById('agenda-cnt');
   if(cnt) {
-    if (filtreNonAttribue) {
+    if (_rq) {
+      cnt.textContent = `${courses.length} résultat${courses.length!==1?'s':''}` + (filtreNonAttribue ? ' à attribuer' : '');
+    } else if (filtreNonAttribue) {
       cnt.textContent = `${courses.length} / ${nbTotal} à attribuer`;
     } else {
       cnt.textContent = `${nbTotal} course${nbTotal!==1?'s':''}`;
@@ -4453,6 +4471,38 @@ function renderAgenda() {
     if (filterBtn) filterBtn.insertAdjacentElement('afterend', btnDel);
     else cnt.insertAdjacentElement('afterend', btnDel);
   }
+  // ★ Barre de RECHERCHE (injectée une seule fois, à côté de « Supprimer »).
+  // Elle n'est jamais redessinée : le clavier reste ouvert pendant la saisie.
+  if (cnt && !document.getElementById('agenda-search-wrap')) {
+    const w = document.createElement('div');
+    w.id = 'agenda-search-wrap';
+    w.style.cssText = 'position:relative;flex:1 1 240px;min-width:200px;max-width:420px;margin-left:4px';
+    w.innerHTML = '<i class="fas fa-search" aria-hidden="true" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px;pointer-events:none"></i>'
+      + '<input type="text" enterkeyhint="search" id="agenda-search" placeholder="Chauffeur, client ou passager…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" maxlength="80" aria-label="Rechercher un chauffeur, un client ou un passager"'
+      + ' style="width:100%;box-sizing:border-box;padding:8px 34px 8px 34px;border:1px solid var(--border2);border-radius:8px;background:var(--card);color:var(--white);font-size:16px;outline:none">'
+      + '<button type="button" id="agenda-search-clear" aria-label="Effacer la recherche" style="display:none;position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);font-size:16px;padding:6px 8px;cursor:pointer">✕</button>';
+    const ancre = document.getElementById('agenda-delete-btn') || document.getElementById('agenda-filter-btn') || cnt;
+    ancre.insertAdjacentElement('afterend', w);
+    const inp = w.querySelector('#agenda-search'), clr = w.querySelector('#agenda-search-clear');
+    inp.value = window.agendaRecherche || '';
+    let _t = null;
+    const lancer = function(){
+      window.agendaRecherche = inp.value;
+      clr.style.display = inp.value ? '' : 'none';
+      clearTimeout(_t);
+      _t = setTimeout(function(){ try { renderAgenda(); } catch(e){ console.warn(e); } }, 150);
+    };
+    inp.addEventListener('input', lancer);
+    inp.addEventListener('keydown', function(e){ if (e.key === 'Escape') { inp.value = ''; lancer(); } });
+    clr.addEventListener('click', function(){ inp.value = ''; lancer(); inp.focus(); });
+    clr.style.display = inp.value ? '' : 'none';
+  }
+  // Pendant une recherche, la semaine et les flèches ne filtrent plus : on le montre.
+  try {
+    const wk = document.getElementById('agenda-week-strip');
+    if (wk) wk.style.opacity = _rq ? '0.35' : '';
+  } catch(e){}
+
   // Mise à jour du texte et style du bouton (reflet de l'état)
   const btnF = document.getElementById('agenda-filter-btn');
   if (btnF) {
@@ -4475,6 +4525,15 @@ function renderAgenda() {
   const list = document.getElementById('agenda-list');
   if(!list) return;
 
+  if(!courses.length && _rq) {
+    list.innerHTML = `<div style="text-align:center;padding:50px 20px;color:var(--muted)">
+      <i class="fas fa-search" style="font-size:40px;opacity:0.3;display:block;margin-bottom:12px"></i>
+      <div style="font-family:'Inter',sans-serif;font-size:16px;font-weight:700;margin-bottom:4px">Aucun transfert trouvé</div>
+      <div style="font-size:13px">pour « ${E(window.agendaRecherche||'')} »${filtreNonAttribue?' parmi les transferts à attribuer':''}</div>
+      <button class="btn btn-ghost btn-sm" style="margin-top:16px" onclick="agendaRechercheEffacer()"><i class="fas fa-times"></i> Effacer la recherche</button>
+    </div>`;
+    return;
+  }
   if(!courses.length) {
     list.innerHTML = `<div style="text-align:center;padding:60px 20px;color:var(--muted)">
       <i class="fas fa-calendar-check" style="font-size:48px;opacity:0.3;display:block;margin-bottom:12px"></i>
@@ -4517,7 +4576,20 @@ function renderAgenda() {
   </div>`;
 
   // Style Google Agenda — blocs colorés pleins, empilés
-  list.innerHTML = legendHtml + courses.map(c => {
+  let _jourPrec = '';
+  list.innerHTML = legendHtml + courses.map((c, _i) => {
+   let _entete = '';
+   if (_rq) {
+     const j = (c.datetime||'').slice(0,10);
+     if (_i === (window._agendaRechPassesDes||0) && _i > 0) _entete += '<div style="margin:18px 0 6px;font-size:12px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;border-top:1px solid var(--border2);padding-top:12px">Transferts passés</div>';
+     if (j !== _jourPrec) {
+       _jourPrec = j;
+       let lib = j;
+       try { lib = new Date(j + 'T12:00:00').toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', year:'numeric' }); } catch(e){}
+       _entete += '<div style="margin:12px 0 6px;font-size:13px;font-weight:700;color:var(--white);text-transform:capitalize">' + E(lib) + '</div>';
+     }
+   }
+   return _entete + (function(){
    try {
     const color = getClientColor(c.client, c);
     const time = c.datetime?.slice(11,16)||'—';
@@ -4572,8 +4644,33 @@ function renderAgenda() {
       <div style="font-size:12px;opacity:0.85;margin-top:3px">${E((c&&c.datetime)||'')} · ${E((c&&c.chauffeur)||'À assigner')}</div>
     </div>`;
    }
+   })();
   }).join('');
 }
+
+// ── Recherche dans le dispatch ──────────────────────────────────────────────
+// Sans accents, sans majuscules, ponctuation remplacée par des espaces.
+function agendaNormRech(s) {
+  return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+}
+// Une course correspond si CHAQUE mot tapé se retrouve dans le chauffeur, le
+// client ou un passager (« dup mar » trouve « Marc Dupuis »).
+function agendaCourseCorrespond(c, mots) {
+  const t = [c.chauffeur, c.extChauffeurNom, c.client, c.passager, c.nomClient, c.createdByClient];
+  (c.passagers || []).forEach(function(p){ if (p) t.push(p.prenom, p.nom); });
+  if (c.chauffeurId && Array.isArray(D.chauffeurs)) {
+    const ch = D.chauffeurs.find(function(x){ return x._id === c.chauffeurId; });
+    if (ch) t.push(ch.prenom, ch.nom);
+  }
+  const txt = ' ' + agendaNormRech(t.filter(function(x){ return typeof x === 'string' && x; }).join(' ')) + ' ';
+  return mots.every(function(m){ return txt.indexOf(m) >= 0; });
+}
+window.agendaRechercheEffacer = function() {
+  window.agendaRecherche = '';
+  const i = document.getElementById('agenda-search'); if (i) i.value = '';
+  const x = document.getElementById('agenda-search-clear'); if (x) x.style.display = 'none';
+  try { renderAgenda(); } catch(e){}
+};
 
 
 
