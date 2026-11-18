@@ -746,6 +746,7 @@ function startChauffeursListener() {
         const me = arr.find(x => x._id === SESSION.chauffeurId)
                 || arr.find(x => (x.prenom+(x.nom?' '+x.nom:'')) === SESSION.name);
         if(me) SESSION.pointeuse = (me.pointeuse === true);
+        if(me) { try { chDroitsSync(me); } catch(e){} }
         if(typeof renderMesCourses === 'function') { try { renderMesCourses(); } catch(e){} }
         if(typeof renderMaJournee === 'function') { try { renderMaJournee(); } catch(e){} }
       }
@@ -7464,9 +7465,19 @@ window.saveChauffeur = async function() {
   // Rattacher l'UID Firebase à la fiche si le worker vient de le fournir
   // (création/màj de compte). Sert aux règles de sécurité et au filtrage.
   if(window._nouvelUidChauffeur) { data.uid = window._nouvelUidChauffeur; window._nouvelUidChauffeur = null; }
+  // ★ Cohérence des droits : « Gérant » et « Transferts & tableau de bord »
+  // concernent la SOCIÉTÉ d'un sous-traitant. Si « Sous-traitant » est décoché,
+  // ces cases sont cachées : on ne garde pas un droit invisible.
+  if (!data.soustraitant) { data.gerant = false; data.gerantPro = false; }
+  if ((data.gerant || data.gerantPro) && !String(data.soc_nom || '').trim()) {
+    showToast('Indiquez le nom de la société de ce gérant (partie « Sous-traitant »)', true);
+    return;
+  }
   // Options de l'espace privé du gérant (lues AVANT de fermer la fenêtre).
   let _gOptsSaisie = null;
   try { _gOptsSaisie = gAdminOptsLire(); } catch(e){}
+  // Pas gérant → aucune option privée (elles sont retirées, l'abonnement s'arrête).
+  if (_gOptsSaisie && !data.gerant) { Object.keys(_gOptsSaisie).forEach(function(k){ _gOptsSaisie[k] = false; }); }
   closeMo('chauffeur');
   if(editId) {
     const avant = (D.chauffeurs||[]).find(x => x._id === editId) || null;
@@ -14254,8 +14265,7 @@ function startMsgRefresh() {
           const me = allCh.find(x=>x._id===SESSION.chauffeurId);
           if(me && (me.archived === true || me.forceLogout === true)) {
             clearInterval(window._driverWatchInterval); window._driverWatchInterval = null;
-            alert('Votre compte a été désactivé par un administrateur. Vous allez être déconnecté.');
-            doLogout();
+            chDeconnexionForcee('Votre compte a été désactivé par un administrateur.');
             return;
           }
         } catch(e){}
@@ -26277,7 +26287,8 @@ async function gabAdminAfficher(uid) {
 }
 function gabAdminMaj() {
   const z = document.getElementById('g-admin-abo'); if (!z || z.style.display === 'none') return;
-  const opts = {}; G_OPTIONS.forEach(function(o){ const cb = document.getElementById('ch-gopt-' + o.k); opts[o.k] = !!(cb && cb.checked); });
+  let ger = true; try { ger = chDroitsEtat().ger; } catch(e){}
+  const opts = {}; G_OPTIONS.forEach(function(o){ const cb = document.getElementById('ch-gopt-' + o.k); opts[o.k] = ger && !!(cb && cb.checked); });
   const t = gabTotal(opts, GAB.tarifs);
   let abo = {}; try { abo = JSON.parse(z.dataset.abo || '{}'); } catch(e) {}
   z.innerHTML = '<div style="font-weight:800;color:#6b21a8;margin-bottom:2px">💳 Abonnement mensuel (Stripe)</div>'
@@ -26290,15 +26301,30 @@ window.gabPrixOuvrir = function() {
   gSheet('gab-sheet', '💶 Prix mensuel des options',
     '<div style="font-size:12px;color:#555;margin-bottom:10px">Prix en € TTC par mois, communs à tous les gérants. 0 = option gratuite. L\'abonnement d\'un gérant = la somme des options que vous lui avez cochées.</div>'
     + G_OPTIONS.map(function(o){ return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid #eee"><span style="flex:1;font-size:13px;color:' + o.coul + ';font-weight:600">' + o.ico + ' ' + o.label + '</span>'
-        + '<input type="number" id="gab-p-' + o.k + '" min="0" step="0.01" inputmode="decimal" value="' + (parseFloat(GAB.tarifs[o.k]) > 0 ? E(String(GAB.tarifs[o.k])) : '') + '" placeholder="0" aria-label="Prix ' + E(o.label) + '" style="' + G_IN + ';width:96px;text-align:right"></div>'; }).join('')
+        + '<input type="text" id="gab-p-' + o.k + '" inputmode="decimal" autocomplete="off" value="' + (parseFloat(GAB.tarifs[o.k]) > 0 ? E(String(GAB.tarifs[o.k])) : '') + '" placeholder="0" aria-label="Prix ' + E(o.label) + '" style="' + G_IN + ';width:96px;text-align:right"></div>'; }).join('')
+    + '<div id="gab-err" style="display:none;margin-top:12px;padding:10px 12px;border-radius:10px;background:#fee2e2;color:#991b1b;font-size:13px;font-weight:600"></div>'
     + '<div style="margin-top:14px">' + gBtn('💾 Enregistrer les prix', 'gabPrixEnregistrer()', '#16a34a', true) + '</div>'
     + '<div style="font-size:11px;color:#888;margin-top:10px">Un changement de prix s\'applique aux nouveaux abonnements. Pour un gérant déjà abonné, rouvrez sa fiche et enregistrez : son abonnement sera aligné à la prochaine échéance.</div>');
 };
 window.gabPrixEnregistrer = async function() {
   if (!(SESSION && SESSION.role === 'admin')) return;
-  const data = {}; G_OPTIONS.forEach(function(o){ const v = Math.max(0, parseFloat(String(gVal('gab-p-' + o.k)).replace(',', '.')) || 0); data[o.k] = Math.round(v * 100) / 100; });
+  const err = document.getElementById('gab-err');
+  const montrer = function(m){ if (err) { err.textContent = m; err.style.display = 'block'; } else showToast(m, true); };
+  const data = {}; let mauvais = '';
+  G_OPTIONS.forEach(function(o){
+    const brut = String(gVal('gab-p-' + o.k) || '').trim().replace(',', '.');
+    const v = brut === '' ? 0 : parseFloat(brut);
+    if (isNaN(v) || v < 0 || v > 10000) { mauvais = o.label; return; }
+    data[o.k] = Math.round(v * 100) / 100;
+  });
+  if (mauvais) { montrer('Prix invalide pour « ' + mauvais + ' » (nombre entre 0 et 10 000).'); return; }
   try { await gRest('PUT', 'gerant_abo_tarifs', data); GAB.tarifs = data; gSheetFermer('gab-sheet'); showToast('✅ Prix des options enregistrés'); gabAdminMaj(); }
-  catch(e) { showToast('⚠️ Enregistrement refusé (règles Firebase à publier ?)', true); }
+  catch(e) {
+    const st = e && e.status;
+    montrer((st === 401 || st === 403)
+      ? '⚠️ Refusé par Firebase (code ' + st + ') : les règles de sécurité en ligne ne connaissent pas encore les prix d\'abonnement. Publiez le fichier firebase-rules-securite-etape1.json, puis réessayez.'
+      : '⚠️ Enregistrement impossible' + (st ? ' (code ' + st + ')' : ' (connexion ?)') + '. Réessayez.');
+  }
 };
 // Admin : après avoir enregistré les options d'un gérant, aligner son abonnement.
 async function gabSync(uid) {
@@ -26511,3 +26537,176 @@ async function gChauffeurLienGerant() {
 }
 // Vérification périodique des nouveaux messages du gérant (léger : 1 lecture / 2 min).
 setInterval(function(){ try { if (window._gGerantLien && !document.getElementById('gm-sheet') && document.visibilityState === 'visible') gChauffeurLienGerant(); } catch(e) {} }, 120000);
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  DROITS DU CHAUFFEUR / GÉRANT — logique de la fiche + application immédiate
+// ═══════════════════════════════════════════════════════════════════════════
+// Les erreurs doivent rester visibles au-dessus des fenêtres (sinon un refus
+// d'enregistrement passait inaperçu derrière la fenêtre « Prix des options »).
+(function(){ try { const st = document.createElement('style'); st.textContent = '.toast{z-index:1000001 !important}'; document.head.appendChild(st); } catch(e){} })();
+
+const CH_MENUS_PRO = ['ch-menu-tableaubord','ch-menu-nouveautransfert','ch-menu-mestransferts','ch-menu-cartechauffeurs'];
+const CH_MENUS_GER = ['ch-menu-meschauffeurs','ch-menu-mesvehicules'];
+
+// Fiche chauffeur (admin) : 1) les réglages valables pour TOUS les chauffeurs
+// (pointeuse, prioritaire, menus) étaient cachés dans la partie « sous-traitant »
+// → on les sort de cette partie ; 2) les textes décrivent ce que fait vraiment
+// chaque case ; 3) une case qui dépend d'une autre est grisée tant que l'autre
+// n'est pas cochée.
+function chDroitsInit() {
+  const soc = document.getElementById('ch-societe-fields'); if (!soc) return;
+  let communs = document.getElementById('ch-droits-communs');
+  if (!communs) {
+    communs = document.createElement('div');
+    communs.id = 'ch-droits-communs';
+    communs.style.cssText = 'margin-top:12px';
+    const st = document.getElementById('ch-soustraitant');
+    const ancre = soc;
+    ancre.insertAdjacentElement('afterend', communs);
+    const lab = function(id){ const el = document.getElementById(id); return el ? el.closest('label') : null; };
+    const aDeplacer = [lab('ch-pointeuse'), lab('ch-prioritaire')];
+    const premierMenu = lab('ch-menu-mescourses');
+    if (premierMenu && premierMenu.previousElementSibling && /MENUS ACCESSIBLES/i.test(premierMenu.previousElementSibling.textContent || '')) aDeplacer.push(premierMenu.previousElementSibling);
+    ['ch-menu-mescourses','ch-menu-mesrevenus','ch-menu-messagerie'].concat(CH_MENUS_PRO, CH_MENUS_GER).forEach(function(id){ aDeplacer.push(lab(id)); });
+    aDeplacer.forEach(function(n){ if (n && soc.contains(n)) communs.appendChild(n); });
+    // Textes exacts
+    const desc = function(id, html){ const l = lab(id); const d = l ? l.querySelector('div > div:nth-child(2)') : null; if (d) d.innerHTML = html; };
+    desc('ch-gerant', 'Débloque <b>Mes chauffeurs</b> et <b>Mes véhicules</b> (sa société) et l\'<b>Espace privé du gérant</b> ci-dessous. Pour le tableau de bord, les nouveaux transferts et la carte, cochez aussi « Transferts &amp; tableau de bord ».');
+    desc('ch-gerant-pro', 'Débloque : Mon tableau de bord (CA de sa société), Nouveau transfert (à ses chauffeurs ou au réseau), Mes transferts et Carte de ses chauffeurs. Possible sans être « Gérant ».');
+    desc('ch-menu-tableaubord', 'Visible seulement si « Transferts &amp; tableau de bord » est coché. CA de sa société.');
+    desc('ch-menu-nouveautransfert', 'Visible seulement si « Transferts &amp; tableau de bord » est coché.');
+    desc('ch-menu-mestransferts', 'Visible seulement si « Transferts &amp; tableau de bord » est coché.');
+    desc('ch-menu-cartechauffeurs', 'Visible seulement si « Transferts &amp; tableau de bord » est coché. Position des chauffeurs de sa société.');
+    desc('ch-menu-meschauffeurs', 'Visible seulement si « Gérant de la société » est coché. Liste de ses chauffeurs (l\'ajout dépend de l\'option privée « Ajouter des chauffeurs »).');
+    desc('ch-menu-mesvehicules', 'Visible seulement si « Gérant de la société » est coché. Liste de ses véhicules (l\'ajout dépend de l\'option privée « Ajouter des véhicules »).');
+    ['ch-soustraitant','ch-gerant','ch-gerant-pro','ch-soc-nom','ch-soc-select'].forEach(function(id){
+      const el = document.getElementById(id);
+      if (el && !el.dataset.droits) { el.dataset.droits = '1'; el.addEventListener('change', chDroitsMaj); el.addEventListener('input', chDroitsMaj); }
+    });
+    if (st) st.addEventListener('click', function(){ setTimeout(chDroitsMaj, 0); });
+  }
+  chDroitsMaj();
+}
+function chDroitsEtat() {
+  const v = function(id){ const e = document.getElementById(id); return !!(e && e.checked); };
+  const sous = v('ch-soustraitant');
+  return { sous: sous, ger: sous && v('ch-gerant'), pro: sous && v('ch-gerant-pro') };
+}
+function chDroitsMaj() {
+  const e = chDroitsEtat();
+  const griser = function(id, actif, raison){
+    const inp = document.getElementById(id); if (!inp) return;
+    const l = inp.closest('label'); if (!l) return;
+    inp.disabled = !actif;
+    l.style.opacity = actif ? '' : '0.45';
+    l.style.cursor = actif ? 'pointer' : 'not-allowed';
+    l.title = actif ? '' : raison;
+  };
+  CH_MENUS_PRO.forEach(function(id){ griser(id, e.pro, 'Cochez d\'abord « Sous-traitant » puis « Transferts & tableau de bord »'); });
+  CH_MENUS_GER.forEach(function(id){ griser(id, e.ger, 'Cochez d\'abord « Sous-traitant » puis « Gérant de la société »'); });
+  // Options de l'espace privé : uniquement pour un gérant
+  const bloc = document.getElementById('g-admin-opts');
+  if (bloc) {
+    bloc.querySelectorAll('label').forEach(function(l){ l.style.opacity = e.ger ? '' : '0.45'; l.style.pointerEvents = e.ger ? '' : 'none'; });
+    let n = document.getElementById('g-admin-opts-dep');
+    if (!n) { n = document.createElement('div'); n.id = 'g-admin-opts-dep'; n.style.cssText = 'font-size:11px;font-weight:700;color:#b45309;margin:2px 0 6px'; const t = bloc.children[1]; if (t) t.insertAdjacentElement('afterend', n); else bloc.prepend(n); }
+    n.textContent = e.ger ? '' : '⚠️ Inactif : cochez « Gérant de la société » pour activer ces options. À l\'enregistrement, elles seront retirées (et l\'abonnement arrêté).';
+  }
+  try { gabAdminMaj(); } catch(err){}
+}
+window.chDroitsInit = chDroitsInit; window.chDroitsMaj = chDroitsMaj;
+
+// Brancher la logique sur l'ouverture de la fiche
+(function(){
+  const base = window.openChauffeurModal;
+  if (typeof base !== 'function' || base._droits) return;
+  const w = function() {
+    const r = base.apply(this, arguments);
+    try { chDroitsInit(); } catch(e){ console.warn('chDroitsInit', e); }
+    // Les options privées se chargent après coup : réappliquer le grisé ensuite.
+    setTimeout(function(){ try { chDroitsMaj(); } catch(e){} }, 400);
+    setTimeout(function(){ try { chDroitsMaj(); } catch(e){} }, 1500);
+    return r;
+  };
+  w._droits = true;
+  window.openChauffeurModal = w;
+})();
+
+// ── APPLICATION IMMÉDIATE CÔTÉ CHAUFFEUR ─────────────────────────────────────
+// Avant : les droits étaient lus UNE fois à la connexion et gardés dans le
+// téléphone → un changement de l'admin n'arrivait qu'à la reconnexion, et un
+// chauffeur bloqué restait connecté. Maintenant l'app compare ses droits avec
+// sa fiche (en direct + toutes les 60 s) et applique tout changement.
+const CH_SESSION_CLES = ['voirPrix','gerant','gerantPro','menuMesCourses','menuMesRevenus','menuMessagerie','menuTableauBord','menuNouveauTransfert','menuMesTransferts','menuCarteChauffeurs','menuMesChauffeurs','menuMesVehicules'];
+function chDroitsDepuisFiche(me) {
+  return {
+    voirPrix: me.voirPrix !== false, gerant: me.gerant === true, gerantPro: me.gerantPro === true,
+    menuMesCourses: me.menuMesCourses !== false, menuMesRevenus: me.menuMesRevenus !== false, menuMessagerie: me.menuMessagerie !== false,
+    menuTableauBord: me.menuTableauBord !== false, menuNouveauTransfert: me.menuNouveauTransfert !== false, menuMesTransferts: me.menuMesTransferts !== false,
+    menuCarteChauffeurs: me.menuCarteChauffeurs !== false, menuMesChauffeurs: me.menuMesChauffeurs !== false, menuMesVehicules: me.menuMesVehicules !== false,
+  };
+}
+function chDeconnexionForcee(msg) {
+  if (window._chDecoEnCours) return; window._chDecoEnCours = true;
+  const c = window.confirm;
+  window.confirm = function(){ return true; };          // doLogout demande normalement confirmation
+  try { doLogout(); } catch(e){} finally { window.confirm = c; }
+  setTimeout(function(){ try { showToast(msg, true); } catch(e){} window._chDecoEnCours = false; }, 300);
+}
+function chDroitsSync(me) {
+  if (!me || !SESSION || SESSION.role !== 'chauffeur') return;
+  if (me.blocked === true) { chDeconnexionForcee('🚫 Votre accès a été bloqué par l\'administrateur.'); return; }
+  if (me.archived === true || me.forceLogout === true) { chDeconnexionForcee('Votre compte a été désactivé par un administrateur.'); return; }
+  if (typeof me.pointeuse !== 'undefined') SESSION.pointeuse = (me.pointeuse === true);
+  const n = chDroitsDepuisFiche(me);
+  const cur = chDroitsDepuisFiche(SESSION);       // mêmes règles de lecture que la fiche
+  const change = CH_SESSION_CLES.filter(function(k){ return cur[k] !== n[k]; });
+  if (!change.length) return;
+  CH_SESSION_CLES.forEach(function(k){ SESSION[k] = n[k]; });
+  window.SESSION = SESSION;
+  try { localStorage.setItem(ADMIN_KEY, JSON.stringify(SESSION)); } catch(e){}
+  chRechargerQuandPossible();
+}
+// Recharger l'app pour reconstruire les menus — jamais au milieu d'une saisie.
+function chRechargerQuandPossible() {
+  if (window._chRechargePrevu) return; window._chRechargePrevu = true;
+  try { showToast('🔄 Vos accès ont été mis à jour par MOBILEA'); } catch(e){}
+  const essayer = function() {
+    const a = document.activeElement;
+    const saisie = a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+    const fenetre = document.querySelector('.g-sheet, .mo.on, .mo[style*="flex"]');
+    if (saisie || fenetre) { setTimeout(essayer, 5000); return; }
+    location.reload();
+  };
+  setTimeout(essayer, 2500);
+}
+// Options de l'espace privé du gérant : rechargées sans redémarrer l'app.
+async function chOptionsGerantSync() {
+  if (!(SESSION && SESSION.role === 'chauffeur')) return;
+  const uid = (typeof gUid === 'function') ? gUid() : ''; if (!uid) return;
+  let o = null;
+  try { o = await gRest('GET', 'gerant_options/' + uid); } catch(e) { return; }   // hors-ligne : on ne touche à rien
+  const sig = function(x){ return G_OPTIONS.map(function(k){ return (x && x[k.k] === true) ? 1 : 0; }).join(''); };
+  if (sig(o) === sig(window._gOpts)) return;
+  window._gOpts = (o && typeof o === 'object') ? o : null;
+  try { gNavConstruire(); } catch(e){}
+  // Page privée en cours qui n'est plus autorisée → retour à la première page permise.
+  try {
+    const pg = document.querySelector('.page.on, .page[style*="block"]');
+    const id = pg ? pg.id.replace('page-', '') : '';
+    const lien = { 'gerant-agenda':'agenda','gerant-clients':'clients','gerant-facturation':'facturation','gerant-equipe':'suivi','gerant-planning':'planning','gerant-pointage':'pointage','gerant-rapports':'rapports','gerant-historique':'historique','gerant-partenaires':'soustraitants','gerant-parametres':'parametres' }[id];
+    if (lien && !gOpt(lien)) { const b = document.querySelector('#main-nav .dyn-nav'); if (b) b.click(); }
+  } catch(e){}
+  try { showToast('🔄 Vos options gérant ont été mises à jour'); } catch(e){}
+}
+async function chDroitsVerifier() {
+  if (!(SESSION && SESSION.role === 'chauffeur' && SESSION.chauffeurId)) return;
+  try {
+    const r = await fetch(FB_URL + '/chauffeurs/' + SESSION.chauffeurId + '.json' + authParam(await getAuthToken()));
+    if (r.ok) { const me = await r.json(); if (me) chDroitsSync(me); }
+  } catch(e){}
+  try { await chOptionsGerantSync(); } catch(e){}
+}
+window.chDroitsVerifier = chDroitsVerifier;
+setInterval(function(){ try { chDroitsVerifier(); } catch(e){} }, 60000);
+document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'visible') { try { chDroitsVerifier(); } catch(e){} } });
