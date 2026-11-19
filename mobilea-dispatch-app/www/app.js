@@ -26710,3 +26710,94 @@ async function chDroitsVerifier() {
 window.chDroitsVerifier = chDroitsVerifier;
 setInterval(function(){ try { chDroitsVerifier(); } catch(e){} }, 60000);
 document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'visible') { try { chDroitsVerifier(); } catch(e){} } });
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  RGPD — CONSERVATION DES TRAJETS GPS : 90 JOURS, PUIS ANONYMISATION
+//  (registre des traitements, fiche n°4). Au-delà de 90 jours, le tracé
+//  détaillé d'une journée est supprimé ; seule la distance totale du mois par
+//  chauffeur est gardée (/gps_stats/{chauffeur}/{AAAAMM} = { km, jours }).
+//  Lancé automatiquement par l'app ADMIN, au plus une fois par 24 h, en
+//  arrière-plan, par lots (pour ne pas ralentir l'app).
+// ═══════════════════════════════════════════════════════════════════════════
+const GPS_JOURS_CONSERVES = 90;
+const GPS_PURGE_LOT = 120;                 // journées traitées au maximum par passage
+async function gpsPurgeRgpd(force) {
+  if (!(typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'admin')) return null;
+  const CLE = 'mobilea_gps_purge_at';
+  try { if (!force && Date.now() - (parseInt(localStorage.getItem(CLE)) || 0) < 24 * 3600 * 1000) return null; } catch(e) {}
+  if (window._gpsPurgeEnCours) return null; window._gpsPurgeEnCours = true;
+  const bilan = { jours: 0, chauffeurs: 0, km: 0, erreurs: 0, reste: false, statsRefusees: false };
+  try {
+    const tok = await getAuthToken(); if (!tok) return null;
+    const url = function(p, extra){ return FB_URL + '/' + p + '.json' + authParam(tok) + (extra || ''); };
+    const lim = new Date(); lim.setDate(lim.getDate() - GPS_JOURS_CONSERVES);
+    const p2 = function(n){ return String(n).padStart(2, '0'); };
+    const limite = '' + lim.getFullYear() + p2(lim.getMonth() + 1) + p2(lim.getDate());   // AAAAMMJJ
+    // Liste des chauffeurs ayant un historique (lecture « shallow » : clés seulement)
+    const r0 = await fetch(url('gps_trails', '&shallow=true'));
+    if (!r0.ok) return null;
+    const chs = Object.keys((await r0.json()) || {});
+    let budget = GPS_PURGE_LOT;
+    for (const chId of chs) {
+      if (budget <= 0) { bilan.reste = true; break; }
+      const r1 = await fetch(url('gps_trails/' + encodeURIComponent(chId), '&shallow=true'));
+      if (!r1.ok) { bilan.erreurs++; continue; }
+      const vieux = Object.keys((await r1.json()) || {}).filter(function(j){ return /^\d{8}$/.test(j) && j < limite; }).sort();
+      if (!vieux.length) continue;
+      bilan.chauffeurs++;
+      const parMois = {};
+      const aSupprimer = [];
+      for (const j of vieux) {
+        if (budget <= 0) { bilan.reste = true; break; }
+        budget--;
+        let km = 0;
+        try {
+          const r2 = await fetch(url('gps_trails/' + encodeURIComponent(chId) + '/' + j));
+          const data = r2.ok ? await r2.json() : null;
+          const pts = htNettoyer(data, j.slice(0,4) + '-' + j.slice(4,6) + '-' + j.slice(6,8));
+          for (let k = 1; k < pts.length; k++) if (!htTrou(pts[k-1], pts[k])) km += distanceKm(pts[k-1].lat, pts[k-1].lng, pts[k].lat, pts[k].lng);
+        } catch(e) {}
+        const m = j.slice(0, 6);
+        parMois[m] = parMois[m] || { km: 0, jours: 0 };
+        parMois[m].km += km; parMois[m].jours++;
+        aSupprimer.push(j);
+      }
+      // 1) D'abord la statistique anonymisée (cumulée au mois) …
+      let statsOk = true;
+      for (const m of Object.keys(parMois)) {
+        try {
+          const r3 = await fetch(url('gps_stats/' + encodeURIComponent(chId) + '/' + m));
+          const ex = r3.ok ? (await r3.json()) || {} : null;
+          if (ex === null) { statsOk = false; break; }
+          const nv = { km: Math.round(((parseFloat(ex.km) || 0) + parMois[m].km) * 10) / 10, jours: (parseInt(ex.jours) || 0) + parMois[m].jours, majAt: new Date().toISOString() };
+          const w = await fetch(url('gps_stats/' + encodeURIComponent(chId) + '/' + m), { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(nv) });
+          if (!w.ok) { statsOk = false; break; }
+          bilan.km += parMois[m].km;
+        } catch(e) { statsOk = false; break; }
+      }
+      // … puis seulement ensuite la suppression du tracé détaillé.
+      if (!statsOk) { bilan.statsRefusees = true; bilan.erreurs++; continue; }
+      for (const j of aSupprimer) {
+        try {
+          const d = await fetch(url('gps_trails/' + encodeURIComponent(chId) + '/' + j), { method:'DELETE' });
+          if (d.ok) bilan.jours++; else bilan.erreurs++;
+        } catch(e) { bilan.erreurs++; }
+      }
+    }
+    if (!bilan.statsRefusees) { try { localStorage.setItem(CLE, String(Date.now())); } catch(e) {} }
+    if (bilan.jours) { try { await addLog('🔒 RGPD — trajets GPS de plus de ' + GPS_JOURS_CONSERVES + ' jours supprimés : ' + bilan.jours + ' journée(s), ' + bilan.chauffeurs + ' chauffeur(s) (distance conservée de façon anonymisée)'); } catch(e) {} }
+    if (bilan.statsRefusees) { try { showToast('⚠️ Purge RGPD GPS en attente : publiez les règles Firebase (nœud « gps_stats »)', true); } catch(e) {} }
+    // Lot incomplet : on continue au prochain passage (dans 10 min)
+    if (bilan.reste && !bilan.statsRefusees) { try { localStorage.removeItem(CLE); } catch(e) {} setTimeout(function(){ gpsPurgeRgpd(); }, 10 * 60 * 1000); }
+    return bilan;
+  } catch(e) { return bilan; }
+  finally { window._gpsPurgeEnCours = false; }
+}
+window.gpsPurgeRgpd = gpsPurgeRgpd;
+// Démarrage : 30 s après l'ouverture de l'app admin (sans ralentir le démarrage)
+setTimeout(function gpsPurgeDemarrer(){
+  try {
+    if (typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'admin') { gpsPurgeRgpd(); return; }
+  } catch(e) {}
+  setTimeout(gpsPurgeDemarrer, 60000);
+}, 30000);
