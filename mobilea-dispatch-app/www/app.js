@@ -18136,17 +18136,42 @@ window.submitClientBooking=async function(){
   const _prixApresPromo = Math.max(0, (prixCourse||0) - _remisePromo);
   // Si paiement en ligne, on encaisse le montant APRÈS remise.
   if(_remisePromo>0 && prixStripeEl && prixStripeEl.value) prixStripeEl.value = _prixApresPromo;
-  const pushResult = await fetch(`${FB_URL}/courses.json${authParam(await getAuthToken())}`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({type:'transfert',client:SESSION.societe||SESSION.name,datetime:dt,depart:dep,arrivee:arr,vehicule:vehChoisi,pax:parseInt(document.getElementById('cb-pax').value)||1,bagages:parseInt(document.getElementById('cb-bagages').value)||0,options,vol:sanitize(document.getElementById('cb-vol').value,20),notes:sanitize(document.getElementById('cb-notes').value,500),passagers,statut:'nouvelle',source:SESSION.isPartenaire?'partenaire':'client',prix:((_remisePromo>0?_prixApresPromo:prixCourse)||null),prixBrut:(_remisePromo>0?(prixCourse||null):null),remisePromo:(_remisePromo||null),prixChauffeur:prixChauffeurCourse||null,mode_paiement:modePaiement,paiement_statut:paiementEnLigne?'en_attente':'',createdByClient:SESSION.name,clientUser:(SESSION.clientUser||SESSION.email||null),createdByUid:((window.fbAuth&&window.fbAuth.currentUser&&window.fbAuth.currentUser.uid)||SESSION.uid||null),partenaireUid:SESSION.isPartenaire?SESSION.partenaireUid:null,createdAt:new Date().toISOString(),pickupLat:pickupCoords?.lat||null,pickupLng:pickupCoords?.lng||null,dropLat:dropCoords?.lat||null,dropLng:dropCoords?.lng||null,passagerAutre:_bookFor,etapes:(_etapes.length?_etapes:null),codePromo:(_promo||null)})
+  // Partenaire : la règle Firebase exige que « client » soit EXACTEMENT le nom
+  // de société enregistré pour son compte (/partner_societies/<uid>). On relit
+  // ce nom avant l'envoi (un renommage côté admin suffisait à tout bloquer).
+  let _clientCourse = SESSION.societe || SESSION.name;
+  const _tokRes = await getAuthToken();
+  const _uidRes = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.uid || '';
+  if(SESSION.isPartenaire && _uidRes) {
+    try {
+      const rs = await fetch(`${FB_URL}/partner_societies/${_uidRes}.json${authParam(_tokRes)}`);
+      const soc = rs.ok ? await rs.json() : null;
+      if(typeof soc === 'string' && soc.trim()) _clientCourse = soc;
+    } catch(e){}
+  }
+  const _corpsCourse = {type:'transfert',client:_clientCourse,datetime:dt,depart:dep,arrivee:arr,vehicule:vehChoisi,pax:parseInt(document.getElementById('cb-pax').value)||1,bagages:parseInt(document.getElementById('cb-bagages').value)||0,options,vol:sanitize(document.getElementById('cb-vol').value,20),notes:sanitize(document.getElementById('cb-notes').value,500),passagers,statut:'nouvelle',source:SESSION.isPartenaire?'partenaire':'client',prix:((_remisePromo>0?_prixApresPromo:prixCourse)||null),prixBrut:(_remisePromo>0?(prixCourse||null):null),remisePromo:(_remisePromo||null),prixChauffeur:prixChauffeurCourse||null,mode_paiement:modePaiement,paiement_statut:paiementEnLigne?'en_attente':'',createdByClient:SESSION.name,clientUser:(SESSION.clientUser||SESSION.email||null),createdByUid:((window.fbAuth&&window.fbAuth.currentUser&&window.fbAuth.currentUser.uid)||SESSION.uid||null),partenaireUid:SESSION.isPartenaire?SESSION.partenaireUid:null,createdAt:new Date().toISOString(),pickupLat:pickupCoords?.lat||null,pickupLng:pickupCoords?.lng||null,dropLat:dropCoords?.lat||null,dropLng:dropCoords?.lng||null,passagerAutre:_bookFor,etapes:(_etapes.length?_etapes:null),codePromo:(_promo||null)};
+  let pushResult = await fetch(`${FB_URL}/courses.json${authParam(_tokRes)}`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(_corpsCourse)
   });
+  // Compte partenaire pas (encore) complètement configuré côté serveur (rôle
+  // ou société manquants) : on enregistre la demande comme une réservation
+  // client classique — mêmes droits que tout client — pour qu'elle arrive
+  // quand même au dispatch. L'admin répare le compte automatiquement.
+  if(!pushResult.ok && SESSION.isPartenaire && (pushResult.status === 401 || pushResult.status === 403)) {
+    try {
+      const _c2 = Object.assign({}, _corpsCourse, { source:'client', viaPartenaire:true });
+      pushResult = await fetch(`${FB_URL}/courses.json${authParam(_tokRes)}`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(_c2)
+      });
+    } catch(e){}
+  }
   let pushData = {};
   try { pushData = await pushResult.json(); } catch(e){}
   const newId = pushData && pushData.name;
   // Échec d'enregistrement (refus Firebase, réseau…) : NE PAS annoncer
   // « Demande reçue » ni prévenir le dispatch d'une course qui n'existe pas.
   if(!pushResult.ok || !newId) {
-    showToast('❌ La réservation n\'a pas pu être enregistrée. Vérifiez votre connexion puis réessayez, ou contactez MOBILEA.', true);
+    showToast('❌ La réservation n\'a pas pu être enregistrée (code R'+(pushResult.status||0)+'). Vérifiez votre connexion puis réessayez, ou contactez MOBILEA.', true);
     try { openMo('client-booking'); } catch(e){} // le formulaire garde ce qui a été saisi
     return;
   }
@@ -26922,3 +26947,47 @@ setTimeout(function gpsPurgeDemarrer(){
   } catch(e) {}
   setTimeout(gpsPurgeDemarrer, 60000);
 }, 30000);
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  RÉPARATION AUTOMATIQUE DES COMPTES PARTENAIRES (admin)
+//  Pour réserver, un partenaire doit avoir côté serveur :
+//    /roles/<uid> = "partenaire"   et   /partner_societies/<uid> = sa société
+//  (exactement le même nom que dans sa fiche). Un compte créé autrement, ou une
+//  société renommée, bloquait ses réservations. À l'ouverture de l'app admin
+//  (au plus 1 fois / 6 h), on remet ces 2 valeurs en ordre. On ne touche JAMAIS
+//  un compte qui a déjà un autre rôle (admin, dispatch, chauffeur…).
+// ═══════════════════════════════════════════════════════════════════════════
+async function partenairesReparer(force) {
+  if(!(typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'admin')) return null;
+  const CLE = 'mobilea_part_repar_at';
+  try { if(!force && Date.now() - (parseInt(localStorage.getItem(CLE))||0) < 6*3600*1000) return null; } catch(e){}
+  const bilan = { roles:0, societes:0, ignores:0, erreurs:0 };
+  try {
+    const tok = await getAuthToken(); if(!tok) return null;
+    const lire = async function(chemin){ const r = await fetch(`${FB_URL}/${chemin}.json${authParam(tok)}`); return r.ok ? await r.json() : undefined; };
+    const comptes = await lire('client_accounts');
+    const roles = await lire('roles');
+    const socs = (await lire('partner_societies')) || {};
+    if(!comptes || roles === undefined) return null;
+    for(const id in comptes) {
+      const a = comptes[id] || {};
+      if(a.type !== 'partner' || a.source === 'auto_inscription' || !a.uid) continue;
+      if(a.bloque || a.archive || a.archived) continue;
+      const uid = String(a.uid);
+      const societe = String(a.societe || ((a.prenom||'') + ' ' + (a.nom||''))).trim();
+      if(!societe) continue;
+      const r = (roles||{})[uid];
+      if(r && r !== 'partenaire') { bilan.ignores++; continue; }      // autre rôle : on ne touche pas
+      if(!r) { if(await fbSetRole(uid, 'partenaire')) bilan.roles++; else bilan.erreurs++; }
+      if(socs[uid] !== societe) { if(await fbSetPartnerSociety(uid, societe)) bilan.societes++; else bilan.erreurs++; }
+    }
+    if(!bilan.erreurs) { try { localStorage.setItem(CLE, String(Date.now())); } catch(e){} }
+    if(bilan.roles || bilan.societes) { try { await addLog('🔧 Comptes partenaires réparés : ' + bilan.roles + ' rôle(s), ' + bilan.societes + ' société(s) — leurs réservations sont débloquées'); } catch(e){} }
+    return bilan;
+  } catch(e) { return bilan; }
+}
+window.partenairesReparer = partenairesReparer;
+setTimeout(function partRepDemarrer(){
+  try { if(typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'admin') { partenairesReparer(); return; } } catch(e){}
+  setTimeout(partRepDemarrer, 60000);
+}, 25000);
