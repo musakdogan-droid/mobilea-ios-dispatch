@@ -463,21 +463,50 @@ async function fbGetCoursesClient(uid) {
 }
 
 async function fbGetCoursesPartenaire(societe) {
-  if(!societe) return [];
-  try {
-    const token = await getAuthToken();
+  // Un partenaire voit :
+  //   1) toutes les courses de SA société (query client == nom de société
+  //      ENREGISTRÉ pour son compte dans /partner_societies — c'est ce nom
+  //      exact que la règle Firebase compare, pas celui de la fiche) ;
+  //   2) + toutes les courses qu'il a créées lui-même (query createdByUid),
+  //      y compris celles enregistrées en « réservation de secours » quand
+  //      son compte n'était pas encore complètement configuré.
+  // Les deux lectures sont fusionnées. Si la 1re est refusée, la 2e suffit à
+  // ce qu'il retrouve ses réservations.
+  const uid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || (SESSION && (SESSION.partenaireUid || SESSION.uid)) || '';
+  let token = null;
+  try { token = await getAuthToken(); } catch(e){}
+  const lireQuery = async function(champ, valeur){
     const p = new URLSearchParams();
     if(token) p.set('auth', token);
-    p.set('orderBy', JSON.stringify('client'));
-    p.set('equalTo', JSON.stringify(societe));
+    p.set('orderBy', JSON.stringify(champ));
+    p.set('equalTo', JSON.stringify(valeur));
     const r = await fetch(`${FB_URL}/courses.json?${p.toString()}`);
-    if(!r.ok) throw new Error('filtre partenaire refuse: ' + r.status);
+    if(!r.ok) throw new Error('lecture ' + champ + ' refusée: ' + r.status);
     const d = await r.json();
     return d ? Object.entries(d).map(([k,v]) => ({_id:k, ...v})) : [];
-  } catch(e) {
-    console.log('[partenaire] lecture courses échouée:', e);
-    return [];
+  };
+  // Nom de société côté serveur (lisible par le partenaire lui-même)
+  let socServeur = window._partSocServeur || '';
+  if(!socServeur && uid) {
+    try {
+      const rs = await fetch(`${FB_URL}/partner_societies/${uid}.json${authParam(token)}`);
+      const v = rs.ok ? await rs.json() : null;
+      if(typeof v === 'string' && v.trim()) { socServeur = v; window._partSocServeur = v; }
+    } catch(e){}
   }
+  const parId = {};
+  let okSoc = false, okUid = false;
+  const socRech = socServeur || societe;
+  if(socRech) {
+    try { (await lireQuery('client', socRech)).forEach(function(c){ parId[c._id] = c; }); okSoc = true; }
+    catch(e) { console.log('[partenaire] lecture par société refusée (compte à réparer côté admin) :', e.message || e); }
+  }
+  if(uid) {
+    try { (await lireQuery('createdByUid', uid)).forEach(function(c){ parId[c._id] = c; }); okUid = true; }
+    catch(e) { console.log('[partenaire] lecture de ses propres courses échouée :', e.message || e); }
+  }
+  if(!okSoc && !okUid) return Array.isArray(D.courses) ? D.courses : [];   // échec réseau : on garde l'affichage
+  return Object.values(parId);
 }
 
 // ── ÉCOUTE TEMPS RÉEL DES COURSES ────────────────────────────────────────
@@ -15588,7 +15617,12 @@ function renderClientPortal() {
     // pré-filtrées côté serveur par client===société ; ce test garde la
     // cohérence locale). Tous les comptes d'une même société partagent ainsi
     // les mêmes réservations, pas seulement celles créées par ce compte.
-    if(SESSION.isPartenaire) return (c.client||'').trim().toUpperCase() === (societe||'').trim().toUpperCase();
+    if(SESSION.isPartenaire) {
+      const _cu = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.uid;
+      if(_cu && (c.createdByUid === _cu || c.partenaireUid === _cu)) return true;
+      const _cn = (c.client||'').trim().toUpperCase();
+      return _cn === (societe||'').trim().toUpperCase() || (!!window._partSocServeur && _cn === window._partSocServeur.trim().toUpperCase());
+    }
     // Correspondance par identifiant de compte client (le plus fiable)
     if(c.createdByUid && SESSION.uid && c.createdByUid===SESSION.uid) return true;
     if(c.clientUser && SESSION.clientUser && c.clientUser===SESSION.clientUser) return true;
