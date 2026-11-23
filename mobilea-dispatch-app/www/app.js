@@ -22772,7 +22772,7 @@ applyLoginMode();
 window.switchTab=switchTab;
 
 function openMo(n){document.getElementById('mo-'+n).classList.add('on');}
-function closeMo(n){document.getElementById('mo-'+n).classList.remove('on');}
+function closeMo(n){document.getElementById('mo-'+n).classList.remove('on');try{pacCacher();}catch(e){}}
 window.openMo=openMo;window.closeMo=closeMo;
 document.querySelectorAll('.mo').forEach(m=>m.addEventListener('click',function(e){if(e.target===this)this.classList.remove('on');}));
 
@@ -26991,3 +26991,30 @@ setTimeout(function partRepDemarrer(){
   try { if(typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'admin') { partenairesReparer(); return; } } catch(e){}
   setTimeout(partRepDemarrer, 60000);
 }, 25000);
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  LISTE DE SUGGESTIONS D'ADRESSES (Google) QUI RESTAIT AFFICHÉE
+//  Après l'envoi d'une réservation (fenêtre fermée) ou un clic ailleurs, la
+//  liste noire des adresses restait à l'écran par-dessus la page. On la
+//  masque : à la fermeture d'une fenêtre, quand on quitte le champ adresse,
+//  au clic en dehors, avec Échap et au changement de page. Elle se rouvre
+//  normalement dès qu'on retape dans un champ adresse.
+// ═══════════════════════════════════════════════════════════════════════════
+function pacCacher(){
+  try { document.querySelectorAll('.pac-container').forEach(function(p){ p.style.setProperty('display','none','important'); }); } catch(e){}
+}
+window.pacCacher = pacCacher;
+function _pacEstChampAdresse(el){ return !!(el && el.dataset && el.dataset.placesReady); }
+document.addEventListener('focusout', function(e){
+  if(!_pacEstChampAdresse(e.target)) return;
+  setTimeout(function(){ if(!_pacEstChampAdresse(document.activeElement)) pacCacher(); }, 300);
+}, true);
+document.addEventListener('pointerdown', function(e){
+  var t = e.target;
+  if(t && t.closest && t.closest('.pac-container')) return;      // choix d'une suggestion
+  if(_pacEstChampAdresse(t)) return;                             // clic dans le champ adresse
+  pacCacher();
+}, true);
+document.addEventListener('keydown', function(e){ if(e.key === 'Escape') pacCacher(); }, true);
+window.addEventListener('hashchange', pacCacher);
