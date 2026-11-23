@@ -15882,6 +15882,8 @@ window.clPourboireValider = async function(id, montant){
 // répond « No such setupintent »). À défaut, on prend celle de la page.
 window.MOBILEA_CARDS_WORKER = 'https://mobilea-cards.mus-akdogan.workers.dev';
 var _ccStripe = null, _ccStripePk = '', _ccCardEl = null, _ccPkServeur = '', _ccCartes = [];
+// Clé publique du compte Stripe MOBILEA (même compte que la clé secrète des workers).
+var _ccPkDefaut = 'pk_live_51IGexVIE2Uad430gD9rKh8FU055Mq4byAUflFySR0EUlB5AdbdTQ9euolOkwzh4yVEFgBhSQdM5o3yhNrxe8fHuj00M3diEuZ5';
 
 async function _ccApi(action, extra){
   var idToken = null;
@@ -16020,7 +16022,7 @@ window.ccShowAddForm = async function(){
   var zone = document.getElementById('mc-add-zone');
   var addBtn = document.getElementById('mc-add-btn');
   if(!zone) return;
-  var pk = _ccPkServeur || window.MOBILEA_STRIPE_PK;
+  var pk = _ccPkServeur || _ccPkDefaut || window.MOBILEA_STRIPE_PK;
   if(typeof Stripe === 'undefined' || !pk){
     showToast('Paiement indisponible pour le moment (Stripe non chargé)', true); return;
   }
