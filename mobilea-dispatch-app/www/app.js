@@ -15874,11 +15874,14 @@ window.clPourboireValider = async function(id, montant){
   try { renderClientPortal(); } catch(e){}
 };
 
-// ── MES CARTES (clients particuliers) ────────────────────────────────────
+// ── MES CARTES (clients particuliers et partenaires) ─────────────────────
 // Cartes enregistrées via Stripe. Le Worker vérifie le jeton Firebase du
 // client et gère le client Stripe (par email) : setup-intent / list / delete.
+// La clé PUBLIQUE Stripe est fournie par le Worker (STRIPE_PUBLISHABLE_KEY)
+// pour qu'elle soit toujours du MÊME compte que sa clé secrète (sinon Stripe
+// répond « No such setupintent »). À défaut, on prend celle de la page.
 window.MOBILEA_CARDS_WORKER = 'https://mobilea-cards.mus-akdogan.workers.dev';
-var _ccStripe = null, _ccCardEl = null;
+var _ccStripe = null, _ccStripePk = '', _ccCardEl = null, _ccPkServeur = '', _ccCartes = [];
 
 async function _ccApi(action, extra){
   var idToken = null;
@@ -15889,111 +15892,227 @@ async function _ccApi(action, extra){
     body: JSON.stringify(Object.assign({ idToken:idToken, action:action }, extra||{}))
   });
   var d = {}; try { d = await r.json(); } catch(e){}
+  if(d && d.publishableKey && /^pk_(live|test)_/.test(d.publishableKey)) _ccPkServeur = d.publishableKey;
   if(!r.ok) throw new Error(d.error || ('Erreur '+r.status));
   return d;
 }
 
-function _ccBrandIcon(b){
-  b = (b||'').toLowerCase();
-  if(b==='visa') return '💳 Visa';
-  if(b==='mastercard') return '💳 Mastercard';
-  if(b==='amex') return '💳 Amex';
-  return '💳 Carte';
+function _ccStyle(){
+  if(document.getElementById('mc-style')) return;
+  var st = document.createElement('style'); st.id = 'mc-style';
+  st.textContent =
+    '#mc-overlay{position:fixed;inset:0;z-index:99999;background:rgba(15,17,21,.55);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:16px;animation:ccFade .18s ease}'
+  + '@keyframes ccFade{from{opacity:0}to{opacity:1}}@keyframes ccUp{from{transform:translateY(14px);opacity:0}to{transform:none;opacity:1}}@keyframes ccShim{0%{background-position:-300px 0}100%{background-position:300px 0}}'
+  + '#mc-box{background:var(--card);color:var(--white);width:100%;max-width:480px;max-height:90vh;overflow:auto;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.25);animation:ccUp .22s ease;font-family:Inter,system-ui,sans-serif}'
+  + '@media(max-width:600px){#mc-overlay{align-items:flex-end;padding:0}#mc-box{border-radius:18px 18px 0 0;max-height:92vh;padding-bottom:env(safe-area-inset-bottom)}}'
+  + '.mc-head{display:flex;align-items:center;gap:12px;padding:20px 20px 16px;border-bottom:1px solid var(--border)}'
+  + '.mc-head-ic{width:40px;height:40px;border-radius:12px;background:var(--gold-dim);color:var(--gold);display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}'
+  + '.mc-head h2{margin:0;font-size:17px;font-weight:800;color:var(--white);letter-spacing:-.2px}.mc-head p{margin:2px 0 0;font-size:12.5px;color:var(--muted)}'
+  + '.mc-x{margin-left:auto;background:transparent;border:1px solid var(--border2);border-radius:10px;width:34px;height:34px;color:var(--muted2);cursor:pointer;font-size:14px;flex-shrink:0}.mc-x:hover{background:var(--card2)}'
+  + '.mc-body{padding:18px 20px 20px}'
+  + '.mc-sec{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);margin:0 0 10px}'
+  + '.mc-item{display:flex;align-items:center;gap:14px;border:1px solid var(--border);border-radius:14px;padding:13px 14px;background:var(--card);transition:border-color .15s}.mc-item:hover{border-color:var(--border3)}'
+  + '.mc-brand{width:48px;height:32px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:11px;letter-spacing:.3px;flex-shrink:0;border:1px solid var(--border)}'
+  + '.mc-num{font-size:14.5px;font-weight:700;color:var(--white);font-variant-numeric:tabular-nums;letter-spacing:.4px}.mc-sub{font-size:12px;color:var(--muted);margin-top:2px}'
+  + '.mc-tag{display:inline-block;font-size:10.5px;font-weight:700;border-radius:20px;padding:2px 8px;margin-left:6px;vertical-align:1px}'
+  + '.mc-del{margin-left:auto;background:transparent;border:1px solid var(--border2);border-radius:9px;height:34px;min-width:34px;padding:0 10px;color:var(--muted2);cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap}.mc-del:hover{color:var(--red);border-color:var(--red)}'
+  + '.mc-del.mc-conf{background:var(--red);border-color:var(--red);color:#fff}'
+  + '.mc-skel{height:60px;border-radius:14px;background:linear-gradient(90deg,var(--card2) 0,var(--card3) 50%,var(--card2) 100%);background-size:600px 100%;animation:ccShim 1.2s infinite linear}'
+  + '.mc-empty{text-align:center;padding:22px 12px;border:1.5px dashed var(--border2);border-radius:14px;color:var(--muted);font-size:13.5px}.mc-empty i{font-size:26px;color:var(--border3);display:block;margin-bottom:8px}'
+  + '.mc-err{display:flex;gap:10px;align-items:flex-start;background:var(--red-dim);color:var(--red);border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.45}'
+  + '.mc-btn{width:100%;border:none;border-radius:12px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;font-family:inherit}'
+  + '.mc-btn-p{background:var(--gold);color:#fff}.mc-btn-p:hover{filter:brightness(1.06)}.mc-btn-p:disabled{opacity:.6;cursor:default}'
+  + '.mc-btn-s{background:var(--card);color:var(--white);border:1px solid var(--border2)}.mc-btn-s:hover{background:var(--card2)}'
+  + '.mc-form{border:1px solid var(--border);border-radius:14px;padding:16px;background:var(--card2);margin-top:14px;animation:ccUp .18s ease}'
+  + '.mc-lbl{display:block;font-size:12.5px;font-weight:600;color:var(--white2);margin-bottom:7px}'
+  + '.mc-field{background:#fff;border:1px solid var(--border2);border-radius:10px;padding:13px 12px;transition:border-color .15s,box-shadow .15s}.mc-field.mc-focus{border-color:var(--gold);box-shadow:0 0 0 3px var(--gold-dim)}.mc-field.mc-bad{border-color:var(--red)}'
+  + '.mc-ferr{color:var(--red);font-size:12.5px;min-height:18px;margin:7px 0 4px;line-height:1.4}'
+  + '.mc-row{display:flex;gap:10px}.mc-row .mc-btn{flex:1}.mc-row .mc-btn-p{flex:1.6}'
+  + '.mc-trust{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;margin-top:16px;padding-top:14px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted)}.mc-trust span{display:flex;align-items:center;gap:5px}.mc-trust b{color:#635bff;font-weight:800}'
+  + '.mc-spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:ccRot .7s linear infinite}@keyframes ccRot{to{transform:rotate(360deg)}}';
+  document.head.appendChild(st);
 }
 
+function _ccMarque(b){
+  b = String(b||'').toLowerCase();
+  if(b==='visa') return '<div class="mc-brand" style="background:#1a1f71;color:#fff;border-color:#1a1f71;font-style:italic;font-size:13px">VISA</div>';
+  if(b==='mastercard') return '<div class="mc-brand" style="background:#fff"><svg width="30" height="19" viewBox="0 0 30 19"><circle cx="10.5" cy="9.5" r="8.5" fill="#eb001b"/><circle cx="19.5" cy="9.5" r="8.5" fill="#f79e1b" fill-opacity=".9"/></svg></div>';
+  if(b==='amex') return '<div class="mc-brand" style="background:#2e77bc;color:#fff;border-color:#2e77bc">AMEX</div>';
+  if(b==='cartes_bancaires') return '<div class="mc-brand" style="background:linear-gradient(135deg,#0a8bc7,#1d4f91);color:#fff;border-color:#1d4f91;font-size:13px">CB</div>';
+  return '<div class="mc-brand" style="background:var(--card2);color:var(--muted2)"><i class="fas fa-credit-card"></i></div>';
+}
+function _ccNomMarque(b){
+  return ({visa:'Visa',mastercard:'Mastercard',amex:'American Express',cartes_bancaires:'Carte Bancaire'})[String(b||'').toLowerCase()] || 'Carte';
+}
+// « 3/27 » → état d'expiration
+function _ccExpEtat(exp){
+  var m = String(exp||'').match(/^(\d{1,2})\/(\d{2})$/); if(!m) return 0;
+  var fin = new Date(2000 + (+m[2]), +m[1], 1);            // 1er jour du mois suivant
+  var now = new Date();
+  if(fin <= now) return 2;                                   // expirée
+  if(fin - now < 62*24*3600*1000) return 1;                  // expire bientôt
+  return 0;
+}
+function _ccE(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+
 window.openClientCards = function(){
-  var old = document.getElementById('cc-overlay'); if(old) old.remove();
+  _ccStyle();
+  var old = document.getElementById('mc-overlay'); if(old) old.remove();
+  _ccCardEl = null;
   var ov = document.createElement('div');
-  ov.id = 'cc-overlay';
-  ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;justify-content:center;padding:0';
+  ov.id = 'mc-overlay';
   ov.innerHTML =
-      '<div style="background:var(--card);width:100%;max-width:520px;max-height:88vh;overflow:auto;border-radius:18px 18px 0 0;padding:20px">'
-    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
-    +     '<h2 style="font-size:18px;font-weight:800;color:var(--white);margin:0">💳 Mes cartes</h2>'
-    +     '<button onclick="document.getElementById(\'cc-overlay\').remove()" style="background:var(--card2);border:1px solid var(--border2);border-radius:10px;width:34px;height:34px;color:var(--white);font-size:16px;cursor:pointer">✕</button>'
+      '<div id="mc-box" role="dialog" aria-modal="true" aria-labelledby="mc-titre">'
+    +   '<div class="mc-head">'
+    +     '<div class="mc-head-ic"><i class="fas fa-wallet"></i></div>'
+    +     '<div><h2 id="mc-titre">Moyens de paiement</h2><p>Vos cartes enregistrées pour vos réservations</p></div>'
+    +     '<button class="mc-x" onclick="ccFermer()" aria-label="Fermer"><i class="fas fa-times"></i></button>'
     +   '</div>'
-    +   '<div id="cc-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px"><div style="color:var(--muted);font-size:14px;text-align:center;padding:16px">Chargement…</div></div>'
-    +   '<div id="cc-add-zone"></div>'
-    +   '<button id="cc-add-btn" onclick="ccShowAddForm()" style="width:100%;background:var(--gold);border:none;border-radius:12px;padding:14px;color:#111;font-size:15px;font-weight:800;cursor:pointer">➕ Ajouter une carte</button>'
-    +   '<p style="color:var(--muted);font-size:11px;text-align:center;margin-top:12px">🔒 Paiement sécurisé par Stripe. MOBILEA ne stocke jamais votre numéro de carte.</p>'
+    +   '<div class="mc-body">'
+    +     '<div class="mc-sec">Cartes enregistrées</div>'
+    +     '<div id="mc-list" style="display:flex;flex-direction:column;gap:10px"><div class="mc-skel"></div><div class="mc-skel" style="opacity:.6"></div></div>'
+    +     '<div id="mc-add-zone"></div>'
+    +     '<button id="mc-add-btn" class="mc-btn mc-btn-p" style="margin-top:16px" onclick="ccShowAddForm()"><i class="fas fa-plus"></i> Ajouter une carte</button>'
+    +     '<div class="mc-trust">'
+    +       '<span><i class="fas fa-lock"></i> Paiement sécurisé par <b>stripe</b></span>'
+    +       '<span><i class="fas fa-shield-alt"></i> Données chiffrées (PCI-DSS)</span>'
+    +     '</div>'
+    +     '<p style="text-align:center;font-size:11px;color:var(--muted);margin:8px 0 0;line-height:1.5">MOBILEA ne stocke jamais votre numéro de carte. Votre banque peut vous demander une validation (3D Secure).</p>'
+    +   '</div>'
     + '</div>';
   document.body.appendChild(ov);
-  ov.onclick = function(e){ if(e.target===ov) ov.remove(); };
+  ov.addEventListener('click', function(e){ if(e.target===ov) ccFermer(); });
   ccLoadCards();
 };
 
+window.ccFermer = function(){
+  try { if(_ccCardEl){ _ccCardEl.destroy(); } } catch(e){}
+  _ccCardEl = null;
+  var ov = document.getElementById('mc-overlay'); if(ov) ov.remove();
+};
+
 window.ccLoadCards = async function(){
-  var box = document.getElementById('cc-list'); if(!box) return;
+  var box = document.getElementById('mc-list'); if(!box) return;
   try {
     var d = await _ccApi('list');
-    var cards = d.cards || [];
-    if(!cards.length){ box.innerHTML = '<div style="color:var(--muted);font-size:14px;text-align:center;padding:16px">Aucune carte enregistrée</div>'; return; }
-    box.innerHTML = cards.map(function(c){
-      return '<div style="display:flex;justify-content:space-between;align-items:center;background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:14px">'
-        +   '<div><div style="color:var(--white);font-weight:700;font-size:14px">'+_ccBrandIcon(c.brand)+' •••• '+c.last4+'</div>'
-        +   '<div style="color:var(--muted);font-size:12px;margin-top:2px">Expire '+c.exp+'</div></div>'
-        +   '<button onclick="ccDelete(\''+c.id+'\')" style="background:transparent;border:1px solid var(--border2);border-radius:9px;padding:8px 12px;color:#e57373;font-size:13px;cursor:pointer">Supprimer</button>'
+    _ccCartes = d.cards || [];
+    if(!_ccCartes.length){
+      box.innerHTML = '<div class="mc-empty"><i class="far fa-credit-card"></i>Aucune carte enregistrée<div style="font-size:12px;margin-top:4px">Ajoutez une carte pour réserver plus rapidement.</div></div>';
+      return;
+    }
+    box.innerHTML = _ccCartes.map(function(c){
+      var et = _ccExpEtat(c.exp);
+      var tag = et===2 ? '<span class="mc-tag" style="background:var(--red-dim);color:var(--red)">Expirée</span>'
+              : et===1 ? '<span class="mc-tag" style="background:var(--orange-dim);color:var(--orange)">Expire bientôt</span>' : '';
+      return '<div class="mc-item" id="mc-it-'+_ccE(c.id)+'">'
+        +   _ccMarque(c.brand)
+        +   '<div style="min-width:0"><div class="mc-num">•••• '+_ccE(c.last4)+tag+'</div>'
+        +   '<div class="mc-sub">'+_ccNomMarque(c.brand)+(c.exp?' · Expire fin '+_ccE(c.exp):'')+'</div></div>'
+        +   '<button class="mc-del" data-pm="'+_ccE(c.id)+'" onclick="ccDelete(this.dataset.pm, this)" title="Supprimer cette carte" aria-label="Supprimer cette carte"><i class="far fa-trash-alt"></i></button>'
         + '</div>';
     }).join('');
   } catch(e){
-    box.innerHTML = '<div style="color:#e57373;font-size:13px;text-align:center;padding:16px">'+(e.message||'Erreur de chargement')+'</div>';
+    box.innerHTML = '<div class="mc-err"><i class="fas fa-exclamation-circle" style="margin-top:2px"></i><div><b>Impossible d\'afficher vos cartes.</b><br>'+_ccE(e.message||'Erreur de chargement')+'<div style="margin-top:8px"><a href="#" onclick="ccLoadCards();return false" style="color:inherit;font-weight:700">Réessayer</a></div></div></div>';
   }
 };
 
 window.ccShowAddForm = async function(){
-  var zone = document.getElementById('cc-add-zone');
-  var addBtn = document.getElementById('cc-add-btn');
+  var zone = document.getElementById('mc-add-zone');
+  var addBtn = document.getElementById('mc-add-btn');
   if(!zone) return;
-  if(typeof Stripe === 'undefined' || !window.MOBILEA_STRIPE_PK){
-    showToast('Paiement indisponible (Stripe non chargé)', true); return;
+  var pk = _ccPkServeur || window.MOBILEA_STRIPE_PK;
+  if(typeof Stripe === 'undefined' || !pk){
+    showToast('Paiement indisponible pour le moment (Stripe non chargé)', true); return;
   }
   if(addBtn) addBtn.style.display = 'none';
   zone.innerHTML =
-      '<div style="background:var(--card2);border:1px solid var(--border2);border-radius:12px;padding:14px;margin-bottom:12px">'
-    +   '<div style="background:#fff;border-radius:8px;padding:12px;margin-bottom:10px"><div id="cc-card-element"></div></div>'
-    +   '<div id="cc-card-err" style="color:#e57373;font-size:12px;min-height:16px;margin-bottom:8px"></div>'
-    +   '<div style="display:flex;gap:8px">'
-    +     '<button onclick="ccCancelAdd()" style="flex:1;background:var(--card);border:1px solid var(--border2);border-radius:10px;padding:12px;color:var(--white);font-weight:700;cursor:pointer">Annuler</button>'
-    +     '<button id="cc-save-btn" onclick="ccSaveCard()" style="flex:2;background:var(--gold);border:none;border-radius:10px;padding:12px;color:#111;font-weight:800;cursor:pointer">Enregistrer la carte</button>'
+      '<div class="mc-form">'
+    +   '<label class="mc-lbl">Informations de la carte</label>'
+    +   '<div class="mc-field" id="mc-field"><div id="mc-card-element"></div></div>'
+    +   '<div id="mc-card-err" class="mc-ferr" role="alert"></div>'
+    +   '<div class="mc-row">'
+    +     '<button class="mc-btn mc-btn-s" onclick="ccCancelAdd()">Annuler</button>'
+    +     '<button id="mc-save-btn" class="mc-btn mc-btn-p" onclick="ccSaveCard()"><i class="fas fa-lock" style="font-size:13px"></i> Enregistrer la carte</button>'
     +   '</div>'
     + '</div>';
   try {
-    if(!_ccStripe) _ccStripe = Stripe(window.MOBILEA_STRIPE_PK);
-    var elements = _ccStripe.elements();
-    _ccCardEl = elements.create('card', { style:{ base:{ fontSize:'15px', color:'#1a1a1a', fontFamily:'system-ui, sans-serif', '::placeholder':{ color:'#aaa' } }, invalid:{ color:'#e53935' } }, hidePostalCode:true });
-    _ccCardEl.mount('#cc-card-element');
-    _ccCardEl.on('change', function(e){ var el=document.getElementById('cc-card-err'); if(el) el.textContent = e.error ? e.error.message : ''; });
+    if(!_ccStripe || _ccStripePk !== pk){ _ccStripe = Stripe(pk); _ccStripePk = pk; }
+    var elements = _ccStripe.elements({ locale:'fr' });
+    _ccCardEl = elements.create('card', {
+      style:{ base:{ fontSize:'16px', color:'#111111', fontFamily:'Inter, system-ui, -apple-system, sans-serif', fontWeight:'500', '::placeholder':{ color:'#9aa0a6' }, iconColor:'#b8860b' }, invalid:{ color:'#c0392b', iconColor:'#c0392b' } },
+      hidePostalCode:true
+    });
+    _ccCardEl.mount('#mc-card-element');
+    var f = document.getElementById('mc-field');
+    _ccCardEl.on('focus', function(){ if(f) f.classList.add('mc-focus'); });
+    _ccCardEl.on('blur',  function(){ if(f) f.classList.remove('mc-focus'); });
+    _ccCardEl.on('change', function(e){
+      var el=document.getElementById('mc-card-err'); if(el) el.textContent = e.error ? e.error.message : '';
+      if(f) f.classList.toggle('mc-bad', !!e.error);
+    });
+    setTimeout(function(){ try { _ccCardEl && _ccCardEl.focus(); } catch(e){} }, 300);
   } catch(e){ showToast('Erreur Stripe : '+(e.message||e), true); ccCancelAdd(); }
 };
 
 window.ccCancelAdd = function(){
-  try { if(_ccCardEl){ _ccCardEl.unmount(); _ccCardEl=null; } } catch(e){}
-  var zone = document.getElementById('cc-add-zone'); if(zone) zone.innerHTML='';
-  var addBtn = document.getElementById('cc-add-btn'); if(addBtn) addBtn.style.display='';
+  try { if(_ccCardEl){ _ccCardEl.destroy(); } } catch(e){}
+  _ccCardEl = null;
+  var zone = document.getElementById('mc-add-zone'); if(zone) zone.innerHTML='';
+  var addBtn = document.getElementById('mc-add-btn'); if(addBtn) addBtn.style.display='';
 };
 
+function _ccBtnEtat(btn, charge){
+  if(!btn) return;
+  btn.disabled = !!charge;
+  btn.innerHTML = charge ? '<span class="mc-spin"></span> Vérification…' : '<i class="fas fa-lock" style="font-size:13px"></i> Enregistrer la carte';
+}
+
 window.ccSaveCard = async function(){
-  var btn = document.getElementById('cc-save-btn');
-  var errEl = document.getElementById('cc-card-err');
+  var btn = document.getElementById('mc-save-btn');
+  var errEl = document.getElementById('mc-card-err');
   if(!_ccStripe || !_ccCardEl){ return; }
-  if(btn){ btn.disabled=true; btn.textContent='Enregistrement…'; }
+  if(errEl) errEl.textContent = '';
+  _ccBtnEtat(btn, true);
   try {
     var si = await _ccApi('setup-intent');
+    // La clé publique du Worker a changé (ou vient d'arriver) : on recrée le
+    // champ carte avec la bonne clé, sinon Stripe ne trouve pas la demande.
+    if(_ccPkServeur && _ccPkServeur !== _ccStripePk){
+      _ccBtnEtat(btn, false);
+      await ccShowAddForm();
+      var e2 = document.getElementById('mc-card-err'); if(e2) e2.textContent = 'Merci de saisir à nouveau votre carte.';
+      return;
+    }
     var res = await _ccStripe.confirmCardSetup(si.clientSecret, { payment_method:{ card:_ccCardEl } });
-    if(res.error){ if(errEl) errEl.textContent = res.error.message; if(btn){ btn.disabled=false; btn.textContent='Enregistrer la carte'; } return; }
+    if(res.error){
+      var msg = res.error.message || 'Carte refusée';
+      if(/no such setupintent/i.test(msg) || res.error.code === 'resource_missing'){
+        msg = 'Le service de paiement est en cours de configuration. Réessayez plus tard ou contactez MOBILEA (code C3).';
+        try { console.warn('[Mes cartes] C3 : la clé publique Stripe (pk_…) n\'est pas du même compte/mode que STRIPE_SECRET_KEY du worker mobilea-cards. Ajoutez STRIPE_PUBLISHABLE_KEY dans ce worker.'); } catch(e){}
+      }
+      if(errEl) errEl.textContent = msg;
+      _ccBtnEtat(btn, false); return;
+    }
     showToast('✅ Carte enregistrée');
     ccCancelAdd();
     ccLoadCards();
   } catch(e){
     if(errEl) errEl.textContent = e.message || 'Erreur';
-    if(btn){ btn.disabled=false; btn.textContent='Enregistrer la carte'; }
+    _ccBtnEtat(btn, false);
   }
 };
 
-window.ccDelete = async function(pmId){
-  if(!confirm('Supprimer cette carte ?')) return;
+// Suppression avec confirmation dans la ligne (pas de fenêtre système)
+window.ccDelete = async function(pmId, btn){
+  if(btn && !btn.classList.contains('mc-conf')){
+    document.querySelectorAll('.mc-del.mc-conf').forEach(function(b){ b.classList.remove('mc-conf'); b.innerHTML='<i class="far fa-trash-alt"></i>'; });
+    btn.classList.add('mc-conf'); btn.innerHTML = 'Confirmer';
+    clearTimeout(btn._t); btn._t = setTimeout(function(){ btn.classList.remove('mc-conf'); btn.innerHTML='<i class="far fa-trash-alt"></i>'; }, 4000);
+    return;
+  }
+  if(btn){ clearTimeout(btn._t); btn.disabled = true; btn.innerHTML = '…'; }
   try { await _ccApi('delete', { paymentMethodId: pmId }); showToast('Carte supprimée'); ccLoadCards(); }
-  catch(e){ showToast(e.message || 'Erreur', true); }
+  catch(e){ showToast(e.message || 'Erreur', true); if(btn){ btn.disabled=false; btn.classList.remove('mc-conf'); btn.innerHTML='<i class="far fa-trash-alt"></i>'; } }
 };
 
 // ══════════════════════════════════════════════════════════════════════════
