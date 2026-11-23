@@ -15423,10 +15423,22 @@ window.resetClientPassword = async function() {
 };
 
 // Récupère les infos de contact du chauffeur assigné à une course (tel, véhicule, immatriculation)
+// Statuts où le client / partenaire voit le nom, la plaque et le téléphone du
+// chauffeur : uniquement quand le chauffeur a indiqué « Je suis en route »,
+// puis sur place et pendant le trajet.
+const CLI_DRV_VISIBLE = ['en_route','sur_place','onboard'];
 function getDriverContactInfo(c) {
   if(!c || !c.chauffeur) return null;
-  const drv = (D.chauffeurs||[]).find(ch => (ch.prenom+(ch.nom?' '+ch.nom:'')) === c.chauffeur);
-  const veh = (D.vehicules||[]).find(v => v.chauffeur === c.chauffeur);
+  const _nomN = String(c.chauffeur||'').trim().toLowerCase();
+  const _chs = (D.chauffeurs && D.chauffeurs.length) ? D.chauffeurs : ((window._cliDrv && window._cliDrv.ch) || []);
+  const _vhs = (D.vehicules && D.vehicules.length) ? D.vehicules : ((window._cliDrv && window._cliDrv.veh) || []);
+  const drv = _chs.find(ch => (c.chauffeurUid && ch.uid === c.chauffeurUid) || (c.chauffeurId && ch._id === c.chauffeurId) || String((ch.prenom||'')+(ch.nom?' '+ch.nom:'')).trim().toLowerCase() === _nomN);
+  const veh = _vhs.find(v => String(v.chauffeur||'').trim().toLowerCase() === _nomN || (drv && v.chauffeurId && v.chauffeurId === drv._id));
+  if(SESSION && SESSION.role === 'client') {
+    try { cliDrvCharger(); } catch(e){}
+    if(['attribuee','acceptee','offre_en_cours'].includes(c.statut)) return { masque:true, name:'', id:null, tel:'', immat:'', marque:'', modele:'' };
+    if(!CLI_DRV_VISIBLE.includes(c.statut)) return { id:null, name:c.chauffeur, tel:'', immat:'', marque:'', modele:'', apres:true };
+  }
   return {
     id: drv ? drv._id : null,
     name: c.chauffeur,
@@ -15434,10 +15446,28 @@ function getDriverContactInfo(c) {
     // n'a pas accès aux listes globales chauffeurs/véhicules) ; sinon on lit les
     // listes (cas admin/dispatch).
     tel: c.chauffeurTel || drv?.tel || '',
-    immat: c.vehImmat || veh?.immat || '',
-    marque: c.vehMarque || veh?.marque || '',
-    modele: c.vehModele || veh?.modele || ''
+    immat: c.vehImmat || veh?.immat || drv?.immat || '',
+    marque: c.vehMarque || veh?.marque || drv?.marque || '',
+    modele: c.vehModele || veh?.modele || drv?.modele || '',
+    couleur: veh?.couleur || drv?.couleur || ''
   };
+}
+
+// Côté CLIENT / PARTENAIRE : la liste des chauffeurs est vidée par sécurité.
+// On charge à part (au plus toutes les 30 s) la fiche minimale des chauffeurs
+// et les véhicules, uniquement s'il a une course où le chauffeur est en route.
+window._cliDrv = window._cliDrv || { ch: [], veh: [], at: 0, enCours: false, sig: '' };
+async function cliDrvCharger() {
+  const st = window._cliDrv;
+  if(!(SESSION && SESSION.role === 'client') || st.enCours || Date.now() - st.at < 30000) return;
+  if(!(D.courses||[]).some(c => c.chauffeur && CLI_DRV_VISIBLE.includes(c.statut))) return;
+  st.enCours = true;
+  try {
+    const [ch, veh] = await Promise.all([fbChauffeursPourClient().catch(()=>[]), fbGet('vehicules').catch(()=>[])]);
+    st.ch = ch || []; st.veh = veh || []; st.at = Date.now();
+    const sig = JSON.stringify(st.ch.map(x => [x._id, x.tel, x.immat, x.prenom, x.nom])) + JSON.stringify(st.veh.map(v => [v.chauffeur, v.immat, v.marque, v.modele]));
+    if(sig !== st.sig) { st.sig = sig; try { renderClientPortal(); } catch(e){} }
+  } finally { st.enCours = false; }
 }
 
 // Ouvre directement la messagerie sur la conversation avec le chauffeur (depuis l'espace client)
@@ -15761,11 +15791,14 @@ function renderClientPortal() {
           <button onclick="clPartagerCourse('${c._id}')" style="flex:1;padding:7px 10px;background:rgba(37,99,235,0.1);border:1px solid rgba(37,99,235,0.35);border-radius:6px;color:#2563eb;font-size:12px;font-weight:600;cursor:pointer">📤 Partager</button>
         </div>`;
         const drvInfo = getDriverContactInfo(c);
-        const driverCard = drvInfo ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.03);border-radius:var(--r-xs);border:1px solid ${color}33">
+        const driverCard = (drvInfo && drvInfo.masque) ? `<div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.03);border-radius:var(--r-xs);border:1px dashed ${color}55;font-size:12px;color:var(--muted2);line-height:1.45">
+          <span style="font-size:18px">✅</span><div><b style="color:var(--white2)">Chauffeur assigné</b><br>Son nom, sa plaque et son téléphone s'afficheront dès qu'il sera en route vers vous.</div></div>`
+          : drvInfo ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.03);border-radius:var(--r-xs);border:1px solid ${color}33">
           <div style="min-width:0">
             <div style="font-size:13px;font-weight:700">${vehIco} ${E(drvInfo.name)}</div>
-            <div style="font-size:11px;color:var(--muted2);margin-top:3px">🚘 ${(drvInfo.marque||drvInfo.modele)?E(((drvInfo.marque||'')+(drvInfo.modele?' '+drvInfo.modele:'')).trim()):'Modèle non renseigné'}</div>
-            ${drvInfo.immat?`<div style="font-size:11px;color:var(--white2);margin-top:2px;font-weight:700;letter-spacing:0.5px">🔖 ${E(drvInfo.immat)}</div>`:''}
+            ${(drvInfo.marque||drvInfo.modele)?`<div style="font-size:11px;color:var(--muted2);margin-top:3px">🚘 ${E(((drvInfo.marque||'')+(drvInfo.modele?' '+drvInfo.modele:'')+(drvInfo.couleur?' · '+drvInfo.couleur:'')).trim())}</div>`:''}
+            ${drvInfo.immat?`<div style="display:inline-block;font-size:12px;color:#111;background:#fff;border:1.5px solid #1f3a93;border-radius:4px;margin-top:5px;padding:1px 7px;font-weight:800;letter-spacing:1px;font-family:monospace">${E(drvInfo.immat)}</div>`:''}
+            ${(drvInfo.tel && !drvInfo.apres)?`<div style="font-size:11px;margin-top:4px"><a href="tel:${E(drvInfo.tel).replace(/\s/g,'')}" style="color:var(--green);font-weight:700;text-decoration:none">📞 ${E(drvInfo.tel)}</a></div>`:''}
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0">
             ${drvInfo.tel?`<a href="tel:${E(drvInfo.tel).replace(/\\s/g,'')}" style="width:36px;height:36px;border-radius:50%;background:#22c55e;display:flex;align-items:center;justify-content:center;color:#fff;text-decoration:none;font-size:14px" title="Appeler le chauffeur"><i class="fas fa-phone"></i></a>`:''}
@@ -15793,7 +15826,7 @@ function renderClientPortal() {
               ${(c.passagers && c.passagers.length)?`<div style="font-size:11px;color:var(--white2);margin-top:3px">👤 ${E(c.passagers.map(p=>`${p.prenom||''} ${p.nom||''}`.trim()).filter(Boolean).slice(0,3).join(', '))}${c.passagers.length>3?` +${c.passagers.length-3}`:''}</div>`:''}
               <div style="font-size:10px;color:var(--gold);margin-top:4px">Voir le détail ›</div>
             </div>
-            <div style="text-align:right">${sBdg(c.statut)}<div style="font-size:11px;color:var(--muted2);margin-top:4px">${vehIco} ${E(c.chauffeur||t('assignment_pending'))}</div>${c.ref?`<div style="font-size:10px;color:var(--gold)">${E(c.ref)}</div>`:''}</div>
+            <div style="text-align:right">${sBdg(c.statut)}<div style="font-size:11px;color:var(--muted2);margin-top:4px">${vehIco} ${E(c.chauffeur ? (['attribuee','acceptee','offre_en_cours'].includes(c.statut) ? 'Chauffeur assigné' : c.chauffeur) : t('assignment_pending'))}</div>${c.ref?`<div style="font-size:10px;color:var(--gold)">${E(c.ref)}</div>`:''}</div>
           </div>${timeline}${lvvAlert}${waitingBanner}${driverCard}${clientNavBtn}${autoAssignNote}${actionBtns}
           ${c.createdByClient?`<div style="font-size:10px;color:var(--muted);margin-top:6px;border-top:1px solid ${color}22;padding-top:6px">Créé par ${c.createdByClient}</div>`:''}
         </div>`;
@@ -17552,11 +17585,13 @@ window.openClientCourseDetail = function(courseId) {
         }).join('')}
       </div>`:''}
 
-      ${drvInfo?`<div style="margin-top:16px;padding:14px;background:#f7f7f8;border-radius:12px">
+      ${(drvInfo && drvInfo.masque)?`<div style="margin-top:16px;padding:14px;background:#f7f7f8;border-radius:12px;font-size:13px;color:#555;line-height:1.5">
+        <div style="font-size:12px;color:#999;margin-bottom:6px;font-weight:600">VOTRE CHAUFFEUR</div>✅ Chauffeur assigné. Son nom, sa plaque et son téléphone s'afficheront dès qu'il sera en route vers vous.</div>`
+      : drvInfo?`<div style="margin-top:16px;padding:14px;background:#f7f7f8;border-radius:12px">
         <div style="font-size:12px;color:#999;margin-bottom:8px;font-weight:600">VOTRE CHAUFFEUR</div>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
           <div><div style="font-size:14px;font-weight:700">${E(drvInfo.name)}</div>
-          <div style="font-size:12px;color:#888;margin-top:2px">🚘 ${(drvInfo.marque||drvInfo.modele)?E(((drvInfo.marque||'')+(drvInfo.modele?' '+drvInfo.modele:'')).trim()):'Modèle non renseigné'}</div>${drvInfo.immat?`<div style="font-size:13px;color:#111;margin-top:3px;font-weight:800;letter-spacing:0.5px">🔖 ${E(drvInfo.immat)}</div>`:''}</div>
+          ${(drvInfo.marque||drvInfo.modele)?`<div style="font-size:12px;color:#888;margin-top:2px">🚘 ${E(((drvInfo.marque||'')+(drvInfo.modele?' '+drvInfo.modele:'')+(drvInfo.couleur?' · '+drvInfo.couleur:'')).trim())}</div>`:''}${drvInfo.immat?`<div style="display:inline-block;font-size:13px;color:#111;background:#fff;border:1.5px solid #1f3a93;border-radius:4px;margin-top:5px;padding:1px 8px;font-weight:800;letter-spacing:1px;font-family:monospace">${E(drvInfo.immat)}</div>`:''}${(drvInfo.tel && !drvInfo.apres)?`<div style="font-size:13px;margin-top:5px"><a href="tel:${E(drvInfo.tel).replace(/\s/g,'')}" style="color:#16a34a;font-weight:700;text-decoration:none">📞 ${E(drvInfo.tel)}</a></div>`:''}</div>
           <div style="display:flex;gap:8px">
             ${drvInfo.tel?`<a href="tel:${E(drvInfo.tel).replace(/\\s/g,'')}" style="width:42px;height:42px;border-radius:50%;background:#22c55e;display:flex;align-items:center;justify-content:center;color:#fff;text-decoration:none;font-size:16px">📞</a>`:''}
             ${drvInfo.id?`<button onclick="document.getElementById('client-course-detail-ov').remove();openDriverChatFromClient('drv_${drvInfo.id}','${E(drvInfo.name)}')" style="width:42px;height:42px;border-radius:50%;background:#b8860b;border:none;color:#fff;cursor:pointer;font-size:16px">💬</button>`:''}
@@ -20045,7 +20080,8 @@ window.refreshClientMap = function() {
   // On utilise la MÊME logique de correspondance élargie que le portail
   // (société, nom, identifiant de compte) — sinon les partenaires dont le nom
   // de société ne correspondait pas exactement ne voyaient jamais la carte.
-  const trackingStatuses = ['acceptee','en_route','sur_place','onboard'];
+  // Position visible seulement quand le chauffeur a indiqué « Je suis en route ».
+  const trackingStatuses = ['en_route','sur_place','onboard'];
   const matchesClient = (c) => {
     if(c.clientUser && SESSION.clientUser && c.clientUser===SESSION.clientUser) return true;
     const cn=(c.client||'').trim().toUpperCase();
@@ -20134,11 +20170,29 @@ function _renderCpMarkers(tracked) {
       pulse: true
     });
     const icon = window.L.divIcon({html:iconHtml, className:'', iconSize:[90,90], iconAnchor:[45,45], popupAnchor:[0,-40]});
-    const popup = `<div style="font-family:'Inter',sans-serif;min-width:170px">
-      <div style="font-size:14px;font-weight:700">${vehIcon} ${name}</div>
-      <div style="font-size:12px;color:#00b4ff;font-weight:600;margin:4px 0">${statusLabels[course.statut]||course.statut}</div>
-      <div style="font-size:11px;color:#666">${course.depart||''} → ${course.arrivee||''}</div>
+    // Comme côté dispatch : âge de la position, vitesse, direction, distance et
+    // temps estimé jusqu'au point de prise en charge (ou jusqu'à l'arrivée à bord).
+    const _vitKmh = (ch.gps.speed != null && ch.gps.speed >= 0) ? Math.round(ch.gps.speed * 3.6) : null;
+    const _dirs = ['N','NE','E','SE','S','SO','O','NO'];
+    const _dir = (ch.gps.heading != null && ch.gps.heading >= 0) ? _dirs[Math.round(ch.gps.heading / 45) % 8] : '';
+    const _cibleLat = course.statut === 'onboard' ? parseFloat(course.dropLat) : parseFloat(course.pickupLat);
+    const _cibleLng = course.statut === 'onboard' ? parseFloat(course.dropLng) : parseFloat(course.pickupLng);
+    let _distTxt = '';
+    if(!isNaN(_cibleLat) && !isNaN(_cibleLng) && course.statut !== 'sur_place') {
+      const _km = distanceKm(ch.gps.lat, ch.gps.lng, _cibleLat, _cibleLng) * 1.3;   // ~ distance par la route
+      const _min = Math.max(1, Math.round(_km / 35 * 60) + 2);
+      _distTxt = (_km < 1 ? Math.round(_km * 1000) + ' m' : _km.toFixed(1).replace('.', ',') + ' km') + ' · ~' + _min + ' min' + (course.statut === 'onboard' ? ' jusqu\'à l\'arrivée' : ' du départ');
+    }
+    const _drvC = getDriverContactInfo(course) || {};
+    const popup = `<div style="font-family:'Inter',sans-serif;min-width:190px">
+      <div style="font-size:14px;font-weight:700">${vehIcon} ${E(name)}</div>
+      ${_drvC.immat?`<div style="display:inline-block;font-size:11px;color:#111;border:1.5px solid #1f3a93;border-radius:4px;margin-top:3px;padding:0 6px;font-weight:800;letter-spacing:1px;font-family:monospace">${E(_drvC.immat)}</div>`:''}
+      <div style="font-size:12px;color:#00b4ff;font-weight:600;margin:4px 0">${statusLabels[course.statut]||E(course.statut)}</div>
+      <div style="font-size:11px;color:#666">${E(course.depart||'')} → ${E(course.arrivee||'')}</div>
+      ${_distTxt?`<div style="font-size:12px;color:#111;font-weight:700;margin-top:4px">📏 ${_distTxt}</div>`:''}
+      ${(_vitKmh!=null && _vitKmh>2)?`<div style="font-size:11px;color:#555;margin-top:2px">🚀 ${_vitKmh} km/h${_dir?' · direction '+_dir:''}</div>`:''}
       ${(()=>{ const a=formatGpsAge(ch.gps.at); return a?`<div style="font-size:10px;color:${a.couleur};font-weight:600;margin-top:3px">📍 Position ${a.texte}</div>`:''; })()}
+      ${(_drvC.tel && !_drvC.masque)?`<a href="tel:${E(_drvC.tel).replace(/\s/g,'')}" style="display:block;text-align:center;margin-top:7px;background:#16a34a;color:#fff;border-radius:7px;padding:6px;font-size:12px;font-weight:700;text-decoration:none">📞 Appeler ${E(ch.prenom||'')}</a>`:''}
     </div>`;
 
     if(cpMarkers[ch._id]) {
@@ -21105,8 +21159,22 @@ async function fbChauffeursPourClient() {
   let pub = [], tous = [];
   try { pub = await fbGet('chauffeurs_pub') || []; } catch(e) {}
   try { tous = await fbGet('chauffeurs') || []; } catch(e) {}     // refusé (liste vide) une fois l'étape 2 publiée
-  const vus = {}; pub.forEach(function(c){ vus[c._id] = 1; });
-  return pub.concat(tous.filter(function(c){ return !vus[c._id]; }));
+  // Fusion PAR CHAUFFEUR en gardant la position la PLUS RÉCENTE : un chauffeur
+  // dont l'app iPhone n'est pas encore à jour n'écrit que dans sa fiche
+  // complète — la fiche publique gardait alors une vieille position
+  // (« Position il y a 63h » alors qu'il roulait).
+  const tps = function(c){ const g = c && c.gps; const v = Date.parse((g && (g.at || g.ts)) || c.gpsUpdated || c.majAt || ''); return isNaN(v) ? 0 : v; };
+  const parId = {};
+  tous.forEach(function(c){ if(c && c._id) parId[c._id] = c; });
+  pub.forEach(function(p){
+    if(!p || !p._id) return;
+    const f = parId[p._id];
+    if(!f) { parId[p._id] = p; return; }
+    const m = Object.assign({}, f, p);
+    if(tps(f) > tps(p)) { m.gps = f.gps; m.gpsActive = f.gpsActive; }
+    parId[p._id] = m;
+  });
+  return Object.values(parId);
 }
 
 async function enregistrerTrace(driverId, lat, lng, extra){
@@ -27052,3 +27120,16 @@ document.addEventListener('pointerdown', function(e){
 }, true);
 document.addEventListener('keydown', function(e){ if(e.key === 'Escape') pacCacher(); }, true);
 window.addEventListener('hashchange', pacCacher);
+
+
+// Suivi en direct côté client / partenaire : la carte se met à jour toutes les
+// 15 s tant qu'un chauffeur est en route (au lieu d'attendre le rafraîchissement
+// général, beaucoup plus lent).
+setInterval(function(){
+  try {
+    if(!(SESSION && SESSION.role === 'client') || document.hidden) return;
+    const sec = document.getElementById('cp-map-section');
+    if(!(D.courses||[]).some(c => c.chauffeur && CLI_DRV_VISIBLE.includes(c.statut))) return;
+    if(typeof refreshClientMap === 'function') refreshClientMap();
+  } catch(e){}
+}, 15000);
