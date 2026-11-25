@@ -5466,8 +5466,18 @@ window.duplicateCourse = async function(id) {
   if(!c) return;
   const copy = {...c};
   delete copy._id;
+  // Une copie est un NOUVEAU transfert : on retire tout ce qui appartient à
+  // l'original — chauffeur (sinon la copie restait dans l'app du chauffeur
+  // alors qu'elle s'affichait « À assigner »), lien externe (même lien pour 2
+  // courses), numéro LogiPax (la copie modifiait le bon LogiPax de l'original),
+  // paiement, horaires de déroulement, offres en cours…
+  const _aRetirer = ['chauffeurId','chauffeurUid','chauffeurTel','extToken','extChauffeurNom','extChauffeurTel','extIdentifiedAt','extLastLat','extLastLng','extLastPos','lastLat','lastLng',
+    'logipaxNumBon','logipaxIdCourse','logipaxSynced','logipaxErreur','logipaxARelancer','logipaxId','paye','payee','payeLe','paiement_statut','paiementId','paiementMode','paiementLe','stripeSessionId','stripePaid','payLienId',
+    'accepteePar','accepteeLe','attribueeLe','heureDepose','heureTerminee','terminatedAt','annuleePar','annuleeLe','offerChauffeurId','offerExpiresAt','offerCandidateIds','sousTraitance','vehImmat','vehModele','updatedAt'];
+  _aRetirer.forEach(function(k){ delete copy[k]; });
   copy.statut = 'nouvelle';
   copy.chauffeur = '';
+  copy.dupliqueDe = id;
   copy.createdAt = new Date().toISOString();
   await fbPush('courses', copy);
   const ov = document.getElementById('course-detail-ov');
@@ -5760,6 +5770,10 @@ function detectConflict(chauffeurName, datetime, excludeId, coursesOverride, new
     // enchaîner ? Il faut : fin estimée + marge <= début nouvelle course, ET
     // même zone (là où il finit = là où commence la nouvelle).
     const margeDispo = (newStart - cEnd)/60000; // minutes entre sa fin et la nouvelle
+    // Course terminée depuis longtemps (plus de 3 h avant) : aucun conflit possible.
+    // Sans ce garde-fou, une vieille course restée « attribuée » (ex. du 15/11)
+    // déclenchait un faux conflit pour un transfert du 01/12.
+    if(margeDispo >= 180) continue;
     const cZoneFin = getZoneOf(c.arrivee||c.duree||'');
     const memeZone = (cZoneFin !== 'autre' && cZoneFin === newZone);
 
