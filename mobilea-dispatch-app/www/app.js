@@ -444,6 +444,91 @@ async function fbQueryEq(path, child, value) {
   }
 }
 
+// ═══ LECTURES CIBLÉES (optimisation coût Firebase, 25/11) ═══════════════════
+// Firebase facture chaque octet téléchargé. Un chauffeur n'a besoin que de SES
+// courses, des offres en cours, de SA fiche et de SES messages : on ne
+// télécharge plus les listes complètes (courses ≈ 570 Ko et en croissance).
+async function fbLireNoeud(chemin) {
+  try {
+    const token = await getAuthToken();
+    const r = await fetch(`${FB_URL}/${chemin}.json${authParam(token)}`);
+    if(!r.ok) return undefined;
+    return fbNeutre(await r.json());
+  } catch(e) { return undefined; }
+}
+function _fusionParId(listes) {
+  const m = new Map();
+  (listes||[]).forEach(function(l){ (l||[]).forEach(function(c){ if(c && c._id) m.set(c._id, c); }); });
+  return Array.from(m.values());
+}
+// Courses utiles à un chauffeur. null = toutes les lectures ont échoué
+// (l'appelant retombe alors sur la lecture complète, comme avant).
+async function fbGetCoursesChauffeurCible() {
+  const uid = (window.fbAuth && window.fbAuth.currentUser) ? window.fbAuth.currentUser.uid : null;
+  const id = SESSION && SESSION.chauffeurId;
+  const noms = new Set(); if(SESSION && SESSION.name) noms.add(SESSION.name);
+  const me = (D.chauffeurs||[]).find(function(x){ return x._id === id; });
+  if(me) { const n = ((me.prenom||'') + (me.nom ? ' ' + me.nom : '')).trim(); if(n) noms.add(n); }
+  const req = [];
+  if(uid) req.push(fbQueryEq('courses', 'chauffeurUid', uid));
+  noms.forEach(function(n){ req.push(fbQueryEq('courses', 'chauffeur', n)); });
+  ['offre_ouverte','offre_prioritaire','offre_en_cours'].forEach(function(st){ req.push(fbQueryEq('courses', 'statut', st)); });
+  if(SESSION && SESSION.gerant && uid) req.push(fbQueryEq('courses', 'createdByUid', uid));
+  const res = await Promise.all(req);
+  if(res.every(function(r){ return r === null; })) return null;
+  return _fusionParId(res);
+}
+// Messages d'un chauffeur : ses 2 fils (support et client → chauffeur).
+async function fbMessagesChauffeur() {
+  const id = SESSION && SESSION.chauffeurId;
+  if(!id) return fbGet('messages');
+  const res = await Promise.all([fbQueryEq('messages', 'conv', 'support_drv_' + id), fbQueryEq('messages', 'conv', 'drv_' + id)]);
+  if(res.every(function(r){ return r === null; })) return fbGet('messages');
+  return _fusionParId(res).sort(function(a,b){ return new Date(a.at||0) - new Date(b.at||0); });
+}
+// Fiches chauffeurs pour un chauffeur : la sienne seulement (un gérant garde
+// la liste complète, rechargée au plus toutes les 30 min, + sa fiche à jour).
+async function fbChauffeursPourChauffeur() {
+  const id = SESSION && SESSION.chauffeurId;
+  const complet = function(){ return fbGet('chauffeurs').then(function(l){ window._chListeAt = Date.now(); return l; }); };
+  if(!id) return complet();
+  if(SESSION.gerant) {
+    if(!(D.chauffeurs && D.chauffeurs.length > 1) || !window._chListeAt || Date.now() - window._chListeAt > 30*60*1000) return complet();
+    const f = await fbLireNoeud('chauffeurs/' + id);
+    if(f && typeof f === 'object') { const l = D.chauffeurs.filter(function(c){ return c._id !== id; }); l.push(Object.assign({ _id:id }, f)); return l; }
+    return D.chauffeurs;
+  }
+  const f = await fbLireNoeud('chauffeurs/' + id);
+  if(f && typeof f === 'object') return [Object.assign({ _id:id }, f)];
+  return complet();
+}
+// Fiche (publique + complète) d'UN chauffeur, position la plus récente.
+async function fbFicheChauffeurPosition(id) {
+  const [pub, full] = await Promise.all([fbLireNoeud('chauffeurs_pub/' + id), fbLireNoeud('chauffeurs/' + id)]);
+  const tps = function(c){ const g = c && c.gps; const v = Date.parse((g && (g.at || g.ts)) || (c && (c.gpsUpdated || c.majAt)) || ''); return isNaN(v) ? 0 : v; };
+  if(!(pub && typeof pub === 'object') && !(full && typeof full === 'object')) return null;
+  const m = Object.assign({ _id:id }, full || {}, pub || {});
+  if(full && pub && tps(full) > tps(pub)) { m.gps = full.gps; m.gpsActive = full.gpsActive; }
+  return m;
+}
+
+// Battement de cœur du chauffeur (« app ouverte ») : toutes les 30 s dans sa
+// fiche publique (lue seulement à la demande, pour décider d'envoyer un SMS),
+// et toutes les 5 min dans sa fiche complète (que le dispatch reçoit en direct).
+// Avant : toutes les 6 s dans la fiche complète, diffusée à chaque écoute.
+function chBattementCoeur() {
+  const id = SESSION && SESSION.chauffeurId; if(!id) return;
+  const now = Date.now();
+  if(!window._hbPubAt || now - window._hbPubAt >= 30000) {
+    window._hbPubAt = now;
+    try { fbUpdate('chauffeurs_pub', id, { vu: now }); } catch(e){}
+  }
+  if(!window._hbFullAt || now - window._hbFullAt >= 5*60*1000) {
+    window._hbFullAt = now;
+    try { fbUpdate('chauffeurs', id, { lastSeen: new Date().toISOString() }); } catch(e){}
+  }
+}
+
 async function fbGetCoursesClient(uid) {
   if(!uid) return [];
   try {
@@ -647,7 +732,11 @@ function startPointagesListener() {
   if(!SESSION) return;
   if(SESSION.role === 'client') return; // les clients n'utilisent pas les pointages (lecture réservée)
   try {
-    _pointagesListenerRef = window.fbDB.ref('pointages');
+    // Un chauffeur (non gérant) n'écoute que SES pointages (avant : ceux de tous
+    // les chauffeurs, un nœud qui grossit chaque jour). Index chauffeurId déjà présent.
+    _pointagesListenerRef = (SESSION.role === 'chauffeur' && !SESSION.gerant && SESSION.chauffeurId)
+      ? window.fbDB.ref('pointages').orderByChild('chauffeurId').equalTo(SESSION.chauffeurId)
+      : window.fbDB.ref('pointages');
     _pointagesListenerCb = _pointagesListenerRef.on('value', (snap) => {
       const val = fbNeutre(snap.val());
       const arr = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
@@ -703,10 +792,34 @@ function startMessagesListener() {
   if(!window.fbDB) { if((window._msgBootTries=(window._msgBootTries||0)+1) < 20) setTimeout(startMessagesListener, 500); return; }
   if(!SESSION) return;
   try {
-    _messagesListenerRef = window.fbDB.ref('messages');
-    _messagesListenerCb = _messagesListenerRef.on('value', (snap) => {
-      const val = fbNeutre(snap.val());
-      const arr = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
+    // CHAUFFEUR : seulement ses 2 fils (support_drv_<id> et drv_<id>) au lieu
+    // de TOUS les messages de tout le monde (coût et confidentialité).
+    const _drvMsgId = (SESSION.role === 'chauffeur') ? SESSION.chauffeurId : null;
+    let _arrDepuisSnap;
+    if(_drvMsgId) {
+      const fils = ['support_drv_' + _drvMsgId, 'drv_' + _drvMsgId];
+      const seaux = {};
+      window._msgFilsRefs = [];
+      let _cbCommun = null;
+      fils.forEach(function(cv){
+        const q = window.fbDB.ref('messages').orderByChild('conv').equalTo(cv);
+        const cb = q.on('value', function(snap){
+          const val = fbNeutre(snap.val());
+          seaux[cv] = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
+          if(Object.keys(seaux).length < fils.length) return;      // attendre les 2 fils
+          if(_cbCommun) _cbCommun({ val: function(){ return null; }, _arr: [].concat.apply([], Object.values(seaux)) });
+        }, function(err){ console.warn('Écoute messages interrompue:', err); stopMessagesListener(); });
+        window._msgFilsRefs.push({ q: q, cb: cb });
+      });
+      _messagesListenerRef = window._msgFilsRefs[0].q;
+      _arrDepuisSnap = function(fn){
+        _cbCommun = fn;
+        if(Object.keys(seaux).length >= fils.length) fn({ _arr: [].concat.apply([], Object.values(seaux)) });
+      };
+    }
+    const _traiterMessages = (snap) => {
+      const val = snap._arr ? null : fbNeutre(snap.val());
+      const arr = snap._arr ? snap._arr.slice() : (val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : []);
       // Trier par date pour que "dernier message" soit fiable partout.
       arr.sort((a,b) => new Date(a.at||0) - new Date(b.at||0));
       const avant = (D.messages||[]).filter(m => !m.read && m.from !== SESSION.uid).length;
@@ -749,13 +862,22 @@ function startMessagesListener() {
         } catch(e){}
       }
       window._msgListenerPret = true;
-    }, (err) => { console.warn('Écoute messages interrompue:', err); stopMessagesListener(); });
+    };
+    if(_drvMsgId) {
+      _arrDepuisSnap(_traiterMessages);
+      console.log('🔊 Écoute de mes conversations active');
+      return;
+    }
+    _messagesListenerRef = window.fbDB.ref('messages');
+    _messagesListenerCb = _messagesListenerRef.on('value', _traiterMessages, (err) => { console.warn('Écoute messages interrompue:', err); stopMessagesListener(); });
     console.log('🔊 Écoute temps réel des messages active');
   } catch(e) { console.warn('startMessagesListener:', e); _messagesListenerRef = null; }
 }
 
 function stopMessagesListener() {
   try { if(_messagesListenerRef && _messagesListenerCb) _messagesListenerRef.off('value', _messagesListenerCb); } catch(e){}
+  try { (window._msgFilsRefs||[]).forEach(function(r){ try { r.q.off('value', r.cb); } catch(e){} }); } catch(e){}
+  window._msgFilsRefs = [];
   _messagesListenerRef = null; _messagesListenerCb = null; window._msgListenerPret = false;
 }
 
@@ -763,6 +885,40 @@ function startChauffeursListener() {
   if(_chauffeursListenerRef) return;
   if(!window.fbDB) { if((window._chBootTries=(window._chBootTries||0)+1) < 20) setTimeout(startChauffeursListener, 500); return; }
   if(!SESSION) return;
+  // CHAUFFEUR : avant, chaque chauffeur recevait en direct TOUTES les positions
+  // de TOUS les chauffeurs (volume ∝ nombre de chauffeurs²). Il n'écoute plus
+  // que sa propre fiche ; un gérant écoute en plus son équipe (soc_nom).
+  if(SESSION.role === 'chauffeur' && SESSION.chauffeurId) {
+    try {
+      const id = SESSION.chauffeurId;
+      const surMoi = function(me) {
+        if(!me) return;
+        const l = (D.chauffeurs||[]).filter(function(c){ return c._id !== id; }); l.push(me); D.chauffeurs = l;
+        SESSION.pointeuse = (me.pointeuse === true);
+        try { chDroitsSync(me); } catch(e){}
+        if(typeof renderMesCourses === 'function') { try { renderMesCourses(); } catch(e){} }
+        if(typeof renderMaJournee === 'function') { try { renderMaJournee(); } catch(e){} }
+      };
+      _chauffeursListenerRef = window.fbDB.ref('chauffeurs/' + id);
+      _chauffeursListenerCb = _chauffeursListenerRef.on('value', (snap) => {
+        const v = fbNeutre(snap.val());
+        if(v && typeof v === 'object') surMoi(Object.assign({ _id:id }, v));
+      }, (err) => { console.warn('Écoute de ma fiche interrompue:', err); stopChauffeursListener(); });
+      const soc = (window._gOpts && window._gOpts.soc) || SESSION.socNom || '';
+      if(SESSION.gerant && soc) {
+        const q = window.fbDB.ref('chauffeurs').orderByChild('soc_nom').equalTo(soc);
+        const cbEq = q.on('value', (snap) => {
+          const val = fbNeutre(snap.val());
+          const equipe = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
+          const ids = new Set(equipe.map(function(c){ return c._id; }));
+          D.chauffeurs = (D.chauffeurs||[]).filter(function(c){ return !ids.has(c._id); }).concat(equipe);
+        }, (err) => { console.warn('Écoute équipe interrompue:', err); });
+        window._chEquipeEcoute = { q: q, cb: cbEq };
+      }
+      console.log('🔊 Écoute de ma fiche chauffeur active' + (SESSION.gerant ? ' (+ équipe)' : ''));
+    } catch(e) { console.warn('startChauffeursListener (chauffeur):', e); _chauffeursListenerRef = null; }
+    return;
+  }
   try {
     _chauffeursListenerRef = window.fbDB.ref('chauffeurs');
     _chauffeursListenerCb = _chauffeursListenerRef.on('value', (snap) => {
@@ -786,6 +942,8 @@ function startChauffeursListener() {
 
 function stopChauffeursListener() {
   try { if(_chauffeursListenerRef && _chauffeursListenerCb) _chauffeursListenerRef.off('value', _chauffeursListenerCb); } catch(e){}
+  try { if(window._chEquipeEcoute) window._chEquipeEcoute.q.off('value', window._chEquipeEcoute.cb); } catch(e){}
+  window._chEquipeEcoute = null;
   _chauffeursListenerRef = null; _chauffeursListenerCb = null;
 }
 
@@ -1405,8 +1563,12 @@ async function loadAll() {
 
     if(role === 'chauffeur') {
       // CHAUFFEUR: minimum — ses courses + son profil + messages
+      // Lectures CIBLÉES (avant : toutes les courses + tous les chauffeurs +
+      // tous les messages à chaque rechargement).
       const [courses, chauffeurs, messages] = await Promise.all([
-        fbGet('courses'), fbGet('chauffeurs'), fbGet('messages')
+        fbGetCoursesChauffeurCible().then(function(r){ return r === null ? fbGet('courses') : r; }),
+        fbChauffeursPourChauffeur(),
+        fbMessagesChauffeur()
       ]);
       // Garde-fou anti-ecrasement par du vide (jeton pas pret / coupure).
       const _garde = (neuf, ancien) => (Array.isArray(neuf) && neuf.length>0) ? neuf : (ancien||[]);
@@ -1416,7 +1578,7 @@ async function loadAll() {
       // Filtrer: ses courses, plus — s'il est EN SERVICE — les offres ouvertes
       // à tous et (s'il est prioritaire) les offres réservées aux prioritaires.
       // Un chauffeur hors service ne reçoit aucune nouvelle offre.
-      const moiCh = chauffeurs.find(x => (x.prenom+(x.nom?' '+x.nom:'')) === SESSION.name);
+      const moiCh = (chauffeurs||[]).find(x => x._id === SESSION.chauffeurId) || (chauffeurs||[]).find(x => (x.prenom+(x.nom?' '+x.nom:'')) === SESSION.name);
       const jeSuisPrioritaire = moiCh && moiCh.prioritaire === true;
       const jeSuisEnService = (typeof _driverOnService === 'undefined') ? true : _driverOnService;
       // Matcher SES courses de façon robuste : par nom (insensible à la casse et
@@ -1471,7 +1633,7 @@ async function loadAll() {
         D.clients = []; D.tarifs = []; D.logs = [];
         D.dispatch_accounts = []; D.client_accounts = []; D.factures_chauffeurs = [];
       } else {
-        D.chauffeurs = D.chauffeurs.filter(c => (c.prenom+(c.nom?' '+c.nom:'')) === SESSION.name);
+        D.chauffeurs = D.chauffeurs.filter(c => c._id === SESSION.chauffeurId || (c.prenom+(c.nom?' '+c.nom:'')) === SESSION.name);
         D.clients = []; D.tarifs = []; D.vehicules = []; D.logs = [];
         D.dispatch_accounts = []; D.client_accounts = []; D.factures_chauffeurs = [];
       }
@@ -14211,7 +14373,7 @@ function startMsgRefresh() {
     }
     // Fallback : listener KO → on refetch
     if(currentConv) await loadMessages(currentConv);
-    const allMsgs = await fbGet('messages');
+    const allMsgs = (SESSION.role === 'chauffeur') ? await fbMessagesChauffeur() : await fbGet('messages');
     if (Array.isArray(allMsgs) && (allMsgs.length > 0 || !D.messages || D.messages.length === 0)) {
       D.messages = allMsgs;
     }
@@ -14236,6 +14398,12 @@ function startMsgRefresh() {
   if(SESSION.role === 'client' && !window._clientGpsInterval) {
     window._clientGpsInterval = setInterval(async()=>{
       if(SESSION.role !== 'client') return;
+      // Économie : rafraîchissement toutes les 15 s seulement si une course est
+      // en cours aujourd'hui ; sinon toutes les 60 s (et rien si l'app est cachée).
+      if(document.visibilityState === 'hidden') return;
+      const _actif = (D.courses||[]).some(function(c){ return ['attribuee','acceptee','en_route','sur_place','onboard'].indexOf(c.statut) >= 0 && String(c.datetime||'').slice(0,10) <= new Date().toISOString().slice(0,10); });
+      window._cliTick = (window._cliTick || 0) + 1;
+      if(!_actif && window._cliTick % 4 !== 0) return;
       // PARTENAIRE : lecture cloisonnée par partenaireUid (un fbGet('courses')
       // global renverrait 401 et viderait la liste → "affiche puis disparaît").
       // On ne charge pas non plus la liste chauffeurs (interdite/inutile pour lui).
@@ -14253,8 +14421,10 @@ function startMsgRefresh() {
       // (createdByUid = son UID) — la lecture globale lui est refusée.
       try {
         const _cuid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.uid;
-        const [courses, chauffeurs] = await Promise.all([fbGetCoursesClient(_cuid), fbGet('chauffeurs')]);
+        const courses = await fbGetCoursesClient(_cuid);
         if(Array.isArray(courses)) D.courses = courses.sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
+        // Seulement le(s) chauffeur(s) de SES courses en cours (avant : toute la liste toutes les 15 s).
+        const chauffeurs = await fbChauffeursPourClient();
         if(Array.isArray(chauffeurs) && chauffeurs.length) D.chauffeurs = chauffeurs;
         renderClientPortal();
       } catch(e) { /* silencieux : on garde l'affichage courant */ }
@@ -14304,10 +14474,7 @@ function startMsgRefresh() {
       // SECOURS UNIQUEMENT : si l'écoute temps réel tourne, elle gère déjà tout
       // (nouvelles courses, offres urgentes). On ne fait alors qu'un battement
       // de cœur léger et on saute la lecture complète coûteuse.
-      if(window._listenerActif) {
-        if(SESSION.chauffeurId) { try { fbUpdate('chauffeurs', SESSION.chauffeurId, { lastSeen: new Date().toISOString() }); } catch(e){} }
-        return;
-      }
+      if(window._listenerActif) { chBattementCoeur(); return; }
       // En arriere-plan : un seul passage par minute au lieu de dix.
       if(!cycleActif('drv', 60000)) return;
       // Battement de cœur : on note régulièrement que l'app du chauffeur est
@@ -14318,8 +14485,8 @@ function startMsgRefresh() {
       // on le déconnecte immédiatement (il ne doit plus recevoir de courses).
       if(SESSION.chauffeurId) {
         try {
-          const allCh = await fbGet('chauffeurs');
-          const me = allCh.find(x=>x._id===SESSION.chauffeurId);
+          const _f = await fbLireNoeud('chauffeurs/' + SESSION.chauffeurId);
+          const me = (_f && typeof _f === 'object') ? Object.assign({ _id:SESSION.chauffeurId }, _f) : null;
           if(me && (me.archived === true || me.forceLogout === true)) {
             clearInterval(window._driverWatchInterval); window._driverWatchInterval = null;
             chDeconnexionForcee('Votre compte a été désactivé par un administrateur.');
@@ -14327,7 +14494,7 @@ function startMsgRefresh() {
           }
         } catch(e){}
       }
-      if(SESSION.chauffeurId) { try { fbUpdate('chauffeurs', SESSION.chauffeurId, { lastSeen: new Date().toISOString() }); } catch(e){} }
+      chBattementCoeur();
 
       // ── LECTURE ECONOME ───────────────────────────────────────────────
       // Cette boucle telechargeait TOUTE la base de courses toutes les 6 s :
@@ -21129,7 +21296,7 @@ window.onNativeGPS = async function(pos) {
     gpsActive = true;
     _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
     const now = Date.now();
-    if(now - _gpsLastSent < 10000) return;
+    if(now - _gpsLastSent < 15000) return;          // 1 écriture / 15 s (économie)
     _gpsLastSent = now;
     await sendGPS(pos);
   } catch(e) { console.warn('[onNativeGPS]', e); }
@@ -21188,26 +21355,26 @@ async function chPubMaj(ch, gps, actif) {
 }
 // Lecture côté CLIENT : la fiche publique d'abord ; l'ancienne lecture complète
 // seulement si la fiche publique est encore vide (chauffeurs pas encore à jour).
+// CLIENT / PARTENAIRE : uniquement les chauffeurs de SES courses en cours
+// (avant : 2 listes complètes toutes les 15 s).
 async function fbChauffeursPourClient() {
-  let pub = [], tous = [];
-  try { pub = await fbGet('chauffeurs_pub') || []; } catch(e) {}
-  try { tous = await fbGet('chauffeurs') || []; } catch(e) {}     // refusé (liste vide) une fois l'étape 2 publiée
-  // Fusion PAR CHAUFFEUR en gardant la position la PLUS RÉCENTE : un chauffeur
-  // dont l'app iPhone n'est pas encore à jour n'écrit que dans sa fiche
-  // complète — la fiche publique gardait alors une vieille position
-  // (« Position il y a 63h » alors qu'il roulait).
-  const tps = function(c){ const g = c && c.gps; const v = Date.parse((g && (g.at || g.ts)) || c.gpsUpdated || c.majAt || ''); return isNaN(v) ? 0 : v; };
-  const parId = {};
-  tous.forEach(function(c){ if(c && c._id) parId[c._id] = c; });
-  pub.forEach(function(p){
-    if(!p || !p._id) return;
-    const f = parId[p._id];
-    if(!f) { parId[p._id] = p; return; }
-    const m = Object.assign({}, f, p);
-    if(tps(f) > tps(p)) { m.gps = f.gps; m.gpsActive = f.gpsActive; }
-    parId[p._id] = m;
-  });
-  return Object.values(parId);
+  const STATUTS = ['attribuee','acceptee','en_route','sur_place','onboard'];
+  const courses = (D.courses||[]).filter(function(c){ return c && c.chauffeur && STATUTS.indexOf(c.statut) >= 0; });
+  if(!courses.length) return [];
+  const ids = new Set(), sansId = [];
+  courses.forEach(function(c){ if(c.chauffeurId) ids.add(c.chauffeurId); else sansId.push(c); });
+  // Ancienne course sans identifiant de chauffeur : lecture complète, une seule fois par minute.
+  let tous = [];
+  if(sansId.length && (!window._cliListeAt || Date.now() - window._cliListeAt > 60000)) {
+    window._cliListeAt = Date.now();
+    let pub = [], full = [];
+    try { pub = await fbGet('chauffeurs_pub') || []; } catch(e) {}
+    try { full = await fbGet('chauffeurs') || []; } catch(e) {}
+    tous = _fusionParId([full, pub]);
+    window._cliListeCache = tous;
+  } else if(sansId.length) { tous = window._cliListeCache || []; }
+  const fiches = await Promise.all(Array.from(ids).map(function(id){ return fbFicheChauffeurPosition(id); }));
+  return _fusionParId([tous, fiches.filter(Boolean)]);
 }
 
 async function enregistrerTrace(driverId, lat, lng, extra){
@@ -21359,9 +21526,9 @@ function demarrerSuiviGPS() {
     async (pos) => {
       gpsActive = true;
       _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
-      // Limiter les écritures Firebase à une toutes les 10 s max (économie).
+      // Limiter les écritures Firebase à une toutes les 15 s max (économie).
       const now = Date.now();
-      if(now - _gpsLastSent < 10000) return;
+      if(now - _gpsLastSent < 15000) return;
       _gpsLastSent = now;
       await sendGPS(pos);
       const btn = document.getElementById('gps-btn');
@@ -21803,10 +21970,11 @@ async function notifyDriverBySMS(chauffeurTel, course, mention, chauffeurId) {
   const isRecentlyActive = async () => {
     if(!chauffeurId) return false;
     try {
-      const fresh = await fbGet('chauffeurs');
-      const ch = fresh.find(x=>x._id===chauffeurId);
-      if(!ch || !ch.lastSeen) return false;
-      return (Date.now() - new Date(ch.lastSeen).getTime()) < SEEN_WINDOW_MS;
+      // Présence : fiche publique (battement toutes les 30 s) ou fiche complète.
+      const [pub, full] = await Promise.all([fbLireNoeud('chauffeurs_pub/' + chauffeurId + '/vu'), fbLireNoeud('chauffeurs/' + chauffeurId + '/lastSeen')]);
+      const t = Math.max(typeof pub === 'number' ? pub : 0, full ? (Date.parse(full) || 0) : 0);
+      if(!t) return false;
+      return (Date.now() - t) < SEEN_WINDOW_MS;
     } catch(e) { return false; }
   };
 
@@ -27103,14 +27271,18 @@ async function chOptionsGerantSync() {
 async function chDroitsVerifier() {
   if (!(SESSION && SESSION.role === 'chauffeur' && SESSION.chauffeurId)) return;
   try {
-    const r = await fetch(FB_URL + '/chauffeurs/' + SESSION.chauffeurId + '.json' + authParam(await getAuthToken()));
-    if (r.ok) { const me = await r.json(); if (me) chDroitsSync(me); }
+    // L'écoute en direct de ma fiche fait déjà ce travail : lecture seulement en secours.
+    if (!_chauffeursListenerRef || document.visibilityState === 'visible' && window._chDroitsVisible) {
+      const r = await fetch(FB_URL + '/chauffeurs/' + SESSION.chauffeurId + '.json' + authParam(await getAuthToken()));
+      if (r.ok) { const me = await r.json(); if (me) chDroitsSync(Object.assign({ _id: SESSION.chauffeurId }, me)); }
+    }
+    window._chDroitsVisible = false;
   } catch(e){}
   try { await chOptionsGerantSync(); } catch(e){}
 }
 window.chDroitsVerifier = chDroitsVerifier;
 setInterval(function(){ try { chDroitsVerifier(); } catch(e){} }, 60000);
-document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'visible') { try { chDroitsVerifier(); } catch(e){} } });
+document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'visible') { window._chDroitsVisible = true; try { chDroitsVerifier(); } catch(e){} } });
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  RGPD — CONSERVATION DES TRAJETS GPS : 90 JOURS, PUIS ANONYMISATION
