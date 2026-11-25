@@ -5608,7 +5608,8 @@ window.genererLienExterne = async function(id) {
   const d = c.datetime ? c.datetime.slice(8,10)+'/'+c.datetime.slice(5,7)+' '+c.datetime.slice(11,16) : '';
   const dep = c.depart||c.lieu||'';
   const arr = c.arrivee||'';
-  const smsTxt = `Bonjour, course MOBILEA le ${d} : ${dep} vers ${arr}. Suivez et validez ici : ${lien}`;
+  const _marque = (c.creePar === 'gerant' && SESSION && SESSION.socNom) ? SESSION.socNom : 'MOBILEA';
+  const smsTxt = `Bonjour, course ${_marque} le ${d} : ${dep} vers ${arr}. Suivez et validez ici : ${lien}`;
 
   // Si un chauffeur est assigné et qu'on a son numéro, on pré-remplit le destinataire.
   // Format international nettoyé (sans espaces) requis par wa.me et sms:.
@@ -5618,6 +5619,8 @@ window.genererLienExterne = async function(id) {
       const info = getChauffeurByName ? getChauffeurByName(c.chauffeur) : null;
       if (info && info.tel) telDest = String(info.tel).replace(/[^0-9+]/g,'');
     }
+    // Chauffeur de sous-traitant (sans compte) : son numéro est sur la course.
+    if (!telDest && c.chauffeurTel) telDest = String(c.chauffeurTel).replace(/[^0-9+]/g,'');
   } catch(e){}
 
   // iOS et Android ont des syntaxes SMS légèrement différentes :
@@ -15445,7 +15448,7 @@ function getDriverContactInfo(c) {
     // Priorité aux infos enregistrées sur la course (visibles par le client qui
     // n'a pas accès aux listes globales chauffeurs/véhicules) ; sinon on lit les
     // listes (cas admin/dispatch).
-    tel: c.chauffeurTel || drv?.tel || '',
+    tel: ((c.extChauffeurTel && c.extChauffeurNom && c.extChauffeurNom === c.chauffeur) ? c.extChauffeurTel : '') || c.chauffeurTel || drv?.tel || '',
     immat: c.vehImmat || veh?.immat || drv?.immat || '',
     marque: c.vehMarque || veh?.marque || drv?.marque || '',
     modele: c.vehModele || veh?.modele || drv?.modele || '',
@@ -20111,6 +20114,11 @@ window.refreshClientMap = function() {
         return full===chName || (x.prenom||'').trim().toLowerCase()===chName;
       });
       if(ch && ch.gps && ch.gps.lat) tracked.push({ch, course:c});
+      // Chauffeur sans compte (lien externe / sous-traitant) : position envoyée par le lien.
+      else if(!ch && parseFloat(c.extLastLat) && parseFloat(c.extLastLng)) {
+        const _p = String(c.chauffeur||'').trim().split(' ');
+        tracked.push({ ch: { _id:'ext_'+c._id, prenom:_p[0]||'', nom:_p.slice(1).join(' '), gps:{ lat:parseFloat(c.extLastLat), lng:parseFloat(c.extLastLng), at:c.extLastPos||null } }, course:c });
+      }
     });
     renderClientTrackingMap(tracked);
   })();
@@ -25260,9 +25268,10 @@ window.gaDetail = function(id) {
     + ligne('Notes', E(c.notes || ''))
     + '<div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:12px;padding:10px 12px;margin:12px 0">'
     +   '<div style="font-size:11px;font-weight:800;color:#7e22ce;margin-bottom:4px">🔒 PRIVÉ — visible par vous seul</div>'
+    +   (p.st ? ligne('Sous-traitant', '🤝 ' + E(p.st.nom || '')) : '')
     +   ligne('Client facturé', E(p.clientNom || '—'))
     +   ligne('Prix client TTC', gEur(prixCl))
-    +   ligne('Prix chauffeur', gEur(prixCh))
+    +   ligne(p.st ? 'Payé au sous-traitant' : 'Prix chauffeur', gEur(prixCh))
     +   ligne('Marge', '<span style="color:' + ((prixCl - prixCh) >= 0 ? '#15803d' : '#dc2626') + '">' + gEur(prixCl - prixCh) + '</span>')
     +   ligne('Facture', p.factureRef ? E(p.factureRef) : '')
     + '</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
@@ -25273,7 +25282,7 @@ window.gaDetail = function(id) {
       + gBtn('⭐ Prioritaires', 'gaProposerUn(\'' + id + '\',\'prio\')', '#b45309')
       + gBtn('✏️ Modifier', 'gaModifier(\'' + id + '\')', '#2563eb')
       + gBtn('📄 Dupliquer', 'gaDupliquer(\'' + id + '\')', '#0891b2')
-      + gBtn('🔗 Lien externe', 'gaLien(\'' + id + '\')', '#475569')
+      + gBtn(p.st ? '🔗 Lien sous-traitant' : '🔗 Lien externe', 'gaLien(\'' + id + '\')', '#475569')
       + gBtn('🗑 Annuler', 'gaAnnuler(\'' + id + '\')', '#dc2626');
   } else if (actif) {
     h += gBtn('✏️ Modifier', 'gaModifier(\'' + id + '\')', '#2563eb') + gBtn('📄 Dupliquer', 'gaDupliquer(\'' + id + '\')', '#0891b2');
@@ -25327,10 +25336,13 @@ window.gaAttribuer = async function(id) {
   try { tous = await fbGet('chauffeurs') || []; } catch(e) {}
   tous = tous.filter(function(ch){ return !ch.archived && !ch.blocked; });
   const soc = (SESSION.socNom || '').trim();
+  let sts = [];
+  if (gOpt('soustraitants')) { try { await gpCharger(); sts = (GP.partenaires || []).slice(); } catch(e) {} }
   window._gaCh = {
     id: id,
     miens: tous.filter(function(ch){ return soc && (ch.soc_nom||'').trim() === soc; }),
-    reseau: tous.filter(function(ch){ return !(soc && (ch.soc_nom||'').trim() === soc); })
+    reseau: tous.filter(function(ch){ return !(soc && (ch.soc_nom||'').trim() === soc); }),
+    sts: sts
   };
   gSheet('ga-sheet', 'Attribuer à un chauffeur',
     '<input type="text" id="ga-ch-q" placeholder="🔎 Rechercher (nom, téléphone)…" oninput="gaAttribuerListe()" style="' + G_IN + '">'
@@ -25350,7 +25362,21 @@ window.gaAttribuerListe = function() {
   };
   const miens = f(window._gaCh.miens), reseau = f(window._gaCh.reseau).slice(0, 60);
   const titre = function(t){ return '<div style="font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 6px">' + t + '</div>'; };
+  // Sous-traitants du gérant (+ leurs chauffeurs), filtrés par la recherche
+  const sts = (window._gaCh.sts || []).map(function(p){
+    const chs = gstChauffeurs(p), okP = !q || gNorm((p.nom||'') + ' ' + (p.tel||'')).indexOf(q) >= 0;
+    const chsF = chs.filter(function(ch){ return okP || gNorm((ch.nom||'') + ' ' + (ch.tel||'') + ' ' + (ch.immat||'')).indexOf(q) >= 0; });
+    return (okP || chsF.length) ? { p: p, chs: chsF } : null;
+  }).filter(Boolean);
+  const rangSt = function(x){
+    const p = x.p;
+    return '<div style="border:1px solid #fde68a;background:#fffbeb;border-radius:10px;margin-bottom:6px;overflow:hidden">'
+      + '<div onclick="gaConfierSt(\'' + p._id + '\',\'\')" style="padding:10px 12px;cursor:pointer"><div style="font-weight:700;font-size:14px">🤝 ' + E(p.nom || '') + '</div><div style="font-size:12px;color:#92400e">Confier au sous-traitant' + (x.chs.length ? ' (il choisit son chauffeur)' : '') + '</div></div>'
+      + x.chs.map(function(ch){ return '<div onclick="gaConfierSt(\'' + p._id + '\',\'' + E(ch.k || '') + '\')" style="padding:9px 12px 9px 26px;border-top:1px solid #fde68a;cursor:pointer;background:#fff"><div style="font-weight:600;font-size:13.5px">🚘 ' + E(ch.nom) + '</div><div style="font-size:12px;color:#6b7280">' + [ch.tel, ch.vehicule, ch.immat].filter(Boolean).map(E).join(' · ') + '</div></div>'; }).join('')
+      + '</div>';
+  };
   box.innerHTML = titre('👔 Mes chauffeurs (' + miens.length + ')') + (miens.map(rang).join('') || '<div style="font-size:13px;color:#9ca3af;padding:6px 0">Aucun</div>')
+    + ((window._gaCh.sts || []).length ? titre('🤝 Mes sous-traitants (' + sts.length + ')') + (sts.map(rangSt).join('') || '<div style="font-size:13px;color:#9ca3af;padding:6px 0">Aucun</div>') : '')
     + titre('🚕 Réseau MOBILEA (' + reseau.length + ')') + (reseau.map(rang).join('') || '<div style="font-size:13px;color:#9ca3af;padding:6px 0">Aucun</div>');
 };
 window.gaAttribuerA = async function(chId) {
@@ -25363,14 +25389,69 @@ window.gaAttribuerA = async function(chId) {
   try {
     await fbUpdate('courses', ctx.id, {
       chauffeur: nom, chauffeurId: ch._id, chauffeurUid: ch.uid || null, chauffeurTel: ch.tel || '',
+      sousTraitance: null, vehImmat: null, vehModele: null,
       statut: 'attribuee', offerChauffeurId:null, offerExpiresAt:null, offerCandidateIds:null,
       accepteePar:null, accepteeLe:null, attribueeLe: new Date().toISOString(), updatedAt: new Date().toISOString()
     });
     try { await sendPushNotification('🚗 Nouveau transfert', (c.depart||'') + ' → ' + (c.arrivee||'') + (c.datetime ? ' — ' + new Date(c.datetime).toLocaleString('fr-FR', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : ''), null, [ch._id], null, { courseId: ctx.id }); } catch(e) {}
     if (c.chauffeurId && c.chauffeurId !== ch._id) { try { await sendPushNotification('ℹ️ Transfert retiré', (c.depart||'') + ' → ' + (c.arrivee||''), null, [c.chauffeurId]); } catch(e) {} }
     try { fbInvalidate('courses'); } catch(e) {}
+    if (c._priv && c._priv.st) { try { await gRest('PATCH', gpChemin('courses_priv/' + ctx.id), { st: null }); GP.at = 0; } catch(e) {} }
     gSheetFermer('ga-sheet'); gJT('✅ Attribué à ' + nom, ctx.id);
   } catch(e) { showToast('Attribution impossible', true); }
+  window.renderGerantAgenda(true);
+};
+
+// ── Confier un transfert à un sous-traitant ─────────────────────────────────
+// Le chauffeur du sous-traitant n'a pas de compte : le transfert lui est
+// attribué par son nom (+ tél., plaque) et il le suit par le LIEN EXTERNE
+// (il y indique En route / Sur place / À bord / Terminé). Le nom du
+// sous-traitant reste PRIVÉ (courses_priv) ; le prix payé va dans
+// prixChauffeur pour que la marge et les rapports soient justes.
+window.gaConfierSt = function(stId, chK) {
+  const ctx = window._gaCh; if (!ctx) return;
+  const p = (ctx.sts || []).find(function(x){ return x._id === stId; }); if (!p) return;
+  const c = gaTrouver(ctx.id); if (!c) return;
+  const chs = gstChauffeurs(p);
+  window._gaSt = { id: ctx.id, st: p };
+  const prix = parseFloat(c.prixChauffeur) > 0 ? String(c.prixChauffeur).replace('.', ',') : '';
+  gSheet('ga-sheet', 'Confier à ' + (p.nom || 'un sous-traitant'),
+    '<div style="font-size:13px;color:#555;margin-bottom:6px">' + E((c.depart || c.lieu || '') + ' → ' + (c.arrivee || '')) + (c.datetime ? ' · ' + E(new Date(c.datetime).toLocaleString('fr-FR', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })) : '') + '</div>'
+    + gChamp('Chauffeur', '<select id="ga-st-ch" style="' + G_IN + '"><option value="">— Pas encore connu (le sous-traitant choisira) —</option>'
+      + chs.map(function(ch){ return '<option value="' + E(ch.k || '') + '"' + (ch.k && ch.k === chK ? ' selected' : '') + '>' + E(ch.nom + (ch.immat ? ' · ' + ch.immat : '')) + '</option>'; }).join('') + '</select>')
+    + gChamp('Prix payé au sous-traitant (€)', '<input type="text" inputmode="decimal" id="ga-st-prix" value="' + E(prix) + '" placeholder="ex. 45,00" style="' + G_IN + '">')
+    + '<label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:14px;color:#374151;cursor:pointer"><input type="checkbox" id="ga-st-lien" checked style="width:18px;height:18px"> Envoyer tout de suite le lien du transfert</label>'
+    + '<div id="ga-st-err" style="color:#dc2626;font-size:13px;min-height:18px;margin-top:6px"></div>'
+    + '<div style="margin-top:8px;display:flex;gap:8px">' + gBtn('Retour', 'gaAttribuer(\'' + ctx.id + '\')', '#6b7280') + gBtn('✅ Confier le transfert', 'gaConfierStOK()', '#16a34a', true) + '</div>');
+};
+window.gaConfierStOK = async function() {
+  const x = window._gaSt; if (!x) return;
+  const c = gaTrouver(x.id); if (!c) return;
+  const errEl = document.getElementById('ga-st-err');
+  const prixTxt = gVal('ga-st-prix').replace(/\s/g, '').replace(',', '.');
+  const prix = prixTxt === '' ? null : parseFloat(prixTxt);
+  if (prixTxt !== '' && (isNaN(prix) || prix < 0 || prix > 100000)) { if (errEl) errEl.textContent = 'Prix invalide (ex. 45,00)'; return; }
+  const ch = gstChauffeurs(x.st).find(function(y){ return y.k && y.k === gVal('ga-st-ch'); }) || null;
+  const nom = ch ? ch.nom : (x.st.nom || 'Sous-traitant');
+  const envoyer = !!(document.getElementById('ga-st-lien') || {}).checked;
+  if (c.chauffeur && c.chauffeur !== nom && !confirm('Remplacer ' + c.chauffeur + ' par ' + nom + ' ?')) return;
+  const maj = {
+    chauffeur: nom, chauffeurId: null, chauffeurUid: null, chauffeurTel: (ch && ch.tel) || x.st.tel || '',
+    vehImmat: (ch && ch.immat) || null, vehModele: (ch && ch.vehicule) || null, sousTraitance: true,
+    statut: 'attribuee', offerChauffeurId:null, offerExpiresAt:null, offerCandidateIds:null,
+    accepteePar:null, accepteeLe:null, attribueeLe: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  if (prix != null) maj.prixChauffeur = Math.round(prix * 100) / 100;
+  try {
+    await fbUpdate('courses', x.id, maj);
+  } catch(e) { if (errEl) errEl.textContent = 'Attribution impossible (droits ou connexion).'; return; }
+  try { await gRest('PATCH', gpChemin('courses_priv/' + x.id), { st: { id: x.st._id, nom: sanitize(x.st.nom || '', 200), ch: ch ? sanitize(ch.nom, 80) : '' } }); GP.at = 0; } catch(e) {}
+  if (c.chauffeurId) { try { await sendPushNotification('ℹ️ Transfert retiré', (c.depart||'') + ' → ' + (c.arrivee||''), null, [c.chauffeurId]); } catch(e) {} }
+  try { fbInvalidate('courses'); } catch(e) {}
+  gSheetFermer('ga-sheet'); gJT('🤝 Confié à ' + (x.st.nom || '') + (ch ? ' — ' + ch.nom : ''), x.id);
+  // GA.liste est rechargée ensuite ; on met à jour la copie locale pour le lien.
+  Object.assign(c, maj);
+  if (envoyer) { try { await window.gaLien(x.id); } catch(e) {} }
   window.renderGerantAgenda(true);
 };
 
@@ -26270,6 +26351,7 @@ window.renderGerantRapports = async function(sansCharger) {
   const grp = function(cle){ const o = {}; actifs.forEach(function(c){ const k = cle(c) || '—'; o[k] = o[k] || { n:0, ca:0, cout:0 }; o[k].n++; o[k].ca += parseFloat(c.prix) || 0; o[k].cout += parseFloat(c.prixChauffeur) || 0; }); return Object.keys(o).map(function(k){ return Object.assign({ nom:k }, o[k]); }).sort(function(a,b){ return b.ca - a.ca || b.n - a.n; }); };
   const parClient = grp(function(c){ return (c._priv && c._priv.clientNom) || c.client; });
   const parCh = grp(function(c){ return c.chauffeur || 'À assigner'; });
+  const parSt = grp(function(c){ return c._priv && c._priv.st ? c._priv.st.nom : ''; }).filter(function(x){ return x.nom !== '—'; });
   GR.lignes = actifs;
   const kpi = function(v, l, col){ return '<div style="flex:1;min-width:132px;background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:12px"><div style="font-size:20px;font-weight:800;color:' + (col || 'var(--white)') + '">' + v + '</div><div style="font-size:11px;color:var(--muted);margin-top:2px">' + l + '</div></div>'; };
   const tab = function(titre, l, colCout){ return gCarte('<div style="font-size:13px;font-weight:700;color:var(--white);margin-bottom:8px">' + titre + '</div>'
@@ -26282,14 +26364,15 @@ window.renderGerantRapports = async function(sansCharger) {
     + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
     + kpi(actifs.length, 'Transferts') + kpi(finis.length, 'Terminés', '#16a34a') + kpi(tous.length - actifs.length, 'Annulés', '#dc2626')
     + kpi(gEur(ca), 'Chiffre d\'affaires TTC', '#3b82f6') + kpi(gEur(cout), 'Payé aux chauffeurs') + kpi(gEur(ca - cout), 'Marge', '#16a34a') + '</div>'
-    + tab('Par client', parClient, false) + tab('Par chauffeur', parCh, true);
+    + tab('Par client', parClient, false) + tab('Par chauffeur', parCh, true)
+    + (parSt.length ? tab('🤝 Par sous-traitant (à leur payer)', parSt, true) : '');
 };
 window.grExport = function() {
   if (!GR.lignes.length) { showToast('Aucun transfert sur ce mois', true); return; }
   const q = function(v){ return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
-  const csv = '﻿' + ['Date;Heure;Client;Départ;Arrivée;Véhicule;Chauffeur;Statut;Prix client TTC;Prix chauffeur;Marge'].concat(GR.lignes.slice().sort(function(a,b){ return String(a.datetime).localeCompare(String(b.datetime)); }).map(function(c){
+  const csv = '﻿' + ['Date;Heure;Client;Départ;Arrivée;Véhicule;Chauffeur;Sous-traitant;Statut;Prix client TTC;Prix chauffeur / sous-traitant;Marge'].concat(GR.lignes.slice().sort(function(a,b){ return String(a.datetime).localeCompare(String(b.datetime)); }).map(function(c){
     const p = parseFloat(c.prix) || 0, pc = parseFloat(c.prixChauffeur) || 0;
-    return [(c.datetime || '').slice(0,10), (c.datetime || '').slice(11,16), (c._priv && c._priv.clientNom) || c.client || '', c.depart || c.lieu || '', c.arrivee || '', gVehNom(c.vehicule), c.chauffeur || '', c.statut || '', p.toFixed(2).replace('.', ','), pc.toFixed(2).replace('.', ','), (p - pc).toFixed(2).replace('.', ',')].map(q).join(';');
+    return [(c.datetime || '').slice(0,10), (c.datetime || '').slice(11,16), (c._priv && c._priv.clientNom) || c.client || '', c.depart || c.lieu || '', c.arrivee || '', gVehNom(c.vehicule), c.chauffeur || '', (c._priv && c._priv.st && c._priv.st.nom) || '', c.statut || '', p.toFixed(2).replace('.', ','), pc.toFixed(2).replace('.', ','), (p - pc).toFixed(2).replace('.', ',')].map(q).join(';');
   })).join('\r\n');
   gExporterFichier('rapport-' + GR.mois + '.csv', csv, 'text/csv');
   gJournal('Export CSV du rapport ' + GR.mois);
@@ -26335,37 +26418,84 @@ window.gExporterFichier = gExporterFichier;
 function gEstNatif() { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); }
 
 // ── Sous-traitants & partenaires (carnet privé) ─────────────────────────────
+function gstChauffeurs(p) { const l = p && p.chauffeurs; return (Array.isArray(l) ? l : (l ? Object.values(l) : [])).filter(function(x){ return x && x.nom; }); }
+window.gstChauffeurs = gstChauffeurs;
 window.renderGerantPartenaires = async function() {
   const root = document.getElementById('gst-root'); if (!root) return;
   if (!gOpt('soustraitants')) return gRefus(root);
   gCharg(root); await gpCharger(true);
+  // Transferts confiés à chaque sous-traitant (mois en cours) : nombre + montant à payer
+  let mes = [];
+  try { if (gerantAccesTransferts()) { GA.liste = await gMesTransferts(); mes = GA.liste; } } catch(e) {}
+  const mois = gJourStr(new Date()).slice(0, 7);
   const err = gErreurPrive(), l = GP.partenaires || [];
   root.innerHTML = gBandeauPrive('Vos sous-traitants et partenaires — visibles par vous seul.') + (err ? gCarte(E(err)) : '')
-    + '<button onclick="gstEditer(\'\')" class="btn btn-p" style="width:100%;justify-content:center;margin-bottom:12px"><i class="fas fa-plus"></i> Ajouter un partenaire</button>'
+    + gCarte('<div style="font-size:12.5px;color:var(--muted);line-height:1.55"><b style="color:var(--white)">Comment ça marche ?</b><br>1. Ajoutez le sous-traitant et ses chauffeurs (nom, téléphone, plaque).<br>2. Dans un transfert : <b>👤 Attribuer</b> → rubrique <b>🤝 Mes sous-traitants</b> → choisissez le chauffeur et le prix payé.<br>3. Envoyez-lui le <b>lien du transfert</b> (SMS / WhatsApp) : il voit la course et indique « En route », « Sur place »… sans compte.</div>')
+    + '<button onclick="gstEditer(\'\')" class="btn btn-p" style="width:100%;justify-content:center;margin-bottom:12px"><i class="fas fa-plus"></i> Ajouter un sous-traitant</button>'
     + (l.length ? l.map(function(p){
-        return gCarte('<div style="display:flex;justify-content:space-between;gap:10px"><div style="min-width:0"><div style="font-size:14px;font-weight:700;color:var(--white)">' + E(p.nom || '') + '</div>'
+        const chs = gstChauffeurs(p);
+        const confies = mes.filter(function(c){ return c._priv && c._priv.st && c._priv.st.id === p._id && G_MORTS.indexOf(c.statut) < 0; });
+        const duMois = confies.filter(function(c){ return (c.datetime || '').slice(0, 7) === mois; });
+        const aVenir = confies.filter(function(c){ return gaActif(c); }).sort(function(a, b){ return String(a.datetime).localeCompare(String(b.datetime)); }).slice(0, 5);
+        const du = duMois.reduce(function(t, c){ return t + (parseFloat(c.prixChauffeur) || 0); }, 0);
+        return gCarte('<div style="display:flex;justify-content:space-between;gap:10px"><div style="min-width:0"><div style="font-size:14px;font-weight:700;color:var(--white)">🤝 ' + E(p.nom || '') + '</div>'
           + '<div style="font-size:12px;color:var(--muted);margin-top:3px;line-height:1.5">' + [p.contact, p.tel, p.email, p.siret ? 'SIRET ' + p.siret : ''].filter(Boolean).map(E).join(' · ') + (p.notes ? '<br>' + E(p.notes) : '') + '</div></div>'
           + '<div style="display:flex;gap:6px;flex-shrink:0;align-items:flex-start">' + (p.tel ? '<a class="btn btn-ghost btn-xs" href="tel:' + E(String(p.tel).replace(/[^\d+]/g, '')) + '" aria-label="Appeler"><i class="fas fa-phone"></i></a>' : '')
-          + '<button class="btn btn-ghost btn-xs" onclick="gstEditer(\'' + p._id + '\')" aria-label="Modifier"><i class="fas fa-pen"></i></button></div></div>');
-      }).join('') : gCarte('<div style="text-align:center;color:var(--muted)">Aucun partenaire enregistré.</div>'));
+          + '<button class="btn btn-ghost btn-xs" onclick="gstEditer(\'' + p._id + '\')" aria-label="Modifier"><i class="fas fa-pen"></i></button></div></div>'
+          + '<div style="margin-top:10px;font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Chauffeurs (' + chs.length + ')</div>'
+          + (chs.length ? chs.map(function(ch){ return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--white2);padding:6px 0;border-bottom:1px solid var(--border)"><span>🚘 <b>' + E(ch.nom) + '</b>' + (ch.vehicule ? ' · ' + E(ch.vehicule) : '') + (ch.immat ? ' · <span style="font-family:monospace;font-weight:800">' + E(ch.immat) + '</span>' : '') + '</span>' + (ch.tel ? '<a href="tel:' + E(String(ch.tel).replace(/[^\d+]/g, '')) + '" style="color:var(--green);text-decoration:none;white-space:nowrap">📞 ' + E(ch.tel) + '</a>' : '') + '</div>'; }).join('')
+             : '<div style="font-size:12px;color:var(--muted);padding:4px 0">Aucun chauffeur — <a href="#" onclick="gstEditer(\'' + p._id + '\');return false" style="color:var(--gold)">ajouter</a></div>')
+          + (confies.length ? '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><span style="font-size:12px;background:var(--card2);border-radius:8px;padding:5px 9px;color:var(--white2)">Ce mois : <b>' + duMois.length + '</b> transfert(s)</span><span style="font-size:12px;background:var(--card2);border-radius:8px;padding:5px 9px;color:var(--white2)">À lui payer : <b>' + gEur(du) + '</b></span></div>' : '')
+          + (aVenir.length ? '<div style="margin-top:8px">' + aVenir.map(function(c){ return '<div onclick="gaDetail(\'' + c._id + '\')" style="cursor:pointer;font-size:12px;color:var(--white2);padding:6px 8px;border:1px solid var(--border);border-radius:8px;margin-top:5px">📅 ' + E(c.datetime ? new Date(c.datetime).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '') + ' · ' + E((c.depart || c.lieu || '') + ' → ' + (c.arrivee || '')) + (c.chauffeur ? ' · ' + E(c.chauffeur) : '') + '</div>'; }).join('') + '</div>' : ''));
+      }).join('') : gCarte('<div style="text-align:center;color:var(--muted)">Aucun sous-traitant enregistré.</div>'));
 };
 window.gstEditer = function(id) {
   const p = id ? ((GP.partenaires || []).find(function(x){ return x._id === id; }) || {}) : {};
+  window._gstCh = gstChauffeurs(p).map(function(x){ return Object.assign({}, x); });
   const f = function(lab, k, type, max){ return gChamp(lab, '<input type="' + (type || 'text') + '" id="gst-' + k + '" value="' + E(p[k] || '') + '" maxlength="' + (max || 200) + '" style="' + G_IN + '">'); };
-  gSheet('gst-sheet', id ? 'Modifier le partenaire' : 'Nouveau partenaire',
+  gSheet('gst-sheet', id ? 'Modifier le sous-traitant' : 'Nouveau sous-traitant',
     f('Société / nom *', 'nom') + f('Contact', 'contact') + f('Téléphone', 'tel', 'tel', 30) + f('Email', 'email', 'email') + f('SIRET', 'siret', 'text', 20)
-    + gChamp('Notes (tarifs convenus, véhicules…)', '<textarea id="gst-notes" rows="3" maxlength="1000" style="' + G_IN + ';resize:vertical">' + E(p.notes || '') + '</textarea>')
+    + gChamp('Notes (tarifs convenus…)', '<textarea id="gst-notes" rows="2" maxlength="1000" style="' + G_IN + ';resize:vertical">' + E(p.notes || '') + '</textarea>')
+    + '<div style="margin-top:16px;font-size:12px;font-weight:800;color:#374151;text-transform:uppercase;letter-spacing:.5px">🚘 Chauffeurs de ce sous-traitant</div>'
+    + '<div style="font-size:12px;color:#6b7280;margin:3px 0 6px">Ils n\'ont pas besoin de compte : ils reçoivent le transfert par lien.</div>'
+    + '<div id="gst-ch-liste"></div>'
+    + '<button type="button" onclick="gstChAjouter()" style="width:100%;margin-top:6px;padding:10px;border:1.5px dashed #c8a96e;border-radius:10px;background:#fffbeb;color:#92400e;font-weight:700;cursor:pointer">+ Ajouter un chauffeur</button>'
     + '<div style="margin-top:16px;display:flex;gap:8px">' + gBtn('💾 Enregistrer', 'gstEnregistrer(\'' + (id || '') + '\')', '#16a34a', true) + (id ? gBtn('🗑', 'gstSupprimer(\'' + id + '\')', '#dc2626') : '') + '</div>');
+  gstChDessiner();
 };
+function gstChLire() {
+  (window._gstCh || []).forEach(function(x, i){ ['nom','tel','vehicule','immat'].forEach(function(k){ const e = document.getElementById('gst-ch-' + k + '-' + i); if (e) x[k] = String(e.value || '').trim(); }); });
+}
+function gstChDessiner() {
+  const box = document.getElementById('gst-ch-liste'); if (!box) return;
+  const l = window._gstCh || [];
+  const inp = function(i, k, ph, type){ return '<input type="' + (type || 'text') + '" id="gst-ch-' + k + '-' + i + '" placeholder="' + ph + '" value="' + E(l[i][k] || '') + '" maxlength="' + (k === 'nom' ? 80 : 40) + '" style="' + G_IN + ';padding:9px 10px;font-size:14px">'; };
+  box.innerHTML = l.length ? l.map(function(x, i){
+    return '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:8px;margin-bottom:6px;display:grid;grid-template-columns:1fr 1fr auto;gap:6px;align-items:center">'
+      + inp(i, 'nom', 'Prénom Nom *') + inp(i, 'tel', 'Téléphone', 'tel')
+      + '<button type="button" onclick="gstChRetirer(' + i + ')" aria-label="Retirer ce chauffeur" style="grid-row:span 2;width:36px;height:36px;border:1px solid #fecaca;border-radius:9px;background:#fff;color:#dc2626;cursor:pointer">✕</button>'
+      + inp(i, 'vehicule', 'Véhicule (ex. Classe V noir)') + inp(i, 'immat', 'Plaque (AB-123-CD)') + '</div>';
+  }).join('') : '<div style="font-size:13px;color:#9ca3af;padding:4px 0">Aucun chauffeur.</div>';
+}
+window.gstChAjouter = function() { gstChLire(); (window._gstCh = window._gstCh || []).push({ nom:'', tel:'', vehicule:'', immat:'' }); gstChDessiner(); const e = document.getElementById('gst-ch-nom-' + (window._gstCh.length - 1)); if (e) e.focus(); };
+window.gstChRetirer = function(i) { gstChLire(); (window._gstCh || []).splice(i, 1); gstChDessiner(); };
 window.gstEnregistrer = async function(id) {
   if (!gOpt('soustraitants')) { showToast('Option non activée par l\'administrateur', true); return; }
   const nom = sanitize(gVal('gst-nom'), 200); if (!nom) { showToast('Nom obligatoire', true); return; }
   const email = gVal('gst-email'); if (email && !isValidEmail(email)) { showToast('Email invalide', true); return; }
-  const data = { nom: nom, contact: sanitize(gVal('gst-contact'), 200), tel: sanitize(gVal('gst-tel'), 30), email: sanitize(email, 200), siret: sanitize(gVal('gst-siret'), 20), notes: sanitize(gVal('gst-notes'), 1000), updatedAt: new Date().toISOString() };
+  gstChLire();
+  const ancien = id ? ((GP.partenaires || []).find(function(x){ return x._id === id; }) || {}) : {};
+  const anciens = gstChauffeurs(ancien);
+  const chs = (window._gstCh || []).filter(function(x){ return x.nom; }).map(function(x){
+    const o = { nom: sanitize(x.nom, 80), tel: sanitize(x.tel || '', 30), vehicule: sanitize(x.vehicule || '', 60), immat: sanitize(String(x.immat || '').toUpperCase(), 20) };
+    const a = anciens.find(function(y){ return y.nom === x.nom; }); o.k = (x.k || (a && a.k) || ('c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)));
+    return o;
+  });
+  const data = { nom: nom, contact: sanitize(gVal('gst-contact'), 200), tel: sanitize(gVal('gst-tel'), 30), email: sanitize(email, 200), siret: sanitize(gVal('gst-siret'), 20), notes: sanitize(gVal('gst-notes'), 1000), chauffeurs: chs.length ? chs : null, updatedAt: new Date().toISOString() };
   try {
     if (id) await gRest('PATCH', gpChemin('partenaires/' + id), data);
     else { data.createdAt = data.updatedAt; await gRest('POST', gpChemin('partenaires'), data); }
-    gSheetFermer('gst-sheet'); gJT('✅ Partenaire enregistré — ' + nom); window.renderGerantPartenaires();
+    gSheetFermer('gst-sheet'); gJT('✅ Sous-traitant enregistré — ' + nom + (chs.length ? ' (' + chs.length + ' chauffeur' + (chs.length > 1 ? 's' : '') + ')' : '')); window.renderGerantPartenaires();
   } catch(e) { showToast(gErrServ(e), true); }
 };
 window.gstSupprimer = async function(id) {
