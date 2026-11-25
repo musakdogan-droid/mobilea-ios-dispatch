@@ -160,7 +160,13 @@
 
   // Extraire l'appId OneSignal de la config dejà presente dans le HTML.
   // Chaque app (Dispatch/Driver/Client) a son propre appId dans son index.html.
+  // ⭐ App DISPATCH : son propre appId OneSignal (« MOBILEA Dispatch »).
+  // Depuis le 05/11, l'index.html copié depuis le site contient l'appId de
+  // l'app « MOBILEA Driver » : l'iPhone s'inscrivait chez Driver et Apple
+  // refusait chaque notification (DeviceTokenNotForTopic). On le fixe ici.
+  var ONESIGNAL_APP_ID_DISPATCH = "df716aa7-cc78-46f1-84ef-f95dc420d4b0";
   function getOneSignalAppId() {
+    if (ONESIGNAL_APP_ID_DISPATCH) return ONESIGNAL_APP_ID_DISPATCH;
     try {
       var scripts = document.getElementsByTagName("script");
       for (var i = 0; i < scripts.length; i++) {
