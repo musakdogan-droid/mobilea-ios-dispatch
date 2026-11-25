@@ -2425,8 +2425,19 @@ function stopContinuousGPS() {
   try { arreterSuiviGPS(); } catch(e){}
 }
 
-window.doLogout = function() {
-  if (!confirm('Se déconnecter ?')) return;
+// Déconnexion. La fenêtre système confirm() est bloquée dans certains
+// navigateurs / vues intégrées : le bouton ne faisait alors RIEN. On utilise la
+// fenêtre de confirmation de l'app (showConfirm). doLogout(true) = sans question
+// (déconnexion forcée par l'admin).
+window.doLogout = function(sansConfirmation) {
+  if (sansConfirmation === true) return _doLogoutMaintenant();
+  try {
+    if (document.getElementById('conf-ov')) { showConfirm('Se déconnecter ?', 'Vous devrez saisir à nouveau votre identifiant et votre mot de passe.', _doLogoutMaintenant); return; }
+  } catch(e) {}
+  let ok = true; try { ok = confirm('Se déconnecter ?'); } catch(e) {}
+  if (ok !== false) _doLogoutMaintenant();
+};
+function _doLogoutMaintenant() {
   // Si chauffeur, passer hors service
   if(SESSION && SESSION.role === 'chauffeur' && _driverOnService) {
     _driverOnService = false;
@@ -2456,7 +2467,7 @@ window.doLogout = function() {
   // Revenir au login
   document.getElementById('app').style.display = 'none';
   document.getElementById('login').style.display = 'flex';
-};
+}
 
 function hideEmptyNavSections() {
   const nav = document.getElementById('main-nav');
@@ -27040,9 +27051,7 @@ function chDroitsDepuisFiche(me) {
 }
 function chDeconnexionForcee(msg) {
   if (window._chDecoEnCours) return; window._chDecoEnCours = true;
-  const c = window.confirm;
-  window.confirm = function(){ return true; };          // doLogout demande normalement confirmation
-  try { doLogout(); } catch(e){} finally { window.confirm = c; }
+  try { doLogout(true); } catch(e){}                    // sans question
   setTimeout(function(){ try { showToast(msg, true); } catch(e){} window._chDecoEnCours = false; }, 300);
 }
 function chDroitsSync(me) {
