@@ -3055,6 +3055,8 @@ function startApp() {
             demarrerSuiviGPS();
           }
         }
+        // Gardien GPS dans tous les cas (même si le suivi a déjà été lancé ailleurs).
+        if(SESSION && SESSION.role === 'chauffeur') gpsGardienDemarrer();
       } catch(e) { console.warn('auto GPS start:', e); }
     }, 2000);
   } else {
@@ -21513,10 +21515,68 @@ window.onNativeGPS = async function(pos) {
   } catch(e) { console.warn('[onNativeGPS]', e); }
 };
 
+// ★ GARDIEN GPS (chauffeur, app ouverte à l'écran)
+// L'iPhone n'envoie une position que quand le téléphone bouge, et le GPS natif
+// peut rester muet sans prévenir (autorisation « Jamais » / « Lors de
+// l'utilisation », plugin absent). Le gardien vérifie toutes les 30 s :
+//  - aucune position envoyée depuis 3 min (45 s pendant une course) → il en
+//    demande une tout de suite et l'envoie (chauffeur à l'arrêt : le dispatch
+//    voit quand même qu'il est là) ;
+//  - localisation refusée → message rouge dans l'app avec le réglage à changer.
+// L'état est noté dans la fiche (gpsDiag) pour pouvoir le contrôler côté dispatch.
+function gpsDiag(etat, detail) {
+  try {
+    const id = SESSION && SESSION.chauffeurId; if(!id) return;
+    if(window._gpsDiagEtat === etat) return;
+    window._gpsDiagEtat = etat;
+    const natif = !!(window.MobileaNative && window.MobileaNative.isNative);
+    fbUpdate('chauffeurs', id, { gpsDiag: { etat: etat, detail: detail || '', mode: natif ? 'app' : 'web', at: new Date().toISOString() } });
+  } catch(e) {}
+}
+function gpsGardienDemarrer() {
+  if(window._gpsGardien) return;
+  window._gpsDemarreAt = Date.now();
+  window._gpsGardien = setInterval(function(){
+    try {
+      if(!SESSION || SESSION.role !== 'chauffeur' || document.visibilityState === 'hidden' || !navigator.geolocation) return;
+      if(typeof _driverOnService !== 'undefined' && !_driverOnService) return;
+      const limite = (typeof _gpsIntervalMs === 'function' && _gpsIntervalMs() <= 15000) ? 45000 : 180000;
+      const depuis = Date.now() - (window._gpsDernierEnvoiOK || window._gpsDemarreAt || 0);
+      if(depuis < limite || window._gpsGardienEnCours) return;
+      window._gpsGardienEnCours = true;
+      navigator.geolocation.getCurrentPosition(function(pos){
+        window._gpsGardienEnCours = false;
+        _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
+        _gpsLastSent = Date.now();
+        gpsActive = true;
+        sendGPS(pos).catch(function(){});
+        const st = document.getElementById('gps-status');
+        if(st){ st.textContent = '● Position partagée'; st.style.color = '#22c55e'; }
+      }, function(err){
+        window._gpsGardienEnCours = false;
+        const st = document.getElementById('gps-status');
+        if(err && err.code === 1) {
+          gpsDiag('refusee', 'localisation refusée sur le téléphone');
+          if(st){ st.textContent = '⚠️ Localisation refusée — Réglages › MOBILEA Driver › Position › « Toujours »'; st.style.color = '#ef4444'; }
+          if(!window._gpsAlerteMontree) { window._gpsAlerteMontree = true; try { showToast('⚠️ Votre position n\'est pas partagée : Réglages › MOBILEA Driver › Position › « Toujours »', true); } catch(e){} }
+        } else {
+          gpsDiag('aucune_position', (err && err.message) || 'pas de signal');
+          if(st){ st.textContent = '⚠️ Position introuvable pour le moment'; st.style.color = '#f0934a'; }
+        }
+      }, { enableHighAccuracy: true, maximumAge: 30000, timeout: 15000 });
+    } catch(e) { window._gpsGardienEnCours = false; }
+  }, 30000);
+}
+window.gpsGardienDemarrer = gpsGardienDemarrer;
+
 async function sendGPS(pos) {
-  const name = SESSION.name;
-  const ch = D.chauffeurs.find(c=>(c.prenom+(c.nom?' '+c.nom:''))===name);
-  if(!ch) return;
+  const name = SESSION.name, _id = SESSION.chauffeurId;
+  // Fiche du chauffeur : par identifiant stable d'abord (le nom peut changer ou
+  // la liste être en cours de chargement), sinon par nom, sinon l'identifiant seul.
+  const ch = (_id && (D.chauffeurs||[]).find(c=>c._id===_id))
+          || (D.chauffeurs||[]).find(c=>(c.prenom+(c.nom?' '+c.nom:''))===name)
+          || (_id ? { _id: _id } : null);
+  if(!ch) { gpsDiag('sans_fiche'); return; }
   // heading = cap en degrés (0=Nord, 90=Est…) ; null si le tel est immobile ou
   // ne le fournit pas. speed en m/s. On les stocke pour afficher la direction.
   const h = (pos.coords.heading != null && !isNaN(pos.coords.heading) && pos.coords.heading >= 0) ? Math.round(pos.coords.heading) : null;
@@ -21532,6 +21592,8 @@ async function sendGPS(pos) {
     gpsActive: true,
     gpsUpdated: new Date().toISOString()
   });
+  window._gpsDernierEnvoiOK = Date.now();
+  gpsDiag('ok');
   // Vérifier la géofence 7 km (alerte dispatch quand le chauffeur entre en zone).
   try { await checkGeofenceZone(pos.coords.latitude, pos.coords.longitude); } catch(e){}
   // Alerte « arrivée imminente » au client partenaire (ex. Value Retail) X min avant.
@@ -21723,11 +21785,12 @@ function formatGpsAge(atIso) {
 
 function demarrerSuiviGPS() {
   if(!navigator.geolocation) return;
+  try { if(SESSION && SESSION.role === 'chauffeur') gpsGardienDemarrer(); } catch(e){}
   if(_gpsWatchId !== null) return; // déjà actif
   // APP NATIVE (coque Swift) : déléguer le suivi au GPS natif, qui fonctionne
   // en arrière-plan écran éteint (impossible en web pur). On lui passe le
   // chauffeurId STABLE et le jeton Firebase pour qu'il écrive au bon endroit.
-  if(window.MobileaNative && window.MobileaNative.isNative && SESSION && SESSION.role === 'chauffeur') {
+  if(window.MobileaNative && window.MobileaNative.isNative && typeof window.MobileaNative.startGPS === 'function' && SESSION && SESSION.role === 'chauffeur') {
     (async () => {
       try {
         const moiCh = (D.chauffeurs||[]).find(c => (c.prenom+(c.nom?' '+c.nom:''))===SESSION.name);
