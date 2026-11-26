@@ -9044,6 +9044,123 @@ async function loadClientGrid() {
   renderClientGrid(clientName);
 }
 
+// ★ ATTENTE — PRIX FIXES PAR TRANCHE, par lieu (chaque gare, chaque aéroport).
+// L'admin choisit la durée d'une tranche (15, 20, 30 min…) et un prix fixe
+// client / chauffeur pour la 1re, 2e, 3e tranche puis chaque tranche suivante.
+// Case vide = même prix que la tranche précédente (1re tranche vide = 0 €).
+// Ex. tranche 30 min, chauffeur 0/25 et client 30 : 30 min → chauffeur 0 €,
+// client 30 € ; 31 min → chauffeur 25 €, client 60 €.
+const ATT_LIEUX = [
+  { k:'standard',     label:'Standard',                   sub:'adresse classique', type:'standard' },
+  { k:'g_nord',       label:'🚉 Gare du Nord',             type:'gare',     t:s=>s.includes('gare du nord') },
+  { k:'g_est',        label:'🚉 Gare de l\'Est',           type:'gare',     t:s=>s.includes('gare de l\'est') || s.includes('gare de lest') },
+  { k:'g_lyon',       label:'🚉 Gare de Lyon',             type:'gare',     t:s=>s.includes('gare de lyon') },
+  { k:'g_chessy',     label:'🚉 Gare de Chessy (Marne-la-Vallée)', type:'gare', t:s=>s.includes('chessy') },
+  { k:'g_montparnasse',label:'🚉 Gare Montparnasse',       type:'gare',     t:s=>s.includes('montparnasse') },
+  { k:'g_stlazare',   label:'🚉 Gare Saint-Lazare',        type:'gare',     t:s=>s.includes('saint-lazare') || s.includes('saint lazare') || s.includes('st lazare') || s.includes('st-lazare') },
+  { k:'g_austerlitz', label:'🚉 Gare d\'Austerlitz',       type:'gare',     t:s=>s.includes('austerlitz') },
+  { k:'g_autre',      label:'🚉 Autres gares',             sub:'si la gare n\'a pas son propre tableau', type:'gare' },
+  { k:'a_cdg',        label:'✈️ Aéroport CDG (Roissy)',    type:'aeroport', t:s=>s.includes('cdg') || s.includes('roissy') || s.includes('charles de gaulle') },
+  { k:'a_orly',       label:'✈️ Aéroport Orly',            type:'aeroport', t:s=>s.includes('orly') },
+  { k:'a_beauvais',   label:'✈️ Aéroport Beauvais',        type:'aeroport', t:s=>s.includes('beauvais') },
+  { k:'a_autre',      label:'✈️ Autres aéroports',         sub:'si l\'aéroport n\'a pas son propre tableau', type:'aeroport' }
+];
+window.ATT_LIEUX = ATT_LIEUX;
+
+// Lieu précis d'une course (gare ou aéroport précis) selon le type déjà détecté.
+function attLieuCourse(typeLieu, dep, arr) {
+  if (typeLieu === 'standard') return 'standard';
+  const cands = ATT_LIEUX.filter(L => L.type === typeLieu && L.t);
+  for (const s of [dep, arr]) {
+    const L = cands.find(x => x.t(s));
+    if (L) return L.k;
+  }
+  return typeLieu === 'gare' ? 'g_autre' : 'a_autre';
+}
+
+// Prix d'attente pour un acteur ('c' client / 'h' chauffeur) avec la config
+// d'un lieu. Retourne null si rien n'est rempli pour cet acteur.
+function attFraisTranches(cfg, side, waitMin) {
+  if (!cfg) return null;
+  const raw = ['1','2','3','n'].map(i => cfg[side+i]);
+  if (raw.every(v => v == null || v === '')) return null;
+  const num = v => (v == null || v === '' || isNaN(parseFloat(v))) ? null : parseFloat(v);
+  const t1 = num(raw[0]) != null ? num(raw[0]) : 0;
+  const t2 = num(raw[1]) != null ? num(raw[1]) : t1;
+  const t3 = num(raw[2]) != null ? num(raw[2]) : t2;
+  const tn = num(raw[3]) != null ? num(raw[3]) : t3;
+  const d = (parseFloat(cfg.d) > 0) ? parseFloat(cfg.d) : 30;
+  const n = waitMin > 0 ? Math.ceil(waitMin / d) : 0;
+  let fee = 0;
+  for (let i = 1; i <= n; i++) fee += (i === 1 ? t1 : i === 2 ? t2 : i === 3 ? t3 : tn);
+  // Minutes « incluses » = tranches de tête à 0 € (pour l'affichage chauffeur)
+  let gratuites = 0;
+  for (const t of [t1, t2, t3]) { if (t === 0) gratuites++; else break; }
+  return { fee: Math.round(fee * 100) / 100, n, d, freeMin: gratuites * d };
+}
+
+// Config tranches à utiliser pour un lieu et un acteur : la sienne, sinon celle
+// de « Autres gares / Autres aéroports », sinon null (→ ancien réglage).
+function attCfgPour(att, lieuKey, side) {
+  const tr = (att && att.tranches) || {};
+  const rempli = c => c && ['1','2','3','n'].some(i => c[side+i] != null && c[side+i] !== '');
+  if (rempli(tr[lieuKey])) return tr[lieuKey];
+  const repli = lieuKey.indexOf('g_') === 0 ? 'g_autre' : (lieuKey.indexOf('a_') === 0 ? 'a_autre' : null);
+  if (repli && rempli(tr[repli])) return tr[repli];
+  return null;
+}
+
+function attTrLibelles(d) {
+  d = (parseFloat(d) > 0) ? parseFloat(d) : 30;
+  return ['1re tranche (0 – ' + d + ' min)',
+          '2e tranche (' + (d+1) + ' – ' + (2*d) + ' min)',
+          '3e tranche (' + (2*d+1) + ' – ' + (3*d) + ' min)',
+          'Chaque tranche suivante (' + d + ' min)'];
+}
+window.attTrMajLibelles = function(k) {
+  const el = document.getElementById('cg-tr-' + k + '-d');
+  const lib = attTrLibelles(el ? el.value : 30);
+  lib.forEach((t, i) => { const s = document.getElementById('cg-tr-' + k + '-l' + i); if (s) s.textContent = t; });
+};
+
+function attTranchesHtml(att) {
+  const tr = (att && att.tranches) || {};
+  const v = (x) => (x == null ? '' : x);
+  const inp = 'width:100%;text-align:center;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:7px;font-size:12px';
+  let h = `<div style="margin-bottom:18px">
+    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px;font-weight:700">Attente — prix fixe par tranche</div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5">Choisissez la durée d'une tranche (15, 20, 30 min…) et le prix de chaque tranche commencée. Case vide = même prix que la tranche précédente. Les prix s'additionnent tranche après tranche.</div>`;
+  ATT_LIEUX.forEach(L => {
+    const c = tr[L.k] || {};
+    const rempli = Object.keys(c).some(x => x !== 'd');
+    const resume = rempli
+      ? ('client ' + ['1','2','3','n'].map(i => c['c'+i] != null ? c['c'+i] : '·').join('/') + ' € · chauffeur ' + ['1','2','3','n'].map(i => c['h'+i] != null ? c['h'+i] : '·').join('/') + ' € · ' + (c.d || 30) + ' min')
+      : 'non rempli';
+    const lib = attTrLibelles(c.d);
+    h += `<details ${rempli ? 'open' : ''} style="background:var(--dark);border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+      <summary style="cursor:pointer;padding:10px 12px;color:var(--white);font-size:12px">${L.label}${L.sub ? ` <span style="color:var(--muted);font-size:10px">(${L.sub})</span>` : ''} <span style="float:right;color:${rempli ? 'var(--gold)' : 'var(--muted)'};font-size:10px">${resume}</span></summary>
+      <div style="padding:4px 12px 12px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);margin-bottom:8px">Durée d'une tranche (min)
+          <input type="number" min="1" step="1" id="cg-tr-${L.k}-d" value="${v(c.d)}" placeholder="30" oninput="attTrMajLibelles('${L.k}')" style="${inp};width:80px;color:var(--white)"></label>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr>
+            <th style="text-align:left;padding:4px;color:var(--muted);font-size:10px;font-weight:600">Tranche</th>
+            <th style="padding:4px;color:var(--muted);font-size:10px;font-weight:600;width:110px">👤 Client (€)</th>
+            <th style="padding:4px;color:#16a34a;font-size:10px;font-weight:600;width:110px">🚕 Chauffeur (€)</th>
+          </tr></thead><tbody>`;
+    ['1','2','3','n'].forEach((i, idx) => {
+      h += `<tr style="border-top:1px solid var(--border)">
+            <td style="padding:6px 4px;color:var(--white);font-size:11px" id="cg-tr-${L.k}-l${idx}">${lib[idx]}</td>
+            <td style="padding:4px"><input type="number" min="0" step="0.01" id="cg-tr-${L.k}-c${i}" value="${v(c['c'+i])}" placeholder="${idx === 0 ? 'ex: 30' : '='}" style="${inp};color:var(--white)"></td>
+            <td style="padding:4px"><input type="number" min="0" step="0.01" id="cg-tr-${L.k}-h${i}" value="${v(c['h'+i])}" placeholder="${idx === 0 ? 'ex: 0' : (idx === 1 ? 'ex: 25' : '=')}" style="${inp};color:var(--green)"></td>
+          </tr>`;
+    });
+    h += `</tbody></table></div></details>`;
+  });
+  h += `</div>`;
+  return h;
+}
+
 function renderClientGrid(clientName) {
   const body = document.getElementById('client-grid-body');
   if(!body) return;
@@ -9099,11 +9216,13 @@ function renderClientGrid(clientName) {
   html += `<tr style="background:var(--card2)"><td colspan="5" style="padding:10px 8px;font-weight:700;color:var(--gold);font-size:11px;text-transform:uppercase;letter-spacing:1px">⏱️ Attente & majorations — spécifiques à ce client</td></tr>`;
   html += `<tr><td colspan="5" style="padding:14px 8px">
 
-    <!-- Tableau FRANCHISES par acteur et par type de lieu -->
-    <div style="margin-bottom:18px">
-      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;font-weight:700">
-        Franchises (minutes gratuites avant facturation)
-      </div>
+    ${attTranchesHtml(att)}
+
+    <!-- Ancien réglage : minutes gratuites (utilisé seulement si le tableau par tranches est vide pour ce lieu) -->
+    <details style="margin-bottom:18px">
+      <summary style="cursor:pointer;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px;font-weight:700">
+        Ancien réglage — minutes gratuites + tarif à la minute <span style="text-transform:none;font-weight:400">(utilisé seulement si le tableau ci-dessus est vide pour ce lieu)</span>
+      </summary>
       <table style="width:100%;border-collapse:collapse;font-size:12px;background:var(--dark);border-radius:8px;overflow:hidden">
         <thead>
           <tr style="background:var(--card2)">
@@ -9133,10 +9252,7 @@ function renderClientGrid(clientName) {
       <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">
         💡 Exemple : <strong>client=20 / chauffeur=30</strong> → entre 20 et 30 min d'attente, on facture le client mais le chauffeur ne nous facture rien → marge nette. Ces franchises s'appliquent dès que le <strong>départ OU l'arrivée</strong> est détectée comme gare/aéroport.
       </div>
-    </div>
-
-    <!-- Tarifs à la minute + majorations -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px">
 
       <div>
         <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Tarif attente CLIENT (€/min)</label>
@@ -9149,6 +9265,11 @@ function renderClientGrid(clientName) {
         <input type="number" step="0.01" id="cg-att-tarifChauffeur" value="${att.tarifChauffeur||''}" placeholder="ex: 0.80" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:6px;padding:8px;color:var(--green);font-size:12px">
         <div style="font-size:10px;color:var(--muted);margin-top:3px">Reversé au chauffeur par minute d'attente</div>
       </div>
+    </div>
+    </details>
+
+    <!-- Majorations -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
 
       <div>
         <label style="display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px">Majoration NUIT (%)</label>
@@ -9172,7 +9293,8 @@ function renderClientGrid(clientName) {
 
     </div>
     <div style="margin-top:14px;padding:10px 12px;background:rgba(200,169,110,0.1);border-left:3px solid var(--gold);border-radius:4px;font-size:11px;color:var(--muted);line-height:1.5">
-      💡 <strong>Laissez vide</strong> pour utiliser les règles par défaut (franchise standard 15/25 min, gare 20/30 min, aéroport 45/60 min, 30€/30min client, 24€/30min chauffeur, aucune majoration).<br>
+      💡 <strong>Attente :</strong> le tableau par tranches est prioritaire. S'il est vide pour un lieu, l'ancien réglage (minutes gratuites) s'applique, sinon la règle par défaut (franchise standard 15/25 min, gare 20/30 min, aéroport 45/60 min, 30€/30min client, 24€/30min chauffeur).<br>
+      <strong>Laissez vide</strong> pour utiliser les règles par défaut (aucune majoration).<br>
       <strong>Remplissez</strong> pour appliquer un barème spécifique à ce client. Les valeurs renseignées remplacent entièrement la règle par défaut correspondante.
     </div>
   </td></tr>`;
@@ -9246,6 +9368,17 @@ function captureGridInputs() {
   const vFgh = _valNum('cg-att-frGareChauff');  if (vFgh !== '') att.frGareChauff  = vFgh;
   const vFac = _valNum('cg-att-frAeroClient');  if (vFac !== '') att.frAeroClient  = vFac;
   const vFah = _valNum('cg-att-frAeroChauff');  if (vFah !== '') att.frAeroChauff  = vFah;
+  // Prix fixes par tranche (par lieu) — voir ATT_LIEUX
+  const _tr = {};
+  ATT_LIEUX.forEach(L => {
+    const o = {};
+    const d = _valNum('cg-tr-'+L.k+'-d'); if (d !== '' && d > 0) o.d = d;
+    ['c','h'].forEach(side => ['1','2','3','n'].forEach(i => {
+      const v = _valNum('cg-tr-'+L.k+'-'+side+i); if (v !== '' && v >= 0) o[side+i] = v;
+    }));
+    if (Object.keys(o).some(x => x !== 'd')) _tr[L.k] = o;
+  });
+  if (Object.keys(_tr).length) att.tranches = _tr;
   const vTc = _valNum('cg-att-tarifClient'); if (vTc !== '') att.tarifClient = vTc;
   const vTch = _valNum('cg-att-tarifChauffeur'); if (vTch !== '') att.tarifChauffeur = vTch;
   const vMn = _valNum('cg-att-majoNuitPct'); if (vMn !== '') att.majoNuitPct = vMn;
@@ -9264,7 +9397,8 @@ function captureGridInputs() {
     att.frGareClient !== undefined || att.frGareChauff !== undefined ||
     att.frAeroClient !== undefined || att.frAeroChauff !== undefined ||
     att.tarifClient !== undefined || att.tarifChauffeur !== undefined ||
-    att.majoNuitPct !== undefined || att.majoWeekendPct !== undefined
+    att.majoNuitPct !== undefined || att.majoWeekendPct !== undefined ||
+    att.tranches !== undefined
   );
   if (_hasSomeData) {
     grid._attente = att;
@@ -13203,11 +13337,11 @@ window.generateDriverPDF = function(courseId) {
         ${estPaiementABord(c)
           ? `<div class="pline"><span>Prix de la course (à encaisser du client)</span><span>${(parseFloat(c.prix)||0).toFixed(2)}€</span></div>
              <div class="pline"><span>Votre part chauffeur</span><span>${prixCh.toFixed(2)}€</span></div>
-             ${waitCh>0?`<div class="pline" style="color:#0891b2"><span>Temps d'attente (${w.chauffeurTranches}×30min)</span><span>+${waitCh.toFixed(2)}€</span></div>`:''}
+             ${waitCh>0?`<div class="pline" style="color:#0891b2"><span>Temps d'attente (${w.chauffeurMode==='minute' ? (w.chauffeurTranches+' min') : (w.chauffeurTranches+'×'+(w.chauffeurTrancheMin||30)+' min')})</span><span>+${waitCh.toFixed(2)}€</span></div>`:''}
              <div class="pline" style="color:#d97706"><span>${commLabel}</span><span>−${Math.max(0,(parseFloat(c.prix)||0)-prixCh).toFixed(2)}€</span></div>
              <div class="pfinal"><span>À encaisser du client (à bord)</span><span>${(parseFloat(c.prix)||0).toFixed(2)}€</span></div>`
           : `<div class="pline"><span>Course</span><span>${prixCh.toFixed(2)}€</span></div>
-             ${waitCh>0?`<div class="pline" style="color:#0891b2"><span>Temps d'attente (${w.chauffeurTranches}×30min)</span><span>+${waitCh.toFixed(2)}€</span></div>`:''}
+             ${waitCh>0?`<div class="pline" style="color:#0891b2"><span>Temps d'attente (${w.chauffeurMode==='minute' ? (w.chauffeurTranches+' min') : (w.chauffeurTranches+'×'+(w.chauffeurTrancheMin||30)+' min')})</span><span>+${waitCh.toFixed(2)}€</span></div>`:''}
              <div class="pfinal"><span>Total à percevoir</span><span>${totalCh.toFixed(2)}€</span></div>`
         }
       </div>
@@ -20523,10 +20657,11 @@ function calcWaitFees(course) {
 
   // CLIENT : si tarif €/min défini → facturation à la minute, sinon tranches 30€/30min
   const clientBillableMin = Math.max(0, waitMin - clientFreeMin);
-  let clientFee, clientTranches;
+  let clientFee, clientTranches, clientMode = 'tranche', clientTrancheMin = 30;
   if (att.tarifClient != null && att.tarifClient >= 0) {
     clientFee = Math.round(clientBillableMin * att.tarifClient * 100) / 100;
     clientTranches = clientBillableMin; // nombre de minutes facturées
+    clientMode = 'minute';
   } else {
     clientTranches = Math.ceil(clientBillableMin / 30);
     clientFee = clientTranches * 30;
@@ -20534,16 +20669,32 @@ function calcWaitFees(course) {
 
   // CHAUFFEUR : si tarif €/min défini → facturation à la minute, sinon tranches 24€/30min
   const chauffeurBillableMin = Math.max(0, waitMin - chauffeurFreeMin);
-  let chauffeurFee, chauffeurTranches;
+  let chauffeurFee, chauffeurTranches, chauffeurMode = 'tranche', chauffeurTrancheMin = 30;
   if (att.tarifChauffeur != null && att.tarifChauffeur >= 0) {
     chauffeurFee = Math.round(chauffeurBillableMin * att.tarifChauffeur * 100) / 100;
     chauffeurTranches = chauffeurBillableMin;
+    chauffeurMode = 'minute';
   } else {
     chauffeurTranches = Math.ceil(chauffeurBillableMin / 30);
     chauffeurFee = chauffeurTranches * 24;
   }
 
-  return { waitMin, clientFee, clientTranches, chauffeurFee, chauffeurTranches, clientFreeMin, chauffeurFreeMin, departAeroport, departGare, typeLieu };
+  // ★ PRIORITAIRE : prix fixes par tranche configurés pour CE lieu précis
+  // (gare du Nord, CDG…). Remplace le calcul ci-dessus pour l'acteur concerné.
+  const lieuPrecis = attLieuCourse(typeLieu, dep, arr);
+  const _trC = attFraisTranches(attCfgPour(att, lieuPrecis, 'c'), 'c', waitMin);
+  if (_trC) {
+    clientFee = _trC.fee; clientTranches = _trC.n; clientTrancheMin = _trC.d;
+    clientFreeMin = _trC.freeMin; clientMode = 'tranche';
+  }
+  const _trH = attFraisTranches(attCfgPour(att, lieuPrecis, 'h'), 'h', waitMin);
+  if (_trH) {
+    chauffeurFee = _trH.fee; chauffeurTranches = _trH.n; chauffeurTrancheMin = _trH.d;
+    chauffeurFreeMin = _trH.freeMin; chauffeurMode = 'tranche';
+  }
+
+  return { waitMin, clientFee, clientTranches, chauffeurFee, chauffeurTranches, clientFreeMin, chauffeurFreeMin, departAeroport, departGare, typeLieu,
+           lieuPrecis, clientMode, chauffeurMode, clientTrancheMin, chauffeurTrancheMin };
 }
 
 // ★ Récupère les paramètres d'attente & majorations spécifiques à un client.
