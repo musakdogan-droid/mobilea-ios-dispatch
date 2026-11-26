@@ -529,7 +529,49 @@ function chBattementCoeur() {
   }
 }
 
-async function fbGetCoursesClient(uid) {
+// ★ CLIENT / PARTENAIRE : écoute temps réel de SES courses.
+// Avant : toute la liste (tout l'historique de la société) relue toutes les 15 s
+// dès qu'une course était attribuée. Maintenant : une lecture au départ, puis
+// le serveur pousse uniquement le transfert qui change. Si l'écoute est
+// refusée ou coupée, le rafraîchissement périodique reprend (secours).
+function cliEcouteCourses() {
+  if (window._cliEcoute || !(SESSION && SESSION.role === 'client') || !window.fbDB) return;
+  const uid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || '';
+  const req = [];
+  if (SESSION.isPartenaire) { const soc = window._partSocServeur || SESSION.societe; if (soc) req.push(['client', soc]); }
+  if (uid) req.push(['createdByUid', uid]);
+  if (!req.length) return;
+  const parReq = {}, refs = [];
+  let ok = 0, rendu = null;
+  const publier = function() {
+    const l = _fusionParId([D.courses].concat(Object.keys(parReq).map(function(k){ return parReq[k]; })));
+    // Retirer les transferts supprimés côté serveur (présents avant, absents maintenant de toutes les écoutes).
+    const vus = {}; Object.keys(parReq).forEach(function(k){ parReq[k].forEach(function(c){ vus[c._id] = 1; }); });
+    D.courses = l.filter(function(c){ return vus[c._id] || !window._cliEcouteOK; })
+      .sort(function(a,b){ return new Date(b.datetime||0) - new Date(a.datetime||0); });
+    clearTimeout(rendu);
+    rendu = setTimeout(function(){ try { renderClientPortal(); } catch(e){} }, 300);
+  };
+  req.forEach(function(r, i){
+    const q = window.fbDB.ref('courses').orderByChild(r[0]).equalTo(r[1]);
+    q.on('value', function(snap){
+      const v = snap.val() || {};
+      parReq[i] = Object.keys(v).map(function(k){ return Object.assign({ _id: k }, v[k]); });
+      if (!q._mblOk) { q._mblOk = true; ok++; if (ok >= 1) window._cliEcouteOK = true; }
+      publier();
+    }, function(err){
+      console.warn('[client] écoute ' + r[0] + ' refusée — rafraîchissement de secours', err && err.message);
+      delete parReq[i];
+      if (q._mblOk) ok--;
+      if (ok <= 0) window._cliEcouteOK = false;
+    });
+    refs.push(q);
+  });
+  window._cliEcoute = refs;
+}
+window.cliEcouteCourses = cliEcouteCourses;
+
+async function fbGetCoursesClient(uid, limite) {
   if(!uid) return [];
   try {
     const token = await getAuthToken();
@@ -537,6 +579,7 @@ async function fbGetCoursesClient(uid) {
     if(token) p.set('auth', token);
     p.set('orderBy', JSON.stringify('createdByUid'));
     p.set('equalTo', JSON.stringify(uid));
+    if(limite) p.set('limitToLast', String(limite)); // les plus récentes seulement
     const r = await fetch(`${FB_URL}/courses.json?${p.toString()}`);
     if(!r.ok) throw new Error('filtre client refuse: ' + r.status);
     const d = await r.json();
@@ -547,7 +590,7 @@ async function fbGetCoursesClient(uid) {
   }
 }
 
-async function fbGetCoursesPartenaire(societe) {
+async function fbGetCoursesPartenaire(societe, limite) {
   // Un partenaire voit :
   //   1) toutes les courses de SA société (query client == nom de société
   //      ENREGISTRÉ pour son compte dans /partner_societies — c'est ce nom
@@ -565,6 +608,7 @@ async function fbGetCoursesPartenaire(societe) {
     if(token) p.set('auth', token);
     p.set('orderBy', JSON.stringify(champ));
     p.set('equalTo', JSON.stringify(valeur));
+    if(limite) p.set('limitToLast', String(limite)); // rafraîchissement : les plus récentes seulement
     const r = await fetch(`${FB_URL}/courses.json?${p.toString()}`);
     if(!r.ok) throw new Error('lecture ' + champ + ' refusée: ' + r.status);
     const d = await r.json();
@@ -2616,6 +2660,7 @@ function _doLogoutMaintenant() {
   try { stopPointagesListener(); } catch(e){}
   try { stopChauffeursListener(); } catch(e){}
   try { stopMessagesListener(); } catch(e){}
+  try { (window._cliEcoute||[]).forEach(function(q){ q.off(); }); window._cliEcoute = null; window._cliEcouteOK = false; } catch(e){}
   try { stopMaJourneeFallback(); } catch(e){}
   // Déconnexion Firebase Auth
   if(window.fbAuth) { try { window.fbAuth.signOut(); } catch(e){} }
@@ -14529,6 +14574,9 @@ function startMsgRefresh() {
     }
   }, 60000);
 
+  // Écoute temps réel de SES courses (partenaire / particulier) : le serveur
+  // n'envoie que les changements, au lieu de relire toute la liste.
+  try { cliEcouteCourses(); } catch(e){}
   // Rafraîchir position chauffeur pour l'espace client (suivi temps réel)
   if(SESSION.role === 'client' && !window._clientGpsInterval) {
     window._clientGpsInterval = setInterval(async()=>{
@@ -14538,15 +14586,24 @@ function startMsgRefresh() {
       if(document.visibilityState === 'hidden') return;
       const _actif = (D.courses||[]).some(function(c){ return ['attribuee','acceptee','en_route','sur_place','onboard'].indexOf(c.statut) >= 0 && String(c.datetime||'').slice(0,10) <= new Date().toISOString().slice(0,10); });
       window._cliTick = (window._cliTick || 0) + 1;
-      if(!_actif && window._cliTick % 4 !== 0) return;
+      // La position du chauffeur est rafraîchie à part (carte, toutes les 15 s,
+      // lecture ciblée). La LISTE des courses n'a besoin que de 60 s (30 s quand
+      // un chauffeur est en route) : avant, tout l'historique était relu toutes
+      // les 15 s dès qu'une course était attribuée.
+      // Écoute temps réel active : seuls les CHANGEMENTS arrivent, rien à relire.
+      // Relecture complète de sécurité toutes les 10 min seulement.
+      if(window._cliEcouteOK && window._cliTick % 40 !== 0) return;
+      if(!window._cliEcouteOK && window._cliTick % 4 !== 0) return;
+      try { cliEcouteCourses(); } catch(e){}
+      const _limite = 0;
       // PARTENAIRE : lecture cloisonnée par partenaireUid (un fbGet('courses')
       // global renverrait 401 et viderait la liste → "affiche puis disparaît").
       // On ne charge pas non plus la liste chauffeurs (interdite/inutile pour lui).
       if(SESSION.isPartenaire && SESSION.societe) {
         try {
-          const courses = await fbGetCoursesPartenaire(SESSION.societe);
+          const courses = await fbGetCoursesPartenaire(SESSION.societe, _limite);
           if(Array.isArray(courses)) {
-            D.courses = courses.sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
+            D.courses = (_limite ? _fusionParId([D.courses, courses]) : courses).sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
             renderClientPortal();
           }
         } catch(e) { /* silencieux : on garde l'affichage courant */ }
@@ -14556,8 +14613,8 @@ function startMsgRefresh() {
       // (createdByUid = son UID) — la lecture globale lui est refusée.
       try {
         const _cuid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.uid;
-        const courses = await fbGetCoursesClient(_cuid);
-        if(Array.isArray(courses)) D.courses = courses.sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
+        const courses = await fbGetCoursesClient(_cuid, _limite);
+        if(Array.isArray(courses)) D.courses = (_limite ? _fusionParId([D.courses, courses]) : courses).sort((a,b)=>new Date(b.datetime||0)-new Date(a.datetime||0));
         // Seulement le(s) chauffeur(s) de SES courses en cours (avant : toute la liste toutes les 15 s).
         const chauffeurs = await fbChauffeursPourClient();
         if(Array.isArray(chauffeurs) && chauffeurs.length) D.chauffeurs = chauffeurs;
@@ -15793,7 +15850,9 @@ async function cliDrvCharger() {
   if(!(D.courses||[]).some(c => c.chauffeur && CLI_DRV_VISIBLE.includes(c.statut))) return;
   st.enCours = true;
   try {
-    const [ch, veh] = await Promise.all([fbChauffeursPourClient().catch(()=>[]), fbGet('vehicules').catch(()=>[])]);
+    const _vehFrais = st.vehAt && (Date.now() - st.vehAt) < 600000 && st.veh && st.veh.length;
+    const [ch, veh] = await Promise.all([fbChauffeursPourClient().catch(()=>[]), _vehFrais ? Promise.resolve(st.veh) : fbGet('vehicules').catch(()=>[])]);
+    if(!_vehFrais && veh && veh.length) st.vehAt = Date.now();
     st.ch = ch || []; st.veh = veh || []; st.at = Date.now();
     const sig = JSON.stringify(st.ch.map(x => [x._id, x.tel, x.immat, x.prenom, x.nom])) + JSON.stringify(st.veh.map(v => [v.chauffeur, v.immat, v.marque, v.modele]));
     if(sig !== st.sig) { st.sig = sig; try { renderClientPortal(); } catch(e){} }
@@ -21448,7 +21507,7 @@ window.onNativeGPS = async function(pos) {
     gpsActive = true;
     _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
     const now = Date.now();
-    if(now - _gpsLastSent < 15000) return;          // 1 écriture / 15 s (économie)
+    if(now - _gpsLastSent < _gpsIntervalMs()) return; // 15 s en course, 60 s sinon (économie)
     _gpsLastSent = now;
     await sendGPS(pos);
   } catch(e) { console.warn('[onNativeGPS]', e); }
@@ -21623,6 +21682,26 @@ async function checkArriveeClient(lat, lng) {
 // getCurrentPosition en boucle (ce qui donnait l'impression de redemander).
 let _gpsWatchId = null;
 let _gpsLastSent = 0;
+// ★ ÉCONOMIE : cadence d'envoi de la position selon l'activité du chauffeur.
+//  - course en cours (en route, sur place, à bord) : toutes les 15 s (suivi client fin)
+//  - sinon (disponible, en attente) : toutes les 60 s — suffit pour la carte du
+//    dispatch et le choix du chauffeur le plus proche.
+// Chaque position est renvoyée en direct à tous les dispatchs connectés : c'était
+// la 1re dépense Firebase. Au début d'une course, envoi immédiat (renvoie 0).
+function _gpsIntervalMs() {
+  try {
+    const moi = SESSION && SESSION.name, id = SESSION && SESSION.chauffeurId;
+    const fuid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || '';
+    const actif = (D.courses||[]).some(function(c){
+      return c && (c.chauffeur === moi || (id && c.chauffeurId === id) || (fuid && c.chauffeurUid === fuid))
+        && ['en_route','sur_place','onboard'].indexOf(c.statut) >= 0;
+    });
+    if (actif && !window._gpsEnCourse) { window._gpsEnCourse = true; return 0; }
+    window._gpsEnCourse = actif;
+    return actif ? 15000 : 60000;
+  } catch(e) { return 15000; }
+}
+window._gpsIntervalMs = _gpsIntervalMs;
 // Formate l'ancienneté d'une position GPS en texte lisible + couleur.
 // Vert : récent (<2 min). Orange : 2-10 min. Rouge : >10 min (position périmée).
 // Renvoie { texte, couleur, minutes } ou null si pas d'horodatage.
@@ -21680,7 +21759,7 @@ function demarrerSuiviGPS() {
       _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
       // Limiter les écritures Firebase à une toutes les 15 s max (économie).
       const now = Date.now();
-      if(now - _gpsLastSent < 15000) return;
+      if(now - _gpsLastSent < _gpsIntervalMs()) return; // 15 s en course, 60 s sinon
       _gpsLastSent = now;
       await sendGPS(pos);
       const btn = document.getElementById('gps-btn');
@@ -28042,3 +28121,90 @@ setInterval(function(){
     if(typeof refreshClientMap === 'function') refreshClientMap();
   } catch(e){}
 }, 15000);
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ★ ÉCONOMIE GOOGLE MAPS : cache des distances et des itinéraires
+//  Les mêmes trajets reviennent sans cesse (CDG → Disney, Orly → Paris…) et le
+//  même calcul était relancé à chaque changement de véhicule ou réaffichage.
+//  - Distance entre 2 adresses : gardée 30 jours (mémoire + stockage local).
+//  - Distance depuis une position GPS (temps d'approche) : 3 min, au mètre près
+//    arrondi à ~100 m.
+//  - Itinéraire dessiné sur la carte : 30 min, en mémoire.
+//  Les appels sont interceptés au niveau de Google Maps : aucun écran modifié.
+// ═══════════════════════════════════════════════════════════════════════════
+(function(){
+  const MEM = {}, LS = 'mbl_dm_';
+  const norm = function(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,' ').trim(); };
+  function pt(p) {
+    if (p == null) return null;
+    if (typeof p === 'string') return 'a:' + norm(p);
+    if (p.placeId) return 'p:' + p.placeId;
+    if (p.query) return 'a:' + norm(p.query);
+    if (p.location) return pt(p.location);
+    const lat = typeof p.lat === 'function' ? p.lat() : p.lat, lng = typeof p.lng === 'function' ? p.lng() : p.lng;
+    if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) return null;
+    return 'g:' + (+lat).toFixed(3) + ',' + (+lng).toFixed(3);
+  }
+  function ttl(k) { return k.indexOf('g:') >= 0 ? 180000 : 30 * 86400000; }
+  function lire(k) {
+    const m = MEM[k]; if (m && m.exp > Date.now()) return m.r;
+    if (k.indexOf('g:') >= 0) return null;
+    try { const v = JSON.parse(localStorage.getItem(LS + k) || 'null'); if (v && v.exp > Date.now()) { MEM[k] = v; return v.r; } } catch(e) {}
+    return null;
+  }
+  function ecrire(k, r) {
+    const v = { exp: Date.now() + ttl(k), r: r }; MEM[k] = v;
+    if (k.indexOf('g:') >= 0) return;
+    try { localStorage.setItem(LS + k, JSON.stringify(v)); } catch(e) {}
+  }
+  function cleDM(req) {
+    if (!req || !req.origins || !req.destinations || req.origins.length !== 1 || req.destinations.length !== 1) return null;
+    if (req.drivingOptions || req.transitOptions) return null;
+    const o = pt(req.origins[0]), d = pt(req.destinations[0]);
+    return (o && d) ? 'dm|' + String(req.travelMode || 'DRIVING') + '|' + o + '|' + d : null;
+  }
+  function simplifier(res) {
+    const e = res.rows[0].elements[0];
+    return { originAddresses: res.originAddresses || [], destinationAddresses: res.destinationAddresses || [],
+      rows: [{ elements: [{ status: 'OK', distance: { value: e.distance.value, text: e.distance.text }, duration: { value: e.duration.value, text: e.duration.text } }] }] };
+  }
+  function installer() {
+    if (!(window.google && google.maps && google.maps.DistanceMatrixService && google.maps.DirectionsService)) return false;
+    const P = google.maps.DistanceMatrixService.prototype;
+    if (!P._mblCache) {
+      const orig = P.getDistanceMatrix;
+      P.getDistanceMatrix = function(req, cb) {
+        const k = cleDM(req), hit = k ? lire(k) : null;
+        if (hit) { if (typeof cb === 'function') setTimeout(function(){ cb(hit, 'OK'); }, 0); return Promise.resolve(hit); }
+        const garder = function(res, status) {
+          try { if (k && (status === undefined || status === 'OK') && res && res.rows && res.rows[0] && res.rows[0].elements[0] && res.rows[0].elements[0].status === 'OK') ecrire(k, simplifier(res)); } catch(e) {}
+        };
+        if (typeof cb === 'function') return orig.call(this, req, function(res, status){ garder(res, status); cb(res, status); });
+        const pr = orig.call(this, req);
+        return (pr && pr.then) ? pr.then(function(res){ garder(res); return res; }) : pr;
+      };
+      P._mblCache = true;
+    }
+    const D2 = google.maps.DirectionsService.prototype;
+    if (!D2._mblCache) {
+      const origR = D2.route;
+      D2.route = function(req, cb) {
+        const o = req && pt(req.origin), d = req && pt(req.destination);
+        const k = (o && d && !(req.waypoints && req.waypoints.length)) ? 'dir|' + String(req.travelMode || 'DRIVING') + '|' + o + '|' + d : null;
+        const m = k && MEM[k];
+        if (m && m.exp > Date.now()) { if (typeof cb === 'function') setTimeout(function(){ cb(m.r, 'OK'); }, 0); return Promise.resolve(m.r); }
+        const garder = function(res, status){ if (k && (status === undefined || status === 'OK') && res) MEM[k] = { exp: Date.now() + 1800000, r: res }; };
+        if (typeof cb === 'function') return origR.call(this, req, function(res, status){ garder(res, status); cb(res, status); });
+        const pr = origR.call(this, req);
+        return (pr && pr.then) ? pr.then(function(res){ garder(res); return res; }) : pr;
+      };
+      D2._mblCache = true;
+    }
+    return true;
+  }
+  window._mblCacheMapsInstaller = installer;
+  if (!installer()) {
+    let n = 0;
+    const t = setInterval(function(){ if (installer() || ++n > 240) clearInterval(t); }, 500);
+  }
+})();
