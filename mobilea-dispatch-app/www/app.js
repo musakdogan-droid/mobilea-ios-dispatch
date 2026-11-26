@@ -11439,7 +11439,8 @@ window.renderGerantTransferts = async function(){
   var cnt = document.getElementById('gt-count');
   if(cnt) cnt.textContent = mine.length;
   if(!box) return;
-  if(!mine.length){ box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">Aucun transfert créé pour le moment.<br>Créez-en un depuis « Nouveau transfert ».</div>'; return; }
+  var _gxBarre = '<div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button onclick="gxOuvrir()" class="btn btn-s btn-sm"><i class="fas fa-file-excel" style="color:#16a34a"></i> Excel — importer / exporter</button></div>';
+  if(!mine.length){ box.innerHTML = _gxBarre + '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">Aucun transfert créé pour le moment.<br>Créez-en un depuis « Nouveau transfert ».</div>'; return; }
   // Fiches chauffeurs + véhicules → pour afficher le contact du chauffeur qui a
   // accepté (téléphone, immatriculation, société…).
   var _chx=[], _veh=[];
@@ -11481,7 +11482,7 @@ window.renderGerantTransferts = async function(){
     }
     return {t:'⏳ '+(STATUT_LABELS[c.statut]||c.statut), col:'#6b7280'};
   };
-  box.innerHTML = mine.map(function(c){
+  box.innerHTML = _gxBarre + mine.map(function(c){
     var si = info(c);
     var dt = c.datetime ? parseLocalDT(c.datetime).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'UTC'}) : '';
     var prix = c.prix ? parseFloat(c.prix).toFixed(0)+'€' : '';
@@ -25475,6 +25476,7 @@ function gaDessiner() {
     + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">'
     +   '<button onclick="gp(\'gerant-nouveau\')" class="btn btn-p"><i class="fas fa-plus"></i> Nouveau transfert</button>'
     +   '<button onclick="gaFiltre()" class="btn btn-ghost btn-sm" style="' + (GA.filtre === 'attribuer' ? 'border-color:var(--gold);color:var(--gold)' : '') + '"><i class="fas fa-user-slash"></i> À attribuer <span style="background:#dc2626;color:#fff;border-radius:10px;padding:1px 8px;font-size:11px;font-weight:800;margin-left:4px">' + aAttr.length + '</span></button>'
+    +   '<button onclick="gxOuvrir()" class="btn btn-ghost btn-sm" title="Importer / exporter un fichier Excel"><i class="fas fa-file-excel" style="color:#16a34a"></i> Excel</button>'
     +   '<button onclick="renderGerantAgenda()" class="btn btn-ghost btn-sm" aria-label="Actualiser"><i class="fas fa-sync-alt"></i></button>'
     +   '<span style="font-size:12px;color:var(--muted)">' + duJour.length + ' transfert' + (duJour.length > 1 ? 's' : '') + '</span>'
     + '</div>'
@@ -26760,6 +26762,437 @@ async function gExporterFichier(nom, contenu, mime) {
 }
 window.gExporterFichier = gExporterFichier;
 function gEstNatif() { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GÉRANT — EXCEL : exporter ses transferts / importer un fichier de transferts
+//  Les transferts importés arrivent dans « Mon dispatch » (planning du gérant),
+//  exactement comme s'ils avaient été créés avec « Nouveau transfert » :
+//  avec un chauffeur de la société → « Attribué » ; sans → « À attribuer ».
+//  L'import ne propose JAMAIS au réseau MOBILEA (aucune notification réseau).
+// ═══════════════════════════════════════════════════════════════════════════
+const GX_COLS = [
+  // clé, titre dans le fichier, obligatoire, exemple, explication, alias reconnus
+  { k:'date',     t:'Date',              req:true,  ex:'15/12/2026', d:'Jour de la prise en charge (JJ/MM/AAAA ou date Excel).', a:['date','jour','date prise en charge','date de prise en charge'] },
+  { k:'heure',    t:'Heure',             req:true,  ex:'08:30',      d:'Heure de prise en charge (HH:MM, 24 h).', a:['heure','horaire','heure prise en charge','heure de prise en charge','heure pec'] },
+  { k:'depart',   t:'Départ',            req:true,  ex:'Aéroport CDG Terminal 2E', d:'Adresse ou lieu de prise en charge.', a:['depart','adresse depart','adresse de depart','lieu de prise en charge','prise en charge','from'] },
+  { k:'arrivee',  t:'Arrivée',           req:true,  ex:'12 rue de Rivoli, 75001 Paris', d:'Adresse ou lieu de destination.', a:['arrivee','adresse arrivee','adresse d arrivee','destination','to'] },
+  { k:'client',   t:'Client / passager', req:false, ex:'M. Martin',  d:'Nom affiché au chauffeur sur la course.', a:['client passager','passager','client','nom passager','nom du passager','nom'] },
+  { k:'tel',      t:'Téléphone',         req:false, ex:'+33 6 12 34 56 78', d:'Téléphone du passager.', a:['telephone','tel','telephone client','telephone passager','portable','mobile'] },
+  { k:'vol',      t:'N° vol / train',    req:false, ex:'AF1234',     d:'Numéro de vol ou de train.', a:['n vol train','vol','n vol','numero de vol','vol train','train','n train'] },
+  { k:'vehicule', t:'Véhicule',          req:false, ex:'Berline',    d:'Berline, Van, Sprinter, Bus, Van PMR ou Limousine (Berline si vide).', a:['vehicule','type vehicule','type de vehicule','categorie'] },
+  { k:'pax',      t:'Passagers',         req:false, ex:'2',          d:'Nombre de passagers (1 si vide).', a:['passagers','nb passagers','nombre de passagers','pax'] },
+  { k:'bags',     t:'Bagages',           req:false, ex:'2',          d:'Nombre de bagages (0 si vide).', a:['bagages','nb bagages','nombre de bagages','valises'] },
+  { k:'prix',     t:'Prix client (€)',   req:false, ex:'85',         d:'Prix facturé au client, TTC. Reste privé.', a:['prix client','prix','tarif client','prix ttc'] },
+  { k:'prixCh',   t:'Prix chauffeur (€)',req:false, ex:'60',         d:'Montant reversé au chauffeur.', a:['prix chauffeur','tarif chauffeur','montant chauffeur'] },
+  { k:'paiement', t:'Paiement',          req:false, ex:'Compte',     d:'« Compte » (facturé) ou « À bord » (le chauffeur encaisse). Compte si vide.', a:['paiement','mode de paiement','reglement'] },
+  { k:'facture',  t:'Client facturé',    req:false, ex:'Hôtel Le Grand', d:'Nom exact d\'un client de « Mes clients & tarifs ». Reste privé.', a:['client facture','client a facturer','facturer a','donneur d ordre','societe cliente'] },
+  { k:'chauffeur',t:'Chauffeur',         req:false, ex:'',           d:'Prénom Nom d\'un chauffeur de votre société. Vide = « À attribuer ».', a:['chauffeur','conducteur'] },
+  { k:'notes',    t:'Notes',             req:false, ex:'Pancarte au nom du client', d:'Consignes pour le chauffeur.', a:['notes','note','commentaire','commentaires','remarques','consignes'] }
+];
+const GX_VEH = { berline:'berline', b:'berline', van:'van', v:'van', minivan:'van', sprinter:'sprinter', sp:'sprinter', minibus:'sprinter', bus:'bus', autocar:'bus', pmr:'pmr', 'van pmr':'pmr', limousine:'limousine', limo:'limousine' };
+const GX_VEH_NOM = { berline:'Berline', van:'Van', sprinter:'Sprinter', bus:'Bus', pmr:'Van PMR', limousine:'Limousine' };
+const GX_MAX = 300;
+const GX = { lignes: [], fichier: '' };
+
+async function gxXlsx() {
+  if (window.XLSX) return true;
+  try {
+    await new Promise(function(res, rej){
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej; document.head.appendChild(s);
+    });
+    return !!window.XLSX;
+  } catch(e) { showToast('Module Excel indisponible (connexion ?)', true); return false; }
+}
+
+// Enregistre un classeur : partage natif sur iPhone, téléchargement ailleurs.
+async function gxEnregistrer(wb, nom) {
+  const natif = gEstNatif();
+  try {
+    const P = (window.Capacitor && window.Capacitor.Plugins) || {};
+    if (natif && P.Filesystem && P.Share) {
+      const b64 = window.XLSX.write(wb, { bookType:'xlsx', type:'base64' });
+      const w = await P.Filesystem.writeFile({ path: nom, data: b64, directory: 'CACHE' });
+      await P.Share.share({ title: nom, url: w.uri, dialogTitle: 'Enregistrer ou envoyer le fichier' });
+      return true;
+    }
+  } catch(e) { if (e && /cancel/i.test(String(e.message || e))) return false; }
+  try {
+    const buf = window.XLSX.write(wb, { bookType:'xlsx', type:'array' });
+    const file = new File([buf], nom, { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    if ((natif || /iPhone|iPad|iPod/i.test(navigator.userAgent || '')) && navigator.canShare && navigator.canShare({ files:[file] })) {
+      await navigator.share({ files:[file], title:nom });
+      return true;
+    }
+  } catch(e) { if (e && e.name === 'AbortError') return false; }
+  try { window.XLSX.writeFile(wb, nom); showToast('📥 Fichier téléchargé : ' + nom); return true; }
+  catch(e) { showToast(natif ? 'Export impossible dans l\'app — faites-le depuis le site sur ordinateur' : 'Export impossible sur cet appareil', true); return false; }
+}
+
+function gxCol(header) {
+  const h = gNorm(header);
+  if (!h) return null;
+  for (const c of GX_COLS) { if (c.a.indexOf(h) >= 0 || gNorm(c.t) === h) return c.k; }
+  return null;
+}
+function gxYmd(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (typeof v === 'number') {
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v * 86400000));
+    return d.getUTCFullYear() + '-' + String(d.getUTCMonth()+1).padStart(2,'0') + '-' + String(d.getUTCDate()).padStart(2,'0');
+  }
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return m[1] + '-' + m[2].padStart(2,'0') + '-' + m[3].padStart(2,'0');
+  m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/);
+  if (m) { const a = m[3].length === 2 ? '20' + m[3] : m[3]; return a + '-' + m[2].padStart(2,'0') + '-' + m[1].padStart(2,'0'); }
+  return '';
+}
+function gxHhmm(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (typeof v === 'number') {
+    const tot = Math.round((v % 1) * 1440);
+    return String(Math.floor(tot / 60) % 24).padStart(2,'0') + ':' + String(tot % 60).padStart(2,'0');
+  }
+  const m = String(v).match(/(\d{1,2})\s*[:hH]\s*(\d{2})?/);
+  if (!m) return '';
+  const hh = parseInt(m[1], 10), mm = parseInt(m[2] || '0', 10);
+  if (hh > 23 || mm > 59) return '';
+  return String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+}
+function gxNum(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v === 'number') return v;
+  const n = parseFloat(String(v).replace(/[^0-9,.\-]/g, '').replace(',', '.'));
+  return isNaN(n) ? null : n;
+}
+function gxCsv(texte) {
+  const sep = (texte.split('\n')[0] || '').split(';').length > (texte.split('\n')[0] || '').split(',').length ? ';' : ',';
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < texte.length; i++) {
+    const ch = texte[i];
+    if (q) { if (ch === '"') { if (texte[i+1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === sep) { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && texte[i+1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += ch;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
+// ── Fenêtre Excel (export + import + mode d'emploi) ────────────────────────
+window.gxOuvrir = function() {
+  if (!gerantAccesTransferts()) { showToast('Accès non autorisé', true); return; }
+  const auj = new Date();
+  const du = gJourStr(new Date(auj.getFullYear(), auj.getMonth(), 1));
+  const au = gJourStr(new Date(auj.getFullYear(), auj.getMonth() + 2, 0));
+  const th = 'text-align:left;padding:6px 8px;background:#f8fafc;font-size:11px;color:#475569;border-bottom:1px solid #e5e7eb';
+  const td = 'padding:6px 8px;font-size:12px;border-bottom:1px solid #f1f5f9;vertical-align:top';
+  const aide = '<table style="width:100%;border-collapse:collapse;margin-top:6px"><thead><tr><th style="' + th + '">Colonne</th><th style="' + th + '">Contenu</th></tr></thead><tbody>'
+    + GX_COLS.map(function(c){ return '<tr><td style="' + td + ';font-weight:700;white-space:nowrap">' + E(c.t) + (c.req ? ' <span style="color:#dc2626">*</span>' : '') + '</td><td style="' + td + ';color:#374151">' + E(c.d) + (c.ex ? ' <span style="color:#9ca3af">Ex. ' + E(c.ex) + '</span>' : '') + '</td></tr>'; }).join('')
+    + '</tbody></table>';
+  gSheet('gx-sheet', '📊 Excel — mes transferts',
+    '<div style="font-size:13px;font-weight:800;margin:6px 0 6px">📤 Exporter</div>'
+    + '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">'
+    +   '<div style="flex:1;min-width:130px">' + gChamp('Du', '<input type="date" id="gx-du" value="' + du + '" style="' + G_IN + '">') + '</div>'
+    +   '<div style="flex:1;min-width:130px">' + gChamp('Au', '<input type="date" id="gx-au" value="' + au + '" style="' + G_IN + '">') + '</div>'
+    + '</div>'
+    + '<div style="margin-top:10px">' + gBtn('📤 Exporter en Excel (.xlsx)', 'gxExporter()', '#16a34a', true) + '</div>'
+    + '<div style="height:1px;background:#e5e7eb;margin:18px 0"></div>'
+    + '<div style="font-size:13px;font-weight:800;margin-bottom:6px">📥 Importer des transferts</div>'
+    + '<div style="font-size:12px;color:#374151;line-height:1.6;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:10px 12px">'
+    +   '<b>Comment préparer le fichier</b><br>'
+    +   '1. Téléchargez le <b>modèle</b> ci-dessous (ou utilisez un export : il a les mêmes colonnes).<br>'
+    +   '2. <b>Une ligne = un transfert.</b> La 1re ligne garde les titres des colonnes.<br>'
+    +   '3. Colonnes obligatoires : <b>Date, Heure, Départ, Arrivée</b>. Les autres sont facultatives, l\'ordre n\'a pas d\'importance.<br>'
+    +   '4. Chaque transfert se place dans <b>Mon dispatch</b> au jour et à l\'heure indiqués. Avec un <b>Chauffeur</b> de votre société → attribué ; sans → « À attribuer ».<br>'
+    +   '5. Rien n\'est proposé au réseau MOBILEA. Un transfert déjà présent (même date, heure, départ et arrivée) est ignoré.'
+    + '</div>'
+    + '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:#2563eb">Voir le détail des colonnes</summary>' + aide + '</details>'
+    + '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'
+    +   '<button onclick="gxModele()" style="flex:1;min-width:150px;background:#fff;border:1px solid #d1d5db;border-radius:11px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;color:#111;font-family:inherit">📄 Télécharger le modèle</button>'
+    +   '<label style="flex:1;min-width:150px;text-align:center;background:#2563eb;border-radius:11px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;color:#fff">📥 Choisir le fichier'
+    +     '<input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="gxLire(this)"></label>'
+    + '</div>'
+    + '<div id="gx-apercu" style="margin-top:12px"></div>');
+};
+
+// ── Export ─────────────────────────────────────────────────────────────────
+window.gxExporter = async function() {
+  if (!gerantAccesTransferts()) return;
+  const du = gVal('gx-du'), au = gVal('gx-au');
+  if (!du || !au || du > au) { showToast('Choisissez une période valide', true); return; }
+  if (!(await gxXlsx())) return;
+  showToast('Préparation de l\'export…');
+  let liste = [];
+  try { liste = await gMesTransferts(); } catch(e) { showToast('Lecture impossible — réessayez', true); return; }
+  liste = liste.filter(function(c){ const j = String(c.datetime||'').slice(0,10); return j >= du && j <= au; })
+    .sort(function(a,b){ return String(a.datetime||'').localeCompare(String(b.datetime||'')); });
+  if (!liste.length) { showToast('Aucun transfert sur cette période', true); return; }
+  const lignes = liste.map(function(c){
+    const p = c._priv || {};
+    const j = String(c.datetime||'').slice(0,10).split('-');
+    return {
+      'Date': j.length === 3 ? (j[2] + '/' + j[1] + '/' + j[0]) : '',
+      'Heure': String(c.datetime||'').slice(11,16),
+      'Départ': c.depart || c.lieu || '',
+      'Arrivée': c.arrivee || '',
+      'Client / passager': c.client || gaNomPassager(c) || '',
+      'Téléphone': c.tel || '',
+      'N° vol / train': c.vol || '',
+      'Véhicule': GX_VEH_NOM[c.vehicule] || c.vehicule || '',
+      'Passagers': Math.max((c.passagers && c.passagers.length) || 0, parseInt(c.pax) || 1),
+      'Bagages': parseInt(c.bags) || 0,
+      'Prix client (€)': (parseFloat(c.prix) || parseFloat(p.prix) || 0) || '',
+      'Prix chauffeur (€)': parseFloat(c.prixChauffeur) || '',
+      'Paiement': estPaiementABord(c) ? 'À bord' : 'Compte',
+      'Client facturé': p.clientNom || '',
+      'Chauffeur': c.chauffeur || '',
+      'Notes': c.notes || '',
+      'Statut': (gaStatut(c) || {}).lab || c.statut || '',
+      'Référence': c.ref || ''
+    };
+  });
+  const ws = window.XLSX.utils.json_to_sheet(lignes);
+  ws['!cols'] = [{wch:11},{wch:7},{wch:34},{wch:34},{wch:20},{wch:16},{wch:12},{wch:10},{wch:9},{wch:8},{wch:13},{wch:15},{wch:9},{wch:20},{wch:20},{wch:30},{wch:14},{wch:14}];
+  const wb = window.XLSX.utils.book_new();
+  window.XLSX.utils.book_append_sheet(wb, ws, 'Transferts');
+  const soc = (SESSION.socNom || 'transferts').replace(/[^a-z0-9]+/gi, '_').slice(0, 30);
+  const ok = await gxEnregistrer(wb, 'Transferts_' + soc + '_' + du + '_au_' + au + '.xlsx');
+  if (ok) { try { gJournal('Export Excel : ' + liste.length + ' transfert(s) du ' + du + ' au ' + au); } catch(e) {} }
+};
+
+// ── Modèle vierge + exemple + mode d'emploi ───────────────────────────────
+window.gxModele = async function() {
+  if (!(await gxXlsx())) return;
+  const X = window.XLSX;
+  const titres = GX_COLS.map(function(c){ return c.t; });
+  const demain = new Date(); demain.setDate(demain.getDate() + 1);
+  const dj = gJourStr(demain).split('-').reverse().join('/');
+  const ex = [
+    [dj, '08:30', 'Aéroport CDG Terminal 2E', '12 rue de Rivoli, 75001 Paris', 'M. Martin', '+33 6 12 34 56 78', 'AF1234', 'Berline', 2, 2, 85, 60, 'Compte', '', '', 'Pancarte au nom du client'],
+    [dj, '14:00', 'Gare de Lyon, Paris', 'Disneyland Paris, Chessy', 'Famille Durand', '+33 6 98 76 54 32', 'TGV6201', 'Van', 5, 5, 120, 90, 'À bord', '', '', 'Siège bébé']
+  ];
+  const wsT = X.utils.aoa_to_sheet([titres]);
+  const wsE = X.utils.aoa_to_sheet([titres].concat(ex));
+  const largeurs = GX_COLS.map(function(c){ return { wch: Math.max(10, c.t.length + 2, String(c.ex||'').length + 2) }; });
+  wsT['!cols'] = largeurs; wsE['!cols'] = largeurs;
+  const wsA = X.utils.aoa_to_sheet([['Colonne', 'Obligatoire', 'Contenu', 'Exemple']].concat(GX_COLS.map(function(c){ return [c.t, c.req ? 'OUI' : '', c.d, c.ex]; })).concat([
+    [], ['Règles'],
+    ['• Remplissez l\'onglet « Transferts » : une ligne = un transfert, la 1re ligne garde les titres.'],
+    ['• L\'onglet « Exemple » montre deux lignes remplies : il n\'est pas importé.'],
+    ['• Date au format JJ/MM/AAAA, heure au format HH:MM (24 h).'],
+    ['• Chauffeur : prénom et nom exactement comme dans l\'app (chauffeurs de votre société). Vide = « À attribuer ».'],
+    ['• Client facturé : nom exact d\'un client de « Mes clients & tarifs ».'],
+    ['• Maximum ' + GX_MAX + ' transferts par fichier. Les doublons (même date, heure, départ, arrivée) sont ignorés.']
+  ]));
+  wsA['!cols'] = [{wch:20},{wch:11},{wch:70},{wch:30}];
+  const wb = X.utils.book_new();
+  X.utils.book_append_sheet(wb, wsT, 'Transferts');
+  X.utils.book_append_sheet(wb, wsE, 'Exemple');
+  X.utils.book_append_sheet(wb, wsA, 'Mode d\'emploi');
+  await gxEnregistrer(wb, 'Modele_import_transferts.xlsx');
+};
+
+// ── Import : lecture + contrôle + aperçu (rien n'est créé à cette étape) ───
+window.gxLire = async function(input) {
+  const file = input && input.files && input.files[0];
+  if (input) input.value = '';
+  if (!file) return;
+  const box = document.getElementById('gx-apercu');
+  if (box) box.innerHTML = '<div style="padding:12px;color:#6b7280;font-size:13px">Lecture du fichier…</div>';
+  let rows = [];
+  try {
+    if (/\.csv$/i.test(file.name)) rows = gxCsv(await file.text());
+    else {
+      if (!(await gxXlsx())) return;
+      const wb = window.XLSX.read(await file.arrayBuffer(), { type:'array' });
+      const nomF = wb.SheetNames.find(function(n){ return gNorm(n) === 'transferts'; }) || wb.SheetNames[0];
+      rows = window.XLSX.utils.sheet_to_json(wb.Sheets[nomF], { header:1, raw:true, defval:'' });
+    }
+  } catch(e) { if (box) box.innerHTML = '<div style="color:#dc2626;font-size:13px">Fichier illisible. Enregistrez-le en .xlsx ou .csv et réessayez.</div>'; return; }
+
+  // Ligne de titres = 1re ligne contenant au moins Date + Départ
+  let hi = -1, map = {};
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const m = {}; (rows[i] || []).forEach(function(h, j){ const k = gxCol(h); if (k && m[k] === undefined) m[k] = j; });
+    if (m.date !== undefined && m.depart !== undefined) { hi = i; map = m; break; }
+  }
+  if (hi < 0) { if (box) box.innerHTML = '<div style="color:#dc2626;font-size:13px">Titres de colonnes introuvables. La 1re ligne doit contenir au moins « Date », « Heure », « Départ » et « Arrivée » (utilisez le modèle).</div>'; return; }
+  const manquantes = GX_COLS.filter(function(c){ return c.req && map[c.k] === undefined; }).map(function(c){ return c.t; });
+  if (manquantes.length) { if (box) box.innerHTML = '<div style="color:#dc2626;font-size:13px">Colonne(s) obligatoire(s) manquante(s) : <b>' + E(manquantes.join(', ')) + '</b>.</div>'; return; }
+
+  // Données de référence : mes transferts (doublons), mes chauffeurs, mes clients privés
+  let existants = [], tous = [];
+  try { existants = await gMesTransferts(); } catch(e) {}
+  try { tous = await fbGet('chauffeurs') || []; } catch(e) {}
+  if (gOpt('agenda')) { try { await gpCharger(); } catch(e) {} }
+  const soc = (SESSION.socNom || '').trim();
+  const miens = tous.filter(function(ch){ return !ch.archived && !ch.blocked && soc && (ch.soc_nom||'').trim() === soc; });
+  const cle = function(dt, dep, arr){ return dt + '|' + gNorm(dep) + '|' + gNorm(arr); };
+  const deja = {};
+  existants.forEach(function(c){ if (G_MORTS.indexOf(c.statut) < 0) deja[cle(c.datetime||'', c.depart||c.lieu||'', c.arrivee||'')] = true; });
+
+  const lignes = [];
+  const v = function(r, k){ return map[k] === undefined ? '' : r[map[k]]; };
+  const txt = function(r, k){ const x = v(r, k); return x === null || x === undefined ? '' : String(x).trim(); };
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    if (!r.some(function(x){ return String(x == null ? '' : x).trim() !== ''; })) continue;
+    const n = i + 1; // numéro de ligne Excel
+    const L = { n: n, erreurs: [], avis: [] };
+    L.date = gxYmd(v(r, 'date'));
+    L.heure = gxHhmm(v(r, 'heure'));
+    if (!L.heure && typeof v(r, 'date') === 'number' && v(r, 'date') % 1) L.heure = gxHhmm(v(r, 'date'));
+    L.depart = txt(r, 'depart'); L.arrivee = txt(r, 'arrivee');
+    if (!L.date) L.erreurs.push('date invalide');
+    if (!L.heure) L.erreurs.push('heure invalide');
+    if (!L.depart) L.erreurs.push('départ vide');
+    if (!L.arrivee) L.erreurs.push('arrivée vide');
+    L.datetime = L.date && L.heure ? L.date + 'T' + L.heure : '';
+    L.client = txt(r, 'client'); L.tel = txt(r, 'tel'); L.vol = txt(r, 'vol'); L.notes = txt(r, 'notes');
+    const vr = gNorm(txt(r, 'vehicule'));
+    L.vehicule = vr ? (GX_VEH[vr] || null) : 'berline';
+    if (!L.vehicule) { L.avis.push('véhicule « ' + txt(r, 'vehicule') + ' » inconnu → Berline'); L.vehicule = 'berline'; }
+    L.pax = Math.max(1, parseInt(gxNum(v(r, 'pax'))) || 1);
+    L.bags = Math.max(0, parseInt(gxNum(v(r, 'bags'))) || 0);
+    L.prix = gxNum(v(r, 'prix')) || 0;
+    L.prixCh = gxNum(v(r, 'prixCh')) || 0;
+    const pm = gNorm(txt(r, 'paiement'));
+    L.bord = /bord|espece|cash|liquide/.test(pm);
+    const fn = txt(r, 'facture');
+    L.clientId = ''; L.clientNom = '';
+    if (fn) {
+      const cl = (GP.clients || []).find(function(x){ return gNorm(x.nom) === gNorm(fn); });
+      if (cl) { L.clientId = cl._id; L.clientNom = cl.nom || fn; }
+      else { L.clientNom = fn; L.avis.push('client facturé « ' + fn + ' » absent de Mes clients'); }
+    }
+    const chn = txt(r, 'chauffeur');
+    L.ch = null;
+    if (chn) {
+      const q = gNorm(chn);
+      const trouves = miens.filter(function(ch){ const a = gNorm((ch.prenom||'') + ' ' + (ch.nom||'')), b = gNorm((ch.nom||'') + ' ' + (ch.prenom||'')); return a === q || b === q; });
+      if (trouves.length === 1) L.ch = trouves[0];
+      else L.avis.push('chauffeur « ' + chn + ' » ' + (trouves.length > 1 ? 'en double' : 'introuvable dans votre société') + ' → À attribuer');
+    }
+    if (L.datetime && !L.erreurs.length) {
+      const k = cle(L.datetime, L.depart, L.arrivee);
+      if (deja[k]) L.doublon = true; else deja[k] = true;
+    }
+    lignes.push(L);
+  }
+  GX.lignes = lignes; GX.fichier = file.name;
+  gxApercu();
+};
+
+function gxApercu() {
+  const box = document.getElementById('gx-apercu'); if (!box) return;
+  const L = GX.lignes;
+  const ok = L.filter(function(x){ return !x.erreurs.length && !x.doublon; });
+  const err = L.filter(function(x){ return x.erreurs.length; });
+  const dbl = L.filter(function(x){ return x.doublon; });
+  const avis = ok.filter(function(x){ return x.avis.length; });
+  if (!L.length) { box.innerHTML = '<div style="color:#dc2626;font-size:13px">Aucune ligne de transfert dans le fichier.</div>'; return; }
+  const trop = ok.length > GX_MAX;
+  const fmt = function(x){ return E(x.date.split('-').reverse().join('/') + ' ' + x.heure) + ' · ' + E(raccourcirLieu(x.depart)) + ' → ' + E(raccourcirLieu(x.arrivee)); };
+  let h = '<div style="border:1px solid #e5e7eb;border-radius:12px;padding:12px">'
+    + '<div style="font-size:13px;font-weight:800;margin-bottom:6px">' + E(GX.fichier) + '</div>'
+    + '<div style="font-size:13px;line-height:1.7">'
+    +   '✅ <b>' + ok.length + '</b> transfert(s) prêt(s) à importer'
+    +   (ok.filter(function(x){ return x.ch; }).length ? ' — dont ' + ok.filter(function(x){ return x.ch; }).length + ' attribué(s) à vos chauffeurs' : '') + '<br>'
+    +   (dbl.length ? '↩️ ' + dbl.length + ' déjà présent(s) — ignoré(s)<br>' : '')
+    +   (err.length ? '<span style="color:#dc2626">❌ ' + err.length + ' ligne(s) en erreur — ignorée(s)</span><br>' : '')
+    + '</div>';
+  if (err.length) h += '<div style="margin-top:6px;font-size:12px;color:#b91c1c;background:#fef2f2;border-radius:8px;padding:8px 10px;max-height:140px;overflow:auto">'
+    + err.slice(0, 50).map(function(x){ return 'Ligne ' + x.n + ' : ' + E(x.erreurs.join(', ')); }).join('<br>') + '</div>';
+  if (avis.length) h += '<div style="margin-top:6px;font-size:12px;color:#92400e;background:#fffbeb;border-radius:8px;padding:8px 10px;max-height:140px;overflow:auto">'
+    + avis.slice(0, 50).map(function(x){ return 'Ligne ' + x.n + ' : ' + E(x.avis.join(' ; ')); }).join('<br>') + '</div>';
+  if (ok.length) h += '<div style="margin-top:8px;font-size:12px;color:#374151;max-height:160px;overflow:auto;line-height:1.6">'
+    + ok.slice(0, 30).map(function(x){ return '• ' + fmt(x) + (x.ch ? ' · 👤 ' + E((x.ch.prenom||'') + ' ' + (x.ch.nom||'')) : ' · <i>À attribuer</i>'); }).join('<br>')
+    + (ok.length > 30 ? '<br>… et ' + (ok.length - 30) + ' autre(s)' : '') + '</div>';
+  if (trop) h += '<div style="margin-top:8px;color:#dc2626;font-size:13px">Maximum ' + GX_MAX + ' transferts par import : découpez le fichier.</div>';
+  else if (ok.length) h += '<div style="margin-top:12px">' + gBtn('📥 Importer ' + ok.length + ' transfert(s) dans Mon dispatch', 'gxImporter()', '#2563eb', true) + '</div>';
+  h += '</div>';
+  box.innerHTML = h;
+  try { box.scrollIntoView({ behavior:'smooth', block:'start' }); } catch(e) {}
+}
+
+// ── Import : création des transferts ───────────────────────────────────────
+window.gxImporter = async function() {
+  if (!gerantAccesTransferts()) { showToast('Accès non autorisé', true); return; }
+  const aCreer = (GX.lignes || []).filter(function(x){ return !x.erreurs.length && !x.doublon; });
+  if (!aCreer.length || aCreer.length > GX_MAX) return;
+  const box = document.getElementById('gx-apercu');
+  const prive = gOpt('agenda');
+  let authUid = '';
+  try { authUid = (firebase.auth().currentUser && firebase.auth().currentUser.uid) || ''; } catch(e) {}
+  let socInfo = {};
+  try { socInfo = await gMaSociete(); } catch(e) {}
+  const donneurOrdre = {
+    nom: socInfo.nom || SESSION.socNom || SESSION.name || '', siret: socInfo.siret || '', adresse: socInfo.adresse || '',
+    tva: socInfo.tva || '', tvaapp: socInfo.tvaApplicable ? 'oui' : '', tel: socInfo.tel || '', contact: SESSION.name
+  };
+  let faits = 0, echecs = 0, premierJour = '';
+  const parChauffeur = {};
+  for (let i = 0; i < aCreer.length; i++) {
+    const x = aCreer[i];
+    if (box && i % 5 === 0) box.innerHTML = '<div style="padding:12px;font-size:13px">Import en cours… ' + i + ' / ' + aCreer.length + '</div>';
+    const base = {
+      type:'transfert', client: sanitize(x.client || (x.depart.split(',')[0] || 'Course'), 120), tel: sanitize(x.tel, 30), vol: sanitize(x.vol, 30),
+      datetime: x.datetime, depart: sanitize(x.depart, 250), arrivee: sanitize(x.arrivee, 250), lieu:'', duree:'',
+      vehicule: x.vehicule, pax: x.pax, bags: x.bags,
+      prix: x.prix, prixChauffeur: x.prixCh, marge: (x.prix - x.prixCh),
+      payMode: (x.bord ? 'direct' : 'simplycab'), mode_paiement: (x.bord ? 'onboard' : 'compte'), commissionMode:'marge',
+      passagers: [], notes: sanitize(x.notes, 1000),
+      ref: 'XL-' + x.date.replace(/-/g, '').slice(2) + '-' + x.heure.replace(':', ''),
+      soc_nom: (SESSION.socNom || ''),
+      createdBy: SESSION.name, creePar:'gerant', createdByUid: authUid,
+      donneurOrdre: donneurOrdre,
+      source:'import_excel_gerant', importedFrom: sanitize(GX.fichier, 120), noLogipax: true,
+      createdAt: new Date().toISOString()
+    };
+    let priv = null;
+    if (prive) {
+      priv = { prix: x.prix, prixChauffeur: x.prixCh, clientId: x.clientId || '', clientNom: x.clientNom || '', createdAt: new Date().toISOString() };
+      base.gPrive = true;
+      if (!x.bord) { delete base.prix; delete base.marge; }
+    }
+    if (x.ch) {
+      base.chauffeur = ((x.ch.prenom||'') + (x.ch.nom ? ' ' + x.ch.nom : '')).trim();
+      base.chauffeurId = x.ch._id; base.chauffeurUid = x.ch.uid || null; base.chauffeurTel = x.ch.tel || '';
+      base.statut = 'attribuee'; base.attribueeLe = new Date().toISOString();
+    } else {
+      base.chauffeur = ''; base.statut = 'nouvelle';
+    }
+    try {
+      const id = await fbPush('courses', base);
+      if (!id) { echecs++; continue; }
+      if (priv) { try { await gPrivEnregistrer(id, priv); } catch(e) {} }
+      faits++;
+      if (!premierJour || x.date < premierJour) premierJour = x.date;
+      if (x.ch) (parChauffeur[x.ch._id] = parChauffeur[x.ch._id] || []).push(x);
+    } catch(e) { echecs++; }
+  }
+  try { fbInvalidate('courses'); } catch(e) {}
+  // Une seule notification par chauffeur attribué (pas une par transfert).
+  for (const chId of Object.keys(parChauffeur)) {
+    const l = parChauffeur[chId];
+    const msg = l.length === 1 ? (l[0].depart + ' → ' + l[0].arrivee + ' — ' + l[0].date.split('-').reverse().join('/') + ' ' + l[0].heure)
+                               : (l.length + ' transferts vous ont été attribués');
+    try { await sendPushNotification(l.length === 1 ? '🚗 Nouveau transfert' : '🚗 Nouveaux transferts', msg, null, [chId]); } catch(e) {}
+  }
+  try { gJournal('Import Excel « ' + GX.fichier + ' » : ' + faits + ' transfert(s) créé(s)' + (echecs ? ', ' + echecs + ' échec(s)' : '')); } catch(e) {}
+  GX.lignes = [];
+  gSheetFermer('gx-sheet');
+  showToast('✅ ' + faits + ' transfert(s) importé(s)' + (echecs ? ' • ' + echecs + ' échec(s)' : ''), !!echecs && !faits);
+  if (premierJour && typeof GA !== 'undefined') { GA.jour = premierJour; GA.filtre = 'jour'; GA.sel = {}; }
+  try {
+    if (gOpt('agenda')) gp('gerant-agenda');
+    else if (typeof renderGerantTransferts === 'function') renderGerantTransferts();
+  } catch(e) {}
+};
 
 // ── Sous-traitants & partenaires (carnet privé) ─────────────────────────────
 function gstChauffeurs(p) { const l = p && p.chauffeurs; return (Array.isArray(l) ? l : (l ? Object.values(l) : [])).filter(function(x){ return x && x.nom; }); }
