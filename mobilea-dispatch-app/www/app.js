@@ -23171,8 +23171,10 @@ window.onNativeGPS = async function(pos) {
     gpsActive = true;
     _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
     co2SuiviPosition(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+    gpsPrecisionVerifier(pos);
+    gpsTracer(pos);   // historique : chaque position reçue (filtrage dans enregistrerTrace)
     const now = Date.now();
-    if(now - _gpsLastSent < _gpsIntervalMs()) return; // 15 s en course, 60 s sinon (économie)
+    if(now - _gpsLastSent < _gpsIntervalMs(pos)) return; // 8 s en course, 20 s en roulant, 60 s à l'arrêt
     _gpsLastSent = now;
     await sendGPS(pos);
   } catch(e) { console.warn('[onNativeGPS]', e); }
@@ -23233,6 +23235,43 @@ function gpsGardienDemarrer() {
 }
 window.gpsGardienDemarrer = gpsGardienDemarrer;
 
+// ★ PRÉCISION GPS
+// Historique de trajet : chaque position reçue du téléphone est proposée à
+// enregistrerTrace (qui garde un point toutes les 8-15 s en roulant, plus les
+// virages), au lieu d'une seule position par envoi au dispatch.
+function gpsTracer(pos) {
+  try {
+    const id = SESSION && SESSION.chauffeurId; if (!id || !pos || !pos.coords) return;
+    const c = pos.coords;
+    const ch = (D.chauffeurs || []).find(function(x){ return x._id === id; }) || {};
+    const h = (c.heading != null && !isNaN(c.heading) && c.heading >= 0) ? Math.round(c.heading) : null;
+    const v = (c.speed != null && !isNaN(c.speed) && c.speed >= 0) ? Math.round(c.speed * 10) / 10 : null;
+    enregistrerTrace(id, c.latitude, c.longitude, { acc: Math.round(c.accuracy || 0), vit: v, cap: h, veh: ch.vehImmatJour || '' }).catch(function(){});
+  } catch (e) {}
+}
+// iPhone réglé sur « Position approximative » (Position exacte désactivée) :
+// précision de 1 à 10 km en continu → le chauffeur est prévenu, et le dispatch
+// le voit sur la carte. Retour à la normale dès qu'une position précise arrive.
+function gpsPrecisionVerifier(pos) {
+  try {
+    if (!SESSION || SESSION.role !== 'chauffeur' || !pos || !pos.coords) return;
+    const acc = pos.coords.accuracy || 0;
+    if (acc && acc <= 65) window._gpsBonAt = Date.now();   // dernière position précise reçue
+    if (acc >= 1000) window._gpsApproxN = (window._gpsApproxN || 0) + 1;
+    else if (acc <= 150) window._gpsApproxN = 0;
+    const st = document.getElementById('gps-status');
+    if ((window._gpsApproxN || 0) >= 4 && !window._gpsApprox) {
+      window._gpsApprox = true;
+      gpsDiag('approximative', 'Position exacte désactivée (précision ~' + Math.round(acc) + ' m)');
+      if (st) { st.textContent = '⚠️ Position approximative — Réglages › MOBILEA Driver › Position › activer « Position exacte »'; st.style.color = '#ef4444'; }
+      try { showToast('⚠️ Votre position est approximative : Réglages › MOBILEA Driver › Position › activez « Position exacte »', true); } catch (e) {}
+    } else if (window._gpsApprox && window._gpsApproxN === 0) {
+      window._gpsApprox = false;
+      gpsDiag('ok');
+      if (st) { st.textContent = '● Position partagée'; st.style.color = '#22c55e'; }
+    }
+  } catch (e) {}
+}
 async function sendGPS(pos) {
   const name = SESSION.name, _id = SESSION.chauffeurId;
   // Fiche du chauffeur : par identifiant stable d'abord (le nom peut changer ou
@@ -23244,12 +23283,13 @@ async function sendGPS(pos) {
   // heading = cap en degrés (0=Nord, 90=Est…) ; null si le tel est immobile ou
   // ne le fournit pas. speed en m/s. On les stocke pour afficher la direction.
   const h = (pos.coords.heading != null && !isNaN(pos.coords.heading) && pos.coords.heading >= 0) ? Math.round(pos.coords.heading) : null;
-  // Position imprécise (> 200 m : tunnel, parking, bâtiment) : on garde la
+  // Position imprécise (> 65 m : tunnel, parking, bâtiment) : on garde la
   // dernière bonne position au lieu de faire « sauter » le chauffeur sur la
-  // carte — sauf si l'on n'a plus rien de bon depuis 60 s.
+  // carte — sauf si l'on n'a plus rien de bon depuis 45 s. Le créneau d'envoi
+  // n'est pas consommé : la prochaine bonne position part tout de suite.
   const _acc = Math.round(pos.coords.accuracy || 0);
-  if (_acc > 200 && window._gpsBonAt && (Date.now() - window._gpsBonAt) < 60000) return;
-  if (_acc <= 200) window._gpsBonAt = Date.now();
+  if (_acc > 65 && window._gpsBonAt && (Date.now() - window._gpsBonAt) < 45000) { _gpsLastSent = 0; return; }
+  if (_acc <= 65) window._gpsBonAt = Date.now();
   const _vit = (pos.coords.speed != null && !isNaN(pos.coords.speed) && pos.coords.speed >= 0) ? Math.round(pos.coords.speed * 10) / 10 : null;
   await fbUpdate('chauffeurs', ch._id, {
     gps: {lat:pos.coords.latitude, lng:pos.coords.longitude, acc:_acc, at:new Date().toISOString(), heading:h, speed:_vit},
@@ -23257,7 +23297,8 @@ async function sendGPS(pos) {
     gpsUpdated: new Date().toISOString()
   });
   window._gpsDernierEnvoiOK = Date.now();
-  gpsDiag('ok');
+  window._gpsDernierEnvoye = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  if (!window._gpsApprox) gpsDiag('ok');
   // Vérifier la géofence 7 km (alerte dispatch quand le chauffeur entre en zone).
   try { await checkGeofenceZone(pos.coords.latitude, pos.coords.longitude); } catch(e){}
   // Alerte « arrivée imminente » au client partenaire (ex. Value Retail) X min avant.
@@ -23326,14 +23367,17 @@ async function enregistrerTrace(driverId, lat, lng, extra){
     const dist = distanceKm(last.lat, last.lng, lat, lng);
     // Point GPS imprécis (> 100 m) : ignoré, sauf si rien n'a été enregistré depuis 2 min.
     if (extra.acc && extra.acc > 100 && ecoule < 120000) return;
-    // Tracé fin : un point toutes les 15 s dès 15 m parcourus, ou tous les 40 m.
-    const bouge = (ecoule >= 15000 && dist >= 0.015) || dist >= 0.04;
+    // Tracé fin : un point toutes les 15 s dès 15 m parcourus, toutes les 8 s
+    // dès 40 m, et dans les virages (cap qui change de plus de 30°) dès 4 s / 15 m.
+    let vire = false;
+    if (extra.cap != null && last.h != null && ecoule >= 4000 && dist >= 0.015) { const dc = Math.abs(extra.cap - last.h) % 360; vire = Math.min(dc, 360 - dc) >= 30; }
+    const bouge = (ecoule >= 15000 && dist >= 0.015) || (ecoule >= 8000 && dist >= 0.04) || vire;
     // À l'arrêt : un point « témoin » toutes les 5 min, pour distinguer dans
     // l'historique un vrai arrêt d'une coupure de signal.
     immobile = !bouge && ecoule >= 300000;
     if (!bouge && !immobile) return;
   }
-  window._lastTrace[driverId] = { lat:lat, lng:lng, at:now };
+  window._lastTrace[driverId] = { lat:lat, lng:lng, at:now, h: extra.cap != null ? extra.cap : null };
   const d = new Date();
   const p2 = n => String(n).padStart(2,'0');
   const jour = '' + d.getFullYear() + p2(d.getMonth()+1) + p2(d.getDate());
@@ -23841,12 +23885,11 @@ window.checkArriveeSecurite = checkArriveeSecurite;
 let _gpsWatchId = null;
 let _gpsLastSent = 0;
 // ★ ÉCONOMIE : cadence d'envoi de la position selon l'activité du chauffeur.
-//  - course en cours (en route, sur place, à bord) : toutes les 15 s (suivi client fin)
-//  - sinon (disponible, en attente) : toutes les 60 s — suffit pour la carte du
-//    dispatch et le choix du chauffeur le plus proche.
+//  - course en cours (en route, sur place, à bord) : toutes les 8 s (suivi client fin)
+//  - sinon : toutes les 20 s quand il roule, 60 s à l'arrêt.
 // Chaque position est renvoyée en direct à tous les dispatchs connectés : c'était
 // la 1re dépense Firebase. Au début d'une course, envoi immédiat (renvoie 0).
-function _gpsIntervalMs() {
+function _gpsIntervalMs(pos) {
   try {
     const moi = SESSION && SESSION.name, id = SESSION && SESSION.chauffeurId;
     const fuid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || '';
@@ -23856,7 +23899,13 @@ function _gpsIntervalMs() {
     });
     if (actif && !window._gpsEnCourse) { window._gpsEnCourse = true; return 0; }
     window._gpsEnCourse = actif;
-    return actif ? 15000 : 60000;
+    if (actif) return 8000;
+    // Hors course : 20 s quand il roule, 60 s à l'arrêt.
+    if (pos && pos.coords) {
+      const v = pos.coords.speed, L = window._gpsDernierEnvoye;
+      window._gpsRoule = (v != null && !isNaN(v) && v >= 2) || !!(L && distanceKm(L.lat, L.lng, pos.coords.latitude, pos.coords.longitude) >= 0.08);
+    }
+    return window._gpsRoule ? 20000 : 60000;
   } catch(e) { return 15000; }
 }
 window._gpsIntervalMs = _gpsIntervalMs;
@@ -23917,9 +23966,11 @@ function demarrerSuiviGPS() {
       gpsActive = true;
       _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
       co2SuiviPosition(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
-      // Limiter les écritures Firebase à une toutes les 15 s max (économie).
+      gpsPrecisionVerifier(pos);
+      gpsTracer(pos);   // historique : chaque position reçue (filtrage dans enregistrerTrace)
+      // Limiter les écritures Firebase (économie) : 8 s en course, 20 s en roulant, 60 s à l'arrêt.
       const now = Date.now();
-      if(now - _gpsLastSent < _gpsIntervalMs()) return; // 15 s en course, 60 s sinon
+      if(now - _gpsLastSent < _gpsIntervalMs(pos)) return;
       _gpsLastSent = now;
       await sendGPS(pos);
       const btn = document.getElementById('gps-btn');
@@ -24090,7 +24141,7 @@ window.refreshLiveMap = async function() {
         <div style="font-size:14px;font-weight:700;margin-bottom:6px">${vehIcon} ${name}</div>
         ${plaqueM?`<div style="font-size:11px;margin-bottom:4px"><span style="background:#1e3a8a;color:#fff;border-radius:3px;padding:1px 7px;font-weight:700;letter-spacing:0.5px">🇫🇷 ${plaqueM}</span></div>`:''}
         <div style="font-size:11px;color:#666;margin-bottom:3px">📍 ${c.gps.lat.toFixed(5)}, ${c.gps.lng.toFixed(5)}</div>
-        <div style="font-size:11px;color:#666;margin-bottom:6px">Précision : ~${c.gps.acc||'?'}m</div>
+        <div style="font-size:11px;color:#666;margin-bottom:6px">Précision : ~${c.gps.acc||'?'}m${(c.gps.acc||0) >= 1000 || (c.gpsDiag && c.gpsDiag.etat === 'approximative') ? ' <b style="color:#dc2626">⚠️ position approximative (« Position exacte » désactivée sur le téléphone)</b>' : ''}</div>
         ${course?`<div style="font-size:11px;background:#f8f7f4;padding:5px 8px;border-radius:4px;border-left:3px solid #c9a84c"><strong>Transfert :</strong> ${E(course.client||'')}<br>${E(course.depart||course.lieu||'')}${course.arrivee?' → '+E(course.arrivee):''}</div>`:'<div style="font-size:11px;color:#2ecc8a">● Disponible</div>'}
         <div style="margin-top:8px">
           <a href="https://www.google.com/maps?q=${c.gps.lat},${c.gps.lng}" target="_blank"
