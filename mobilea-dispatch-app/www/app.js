@@ -24124,6 +24124,26 @@ function demarrerSuiviGPS() {
     })();
     return;
   }
+  // APP NATIVE (Capacitor, MOBILEA Driver) : suivi en ARRIÈRE-PLAN via le plugin
+  // BackgroundGeolocation (native-bridge.js → startBackgroundGPS). Avant, ce
+  // chemin n'existait pas ici : le suivi web démarrait en premier (1,5 s après
+  // la connexion) et empêchait le GPS natif de démarrer → plus aucune position
+  // dès que l'écran était verrouillé ou que le chauffeur passait sur Waze.
+  if(window.MobileaNative && window.MobileaNative.isNative && typeof window.MobileaNative.startBackgroundGPS === 'function' && SESSION && SESSION.role === 'chauffeur' && !window._gpsNatifEchec) {
+    if(window._gpsNatifDemarrage) return;
+    window._gpsNatifDemarrage = true;
+    gpsActive = true;
+    Promise.resolve().then(function(){ return window.MobileaNative.startBackgroundGPS(); }).then(function(ok){
+      window._gpsNatifDemarrage = false;
+      if(ok) {
+        window._gpsNatifActif = true;
+        const btn = document.getElementById('gps-btn'), st = document.getElementById('gps-status');
+        if(btn){btn.innerHTML='<i class="fas fa-map-marker-alt"></i> Position active (bg)';btn.style.borderColor='#22c55e';btn.style.color='#22c55e';}
+        if(st){st.textContent='● Position partagée (arrière-plan activé)';st.style.color='#22c55e';}
+      } else { window._gpsNatifEchec = true; gpsActive = false; demarrerSuiviGPS(); }
+    }).catch(function(){ window._gpsNatifDemarrage = false; window._gpsNatifEchec = true; gpsActive = false; demarrerSuiviGPS(); });
+    return;
+  }
   gpsActive = true;
   _gpsWatchId = navigator.geolocation.watchPosition(
     async (pos) => {
@@ -24181,7 +24201,9 @@ function demarrerSuiviGPS() {
 function arreterSuiviGPS() {
   // App native : arrêter le GPS natif.
   if(window.MobileaNative && window.MobileaNative.isNative) {
-    try { window.MobileaNative.stopGPS(); } catch(e){}
+    try { if(typeof window.MobileaNative.stopGPS === 'function') window.MobileaNative.stopGPS(); } catch(e){}
+    try { if(typeof window.MobileaNative.stopBackgroundGPS === 'function') window.MobileaNative.stopBackgroundGPS(); } catch(e){}
+    window._gpsNatifActif = false;
     if(window._nativeTokenTimer) { clearInterval(window._nativeTokenTimer); window._nativeTokenTimer = null; }
   }
   if(_gpsWatchId !== null) { navigator.geolocation.clearWatch(_gpsWatchId); _gpsWatchId = null; }
