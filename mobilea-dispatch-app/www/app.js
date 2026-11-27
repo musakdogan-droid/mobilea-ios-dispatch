@@ -994,6 +994,7 @@ function stopChauffeursListener() {
 // Traite un instantané frais de la collection courses en réutilisant la
 // logique déjà écrite dans l'app (aucune règle métier dupliquée ici).
 async function handleCoursesSnapshot(courses) {
+  try { co2PlanifierCompletion(); } catch(e){}
   try {
     if(!SESSION) return;
 
@@ -2851,6 +2852,8 @@ function startApp() {
     const roleEl = document.getElementById('sb-role');
     if(roleEl){roleEl.textContent=SESSION.societe||'Client';roleEl.className='sb-role role-dispatch';}
     gp('clientportal', btn);
+    // Espace sécurité (agent) / gestion des agents (compte principal du client)
+    try { secuNavClient(); } catch(e){}
   } else if (SESSION.role === 'chauffeur') {
     document.querySelectorAll('.ni').forEach(n => n.style.display = 'none');
     document.querySelectorAll('.nsec').forEach(n => n.style.display = 'none');
@@ -5895,6 +5898,7 @@ window.doAssign = async function() {
   const id = document.getElementById('assign-id').value;
   const drv = document.getElementById('assign-drv').value;
   if(!drv){showToast('Sélectionner un chauffeur',true);return;}
+  if(!(await docsGarde(drv))) return;
 
   const c = D.courses.find(x=>x._id===id);
   // Détection conflit
@@ -6159,6 +6163,7 @@ window.filtrerChauffeursDispatch = function(q) {
 };
 
 window.doAutoDispatch = async function(courseId, chauffeurName, overlay) {
+  if(!(await docsGarde(chauffeurName))) return;
   if(overlay) overlay.remove();
   await fbUpdate('courses', courseId, {
     chauffeur: chauffeurName,
@@ -7898,6 +7903,7 @@ function renderSoustraitants() {
         </div>
         ${s.adresse?`<div style="font-size:11px;color:var(--muted);margin-top:4px">${E(s.adresse)}</div>`:''}
         ${s.iban?`<div style="font-size:11px;color:var(--muted);margin-top:2px">IBAN : ${E(s.iban)}</div>`:''}
+        ${docsResumeSocHtml(s.nom)}
       </div>
       <div style="padding:12px 16px">
         <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Chauffeurs</div>
@@ -7922,6 +7928,639 @@ function renderSoustraitants() {
   }).join('');
 }
 window.renderSoustraitants = renderSoustraitants;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  📄 DOCUMENTS SOUS-TRAITANTS + 🔔 ALARMES + 🤖 RELANCES AUTOMATIQUES
+//  Rangement par niveau : société (Kbis, URSSAF, RC pro…), chauffeur (carte
+//  VTC, permis…), véhicule (carte grise, contrôle technique, assurance).
+//  /docs_st/{entité}/{document} = { valide:{date,url…}, attente:{…}, refus:{…},
+//    relances:{j30,j15,j7,j0 → date concernée} } ; entité = soc_<nom>, ch_<id>,
+//    veh_<id> ; /docs_st/{entité}/_acces/{uid} = true (posé par l'app admin).
+//  Fichiers (photo / PDF) : Firebase Storage, docs_st/{uid de l'expéditeur}/…
+//  Le sous-traitant envoie, l'admin valide. Document OBLIGATOIRE expiré →
+//  attribution bloquée (l'admin peut forcer). Relances J-30 / J-15 / J-7 / J
+//  par notification + messagerie + SMS, envoyées par l'app admin.
+// ═══════════════════════════════════════════════════════════════════════════
+const DOCS_TYPES = {
+  soc: [
+    { k: 'kbis', nom: 'Extrait Kbis', obl: true, aide: 'Kbis de moins de 3 mois : date d\'expiration = date du Kbis + 3 mois.' },
+    { k: 'urssaf', nom: 'Attestation de vigilance URSSAF', obl: true, aide: 'Valable 6 mois.' },
+    { k: 'rc_pro', nom: 'Assurance RC professionnelle', obl: true },
+    { k: 'registre_vtc', nom: 'Inscription au registre VTC', obl: false, aide: 'Valable 5 ans.' }
+  ],
+  ch: [
+    { k: 'carte_vtc', nom: 'Carte professionnelle VTC', obl: true, aide: 'Valable 5 ans.' },
+    { k: 'permis', nom: 'Permis de conduire', obl: true, sansDate: true, aide: 'Ancien permis rose : cochez « Sans date d\'expiration ».' },
+    { k: 'visite_med', nom: 'Visite médicale', obl: false }
+  ],
+  veh: [
+    { k: 'carte_grise', nom: 'Carte grise', obl: true, sansDate: true },
+    { k: 'controle_tech', nom: 'Contrôle technique', obl: true },
+    { k: 'assurance', nom: 'Assurance du véhicule (transport de personnes)', obl: true }
+  ]
+};
+const DOCS_COUL = {
+  ok: ['#16a34a', '✅ Valide'], j30: ['#d97706', '🟠 J-30'], j15: ['#d97706', '🟠 J-15'], j7: ['#dc2626', '🔴 J-7'],
+  expire: ['#dc2626', '🔴 EXPIRÉ'], manquant: ['#6b7280', 'Manquant'], attente: ['#2563eb', '⏳ À valider']
+};
+window._docsData = window._docsData || null;     // admin / dispatch : tout /docs_st
+function docsP2(n) { return String(n).padStart(2, '0'); }
+function docsAuj() { const d = new Date(); return d.getFullYear() + '-' + docsP2(d.getMonth() + 1) + '-' + docsP2(d.getDate()); }
+function docsFr(iso) { return iso ? iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4) : ''; }
+function docsJours(iso) { return Math.round((new Date(iso + 'T12:00:00') - new Date(docsAuj() + 'T12:00:00')) / 86400000); }
+function docsSlug(s) { return (String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60)) || 'x'; }
+function docsStaff() { return !!(SESSION && (SESSION.role === 'admin' || SESSION.role === 'dispatch')); }
+function docsAdmin() { return !!(SESSION && SESSION.role === 'admin'); }
+function docsNomCh(c) { return ((c.prenom || '') + (c.nom ? ' ' + c.nom : '')).trim(); }
+function docsTypeDef(kind, k, rec) {
+  const t = (DOCS_TYPES[kind] || []).find(function(x){ return x.k === k; });
+  if (t) return t;
+  return { k: k, nom: (rec && (rec.nom || (rec.attente && rec.attente.nom))) || 'Autre document', obl: !!(rec && rec.obl), autre: true, sansDate: true };
+}
+function docsEtat(rec) {
+  if (!rec || !rec.valide) return { code: rec && rec.attente ? 'attente' : 'manquant' };
+  const v = rec.valide;
+  if (v.sansDate || !v.date) return { code: 'ok', sansDate: true };
+  const j = docsJours(v.date);
+  return { code: j <= 0 ? 'expire' : j <= 7 ? 'j7' : j <= 15 ? 'j15' : j <= 30 ? 'j30' : 'ok', jours: j, date: v.date };
+}
+function docsBadge(code) { const c = DOCS_COUL[code] || DOCS_COUL.manquant; return '<span style="display:inline-block;font-size:11px;font-weight:800;color:#fff;background:' + c[0] + ';border-radius:20px;padding:2px 9px;white-space:nowrap">' + c[1] + '</span>'; }
+// Entités d'une société sous-traitante : la société, ses chauffeurs, ses véhicules.
+function docsEntites(soc, opts) {
+  opts = opts || {};
+  const L = [{ ent: 'soc_' + docsSlug(soc), kind: 'soc', titre: '🏢 ' + soc, soc: soc }];
+  let chs = (D.chauffeurs || []).filter(function(c){ return !c.archived && (c.soc_nom || '').trim() === soc; });
+  if (opts.seulCh) chs = chs.filter(function(c){ return c._id === opts.seulCh; });
+  chs.forEach(function(c){ L.push({ ent: 'ch_' + c._id, kind: 'ch', titre: '👤 ' + docsNomCh(c), soc: soc, ch: c }); });
+  let vs = (opts.vehicules || D.vehicules || []).filter(function(v){ return (v.societe || '').trim() === soc; });
+  if (opts.seulCh) {
+    const c = chs[0], nom = c ? docsNomCh(c) : '';
+    const lies = vs.filter(function(v){ return c && ((v.immat || v._id) === c.vehImmatJour || (v.chauffeur || '').trim() === nom); });
+    if (lies.length) vs = lies;
+  }
+  vs.forEach(function(v){ L.push({ ent: 'veh_' + v._id, kind: 'veh', titre: '🚐 ' + [v.marque, v.modele].filter(Boolean).join(' ') + (v.immat ? ' · ' + v.immat : ''), soc: soc, v: v }); });
+  return L;
+}
+function docsEntNomCourt(e) { return e.kind === 'veh' ? (e.v.immat || e.v.modele || 'véhicule') : e.kind === 'ch' ? docsNomCh(e.ch) : e.soc; }
+// Liste des documents d'une entité : types prévus + documents ajoutés (« autre »).
+function docsListe(e, data) {
+  const d = (data || {})[e.ent] || {};
+  const L = (DOCS_TYPES[e.kind] || []).map(function(t){ return { k: t.k, t: t, rec: d[t.k] || null }; });
+  Object.keys(d).filter(function(k){ return k.charAt(0) !== '_' && !(DOCS_TYPES[e.kind] || []).some(function(t){ return t.k === k; }); })
+    .forEach(function(k){ L.push({ k: k, t: docsTypeDef(e.kind, k, d[k]), rec: d[k] }); });
+  return L;
+}
+// ── Accès Firebase / Storage ────────────────────────────────────────────────
+async function docsReq(method, path, body) {
+  const r = await fetch(FB_URL + '/' + path + '.json' + authParam(await getAuthToken()), { method: method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+  return method === 'GET' ? r.json() : true;
+}
+async function docsChargerTout(force) {
+  if (!docsStaff()) return window._docsData || {};
+  if (!force && window._docsData && Date.now() - (window._docsDataAt || 0) < 120000) return window._docsData;
+  try { window._docsData = (await docsReq('GET', 'docs_st')) || {}; window._docsDataAt = Date.now(); } catch (e) { window._docsData = window._docsData || {}; }
+  return window._docsData;
+}
+async function docsChargerEntites(ents) {
+  const out = {}; let refus = 0;
+  await Promise.all(ents.map(async function(e){ try { out[e.ent] = (await docsReq('GET', 'docs_st/' + e.ent)) || {}; } catch (er) { out[e.ent] = {}; if (er.status === 401 || er.status === 403) refus++; } }));
+  return { data: out, refus: refus };
+}
+function docsBucket() {
+  try { const b = firebase.app().options.storageBucket; if (b) return b; } catch (e) {}
+  return 'simplycab-58808.firebasestorage.app';
+}
+// Photo réduite (≤ 2000 px, JPEG) pour un envoi rapide ; PDF tel quel (≤ 10 Mo).
+async function docsPreparer(file) {
+  if (!file) return null;
+  if (file.type === 'application/pdf') { if (file.size > 10 * 1024 * 1024) throw new Error('PDF trop lourd (10 Mo maximum)'); return { blob: file, mime: 'application/pdf', ext: 'pdf' }; }
+  if (!/^image\//.test(file.type)) throw new Error('Format accepté : photo ou PDF');
+  try {
+    const url = URL.createObjectURL(file);
+    const img = await new Promise(function(ok, ko){ const i = new Image(); i.onload = function(){ ok(i); }; i.onerror = ko; i.src = url; });
+    const k = Math.min(1, 2000 / Math.max(img.width, img.height));
+    const cv = document.createElement('canvas'); cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    URL.revokeObjectURL(url);
+    const blob = await new Promise(function(ok){ cv.toBlob(ok, 'image/jpeg', 0.82); });
+    if (blob) return { blob: blob, mime: 'image/jpeg', ext: 'jpg' };
+  } catch (e) {}
+  if (file.size > 10 * 1024 * 1024) throw new Error('Photo trop lourde (10 Mo maximum)');
+  return { blob: file, mime: file.type, ext: (file.name.split('.').pop() || 'jpg').toLowerCase().slice(0, 5) };
+}
+async function docsEnvoyerFichier(file, ent, k) {
+  const p = await docsPreparer(file);
+  const uid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || 'x';
+  const nom = 'docs_st/' + uid + '/' + ent + '_' + k + '_' + Date.now() + '.' + p.ext;
+  const tok = await getAuthToken();
+  const b = docsBucket();
+  const r = await fetch('https://firebasestorage.googleapis.com/v0/b/' + b + '/o?uploadType=media&name=' + encodeURIComponent(nom), { method: 'POST', headers: { 'Authorization': 'Firebase ' + tok, 'Content-Type': p.mime }, body: p.blob });
+  if (!r.ok) throw new Error(r.status === 404 ? 'Stockage des fichiers non activé (Firebase Storage)' : r.status === 403 ? 'Envoi refusé par le stockage (règles Firebase Storage)' : 'Envoi du fichier impossible (' + r.status + ')');
+  const j = await r.json();
+  const t = String(j.downloadTokens || '').split(',')[0];
+  return { url: 'https://firebasestorage.googleapis.com/v0/b/' + b + '/o/' + encodeURIComponent(j.name || nom) + '?alt=media' + (t ? '&token=' + t : ''), fichier: file.name || '', mime: p.mime };
+}
+// ── Notifications (notification + messagerie + SMS) ─────────────────────────
+function docsDestinataires(e) {
+  if (e.kind === 'ch') return e.ch ? [e.ch] : [];
+  const chs = (D.chauffeurs || []).filter(function(c){ return !c.archived && (c.soc_nom || '').trim() === e.soc; });
+  const g = chs.filter(function(c){ return c.gerant; });
+  return g.length ? g : chs;
+}
+async function docsNotifier(ch, titre, texte, sms) {
+  try { await sendPushNotification(titre, texte, null, [ch._id]); } catch (e) {}
+  try { await fbPush('messages', { conv: 'support_drv_' + ch._id, text: titre + '\n' + texte, from: SESSION.uid || SESSION.name, fromName: 'MOBILEA Support', fromRole: SESSION.role, fromRealName: SESSION.name || '', at: new Date().toISOString(), read: false, type: 'documents' }); } catch (e) {}
+  if (sms && ch.tel) { try { await sendTwilioSMS(ch.tel, 'MOBILEA — ' + titre + '\n' + texte, true); } catch (e) {} }
+}
+const DOCS_MSG = {
+  j30: function(n, d){ return 'Bonjour,\nvotre document ' + n + ' arrive à expiration le ' + d + '.\nMerci de nous transmettre votre nouveau document via l\'application MOBILEA.\nMerci.'; },
+  j15: function(n, d){ return 'Bonjour,\nrelance : votre document ' + n + ' arrive à expiration le ' + d + '.\nMerci de nous transmettre votre nouveau document via l\'application MOBILEA.\nMerci.'; },
+  j7: function(n, d){ return 'Bonjour,\nRELANCE URGENTE : votre document ' + n + ' expire le ' + d + '.\nMerci de nous transmettre votre nouveau document via l\'application MOBILEA dès que possible.\nMerci.'; },
+  j0: function(n, d){ return '🔴 Document expiré — ' + n + ' (le ' + d + ').\nMerci de transmettre le nouveau document avant toute nouvelle mission.'; }
+};
+const DOCS_TITRE = { j30: '📄 Document à renouveler', j15: '📄 Relance document', j7: '⚠️ Relance urgente — document', j0: '🔴 Document expiré' };
+// ── Blocage des attributions ────────────────────────────────────────────────
+// Date d'expiration la plus proche parmi les documents OBLIGATOIRES validés du
+// chauffeur (les siens, ceux de sa société, ceux de son véhicule).
+function docsOblPourChauffeur(c, data) {
+  const soc = (c.soc_nom || '').trim(); if (!soc) return null;
+  const nom = docsNomCh(c);
+  const ents = docsEntites(soc).filter(function(e){
+    if (e.kind === 'soc') return true;
+    if (e.kind === 'ch') return e.ch._id === c._id;
+    return (e.v.immat || e.v._id) === c.vehImmatJour || (e.v.chauffeur || '').trim() === nom;
+  });
+  let min = null;
+  ents.forEach(function(e){
+    docsListe(e, data).forEach(function(x){
+      if (!x.t.obl || !x.rec || !x.rec.valide || x.rec.valide.sansDate || !x.rec.valide.date) return;
+      if (!min || x.rec.valide.date < min.date) min = { date: x.rec.valide.date, nom: x.t.nom + (e.kind === 'soc' ? '' : ' (' + docsEntNomCourt(e) + ')') };
+    });
+  });
+  return min;
+}
+function docsBloque(c) { return !!(c && c.docsOblExp && String(c.docsOblExp) <= docsAuj()); }
+window.docsBloque = docsBloque;
+function docsConfirmer(titre, texte, libelle) {
+  return new Promise(function(ok){
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:10000000;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;padding:20px';
+    ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;max-width:420px;width:100%;padding:20px">'
+      + '<div style="font-size:16px;font-weight:800;margin-bottom:8px">' + E(titre) + '</div><div style="font-size:13px;line-height:1.5;color:var(--muted);white-space:pre-line">' + E(texte) + '</div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"><button class="btn btn-ghost btn-sm" data-r="0">Annuler</button><button class="btn btn-p btn-sm" data-r="1" style="background:#dc2626;border-color:#dc2626">' + E(libelle || 'Forcer') + '</button></div></div>';
+    ov.addEventListener('click', function(e){ const b = e.target.closest('[data-r]'); if (b || e.target === ov) { ov.remove(); ok(!!(b && b.dataset.r === '1')); } });
+    document.body.appendChild(ov);
+  });
+}
+// true = l'attribution peut continuer.
+async function docsGarde(chOuNom, opts) {
+  opts = opts || {};
+  let c = chOuNom;
+  if (typeof chOuNom === 'string') c = (D.chauffeurs || []).find(function(x){ return docsNomCh(x) === chOuNom.trim() || x._id === chOuNom; }) || null;
+  if (!docsBloque(c)) return true;
+  const quoi = (c.docsOblNom || 'document obligatoire') + ' — expiré le ' + docsFr(String(c.docsOblExp));
+  if (opts.moi) { showToast('🔴 Document expiré — ' + quoi + '. Merci de transmettre le nouveau document avant toute nouvelle mission.', true); return false; }
+  if (docsAdmin()) return docsConfirmer('🔴 Document expiré', docsNomCh(c) + ' : ' + quoi + '.\nL\'attribution de missions est bloquée.\n\nForcer quand même ?', 'Forcer l\'attribution');
+  showToast('🔴 ' + docsNomCh(c) + ' : ' + quoi + '. Attribution bloquée.', true);
+  return false;
+}
+window.docsGarde = docsGarde;
+// ── Automatisation (app ADMIN) : accès, blocages, relances ──────────────────
+async function docsAutomatiser(force) {
+  if (!docsAdmin()) return null;
+  const CLE = 'mobilea_docs_auto_at';
+  try { if (!force && Date.now() - (parseInt(localStorage.getItem(CLE)) || 0) < 6 * 3600 * 1000) return null; } catch (e) {}
+  if (window._docsAutoEnCours) return null; window._docsAutoEnCours = true;
+  const bilan = { acces: 0, blocages: 0, relances: 0, expires: 0, bientot: 0, attente: 0 };
+  try {
+    const data = await docsChargerTout(true);
+    let gOpts = {};
+    try { gOpts = (await docsReq('GET', 'gerant_options')) || {}; } catch (e) {}
+    const socs = Array.from(new Set((D.chauffeurs || []).filter(function(c){ return !c.archived && (c.soc_nom || '').trim(); }).map(function(c){ return c.soc_nom.trim(); })));
+    const parDest = {};
+    for (const soc of socs) {
+      const chs = (D.chauffeurs || []).filter(function(c){ return !c.archived && (c.soc_nom || '').trim() === soc; });
+      const uids = {};
+      chs.forEach(function(c){ if (c.uid) uids[c.uid] = true; });
+      Object.keys(gOpts).forEach(function(u){ if (gOpts[u] && gOpts[u].soc === soc) uids[u] = true; });
+      for (const e of docsEntites(soc)) {
+        // 1) Accès du sous-traitant à ses documents
+        const cur = data[e.ent] || {};
+        const acc = e.kind === 'ch' ? Object.assign({}, e.ch.uid ? { [e.ch.uid]: true } : {}, Object.keys(gOpts).filter(function(u){ return gOpts[u] && gOpts[u].soc === soc; }).reduce(function(o, u){ o[u] = true; return o; }, {})) : uids;
+        const meta = { _type: e.kind, _soc: soc, _ref: e.kind === 'ch' ? e.ch._id : e.kind === 'veh' ? e.v._id : soc, _acces: Object.keys(acc).length ? acc : null };
+        if (JSON.stringify(cur._acces || null) !== JSON.stringify(meta._acces) || cur._soc !== soc || cur._type !== e.kind) {
+          try { await docsReq('PATCH', 'docs_st/' + e.ent, meta); data[e.ent] = Object.assign(cur, meta); bilan.acces++; } catch (er) {}
+        }
+        // 2) Relances
+        docsListe(e, data).forEach(function(x){
+          const et = docsEtat(x.rec);
+          if (x.rec && x.rec.attente) bilan.attente++;
+          if (et.code === 'expire') bilan.expires++; else if (['j7', 'j15', 'j30'].indexOf(et.code) >= 0) bilan.bientot++;
+          if (!et.date || (x.rec && x.rec.attente)) return;
+          const seuil = et.code === 'expire' ? 'j0' : ['j7', 'j15', 'j30'].indexOf(et.code) >= 0 ? et.code : null;
+          if (!seuil || (x.rec.relances && x.rec.relances[seuil] === et.date)) return;
+          if (seuil === 'j0' && et.jours < -30) return;         // expiré depuis longtemps : plus de relance
+          docsDestinataires(e).forEach(function(c){
+            (parDest[c._id] = parDest[c._id] || { c: c, items: [] }).items.push({ seuil: seuil, nom: x.t.nom + (e.kind === 'soc' ? '' : ' (' + docsEntNomCourt(e) + ')'), date: docsFr(et.date), ent: e.ent, k: x.k, d: et.date });
+          });
+          if (!docsDestinataires(e).length) (parDest['_'] = parDest['_'] || { c: null, items: [] }).items.push({ seuil: seuil, ent: e.ent, k: x.k, d: et.date });
+        });
+      }
+    }
+    // Un seul message par personne, même si plusieurs documents sont concernés.
+    const ordre = ['j0', 'j7', 'j15', 'j30'];
+    const marques = {};
+    for (const id of Object.keys(parDest)) {
+      const P = parDest[id];
+      P.items.forEach(function(i){ marques[i.ent + '/' + i.k + '/' + i.seuil] = i.d; });
+      if (!P.c) continue;
+      const pire = ordre.find(function(s){ return P.items.some(function(i){ return i.seuil === s; }); });
+      const texte = P.items.map(function(i){ return DOCS_MSG[i.seuil](i.nom, i.date); }).join('\n\n');
+      await docsNotifier(P.c, DOCS_TITRE[pire], texte, true);
+      bilan.relances++;
+    }
+    for (const m of Object.keys(marques)) {
+      const p = m.split('/');
+      try { await docsReq('PATCH', 'docs_st/' + p[0] + '/' + p[1] + '/relances', { [p[2]]: marques[m] }); } catch (e) {}
+    }
+    // 3) Blocages : date d'expiration la plus proche des documents obligatoires
+    for (const c of (D.chauffeurs || [])) {
+      if (c.archived) continue;
+      const m = docsOblPourChauffeur(c, data);
+      const nv = m ? m.date : null, nn = m ? m.nom : null;
+      if ((c.docsOblExp || null) !== nv || (c.docsOblNom || null) !== nn) {
+        try { await fbUpdate('chauffeurs', c._id, { docsOblExp: nv, docsOblNom: nn }); c.docsOblExp = nv; c.docsOblNom = nn; bilan.blocages++; } catch (e) {}
+      }
+    }
+    try { localStorage.setItem(CLE, String(Date.now())); } catch (e) {}
+    if (bilan.expires || bilan.bientot || bilan.attente) {
+      showToast('📄 Documents sous-traitants : ' + [bilan.expires ? bilan.expires + ' expiré(s)' : '', bilan.bientot ? bilan.bientot + ' à renouveler' : '', bilan.attente ? bilan.attente + ' à valider' : ''].filter(Boolean).join(', '));
+    }
+    if (bilan.relances) { try { await addLog('📄 Relances documents sous-traitants envoyées : ' + bilan.relances + ' destinataire(s)'); } catch (e) {} }
+    return bilan;
+  } catch (e) { return bilan; }
+  finally { window._docsAutoEnCours = false; }
+}
+window.docsAutomatiser = docsAutomatiser;
+setTimeout(function docsAutoDemarrer(){
+  try { if (typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'admin' && (D.chauffeurs || []).length) { docsAutomatiser(); return; } } catch (e) {}
+  setTimeout(docsAutoDemarrer, 60000);
+}, 45000);
+// Après une modification : recalcul immédiat des blocages de la société.
+async function docsMajBlocages(soc) {
+  const data = await docsChargerTout(true);
+  for (const c of (D.chauffeurs || []).filter(function(x){ return !x.archived && (x.soc_nom || '').trim() === soc; })) {
+    const m = docsOblPourChauffeur(c, data);
+    const nv = m ? m.date : null, nn = m ? m.nom : null;
+    if ((c.docsOblExp || null) !== nv || (c.docsOblNom || null) !== nn) { try { await fbUpdate('chauffeurs', c._id, { docsOblExp: nv, docsOblNom: nn }); c.docsOblExp = nv; c.docsOblNom = nn; } catch (e) {} }
+  }
+}
+// ── Affichage ───────────────────────────────────────────────────────────────
+function docsLigneHtml(e, x, mode) {
+  const et = docsEtat(x.rec), r = x.rec || {}, v = r.valide;
+  let info = '';
+  if (v) info = v.sansDate || !v.date ? 'Sans date d\'expiration' : (et.code === 'expire' ? 'Expiré le ' : 'Expire le ') + docsFr(v.date) + (et.jours > 0 && et.jours <= 60 ? ' (dans ' + et.jours + ' j)' : '');
+  else if (!r.attente) info = x.t.obl ? 'À fournir' : 'Facultatif';
+  const lien = function(o){ return o && o.url ? ' <a href="' + E(o.url) + '" target="_blank" rel="noopener" style="color:var(--gold);font-size:12px;white-space:nowrap">📎 Voir</a>' : ''; };
+  let h = '<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
+    + '<div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:700">' + E(x.t.nom) + (x.t.obl ? ' <span style="color:#dc2626" title="Obligatoire">*</span>' : '') + '</div>'
+    + '<div style="font-size:12px;color:var(--muted);margin-top:2px">' + E(info) + lien(v) + '</div></div>'
+    + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' + docsBadge(v ? et.code : (r.attente ? 'attente' : 'manquant'))
+    + (mode === 'admin' ? '<button class="btn btn-ghost btn-xs" onclick="docsForm(\'' + e.ent + '\',\'' + x.k + '\',\'admin\')" title="Saisir / remplacer">✏️</button>'
+       : mode === 'st' ? '<button class="btn btn-s btn-xs" onclick="docsForm(\'' + e.ent + '\',\'' + x.k + '\',\'st\')">📤 Envoyer</button>' : '')
+    + '</div></div>';
+  if (r.attente) {
+    const a = r.attente;
+    h += '<div style="margin-top:6px;background:rgba(37,99,235,0.08);border:1px solid rgba(37,99,235,0.3);border-radius:8px;padding:8px 10px;font-size:12px">⏳ Nouveau document envoyé le ' + E(new Date(a.at).toLocaleDateString('fr-FR')) + (a.parNom ? ' par ' + E(a.parNom) : '') + ' — ' + (a.sansDate ? 'sans date d\'expiration' : 'expire le ' + E(docsFr(a.date))) + lien(a)
+      + (mode === 'admin' ? '<div style="margin-top:6px;display:flex;gap:6px"><button class="btn btn-p btn-xs" onclick="docsValider(\'' + e.ent + '\',\'' + x.k + '\')">✓ Valider</button><button class="btn btn-ghost btn-xs" style="color:#dc2626" onclick="docsRefuser(\'' + e.ent + '\',\'' + x.k + '\')">✗ Refuser</button></div>' : mode === 'st' ? '<div style="margin-top:4px;color:var(--muted)">En attente de validation par MOBILEA.</div>' : '')
+      + '</div>';
+  } else if (r.refus && mode !== 'admin') {
+    h += '<div style="margin-top:6px;background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.3);border-radius:8px;padding:8px 10px;font-size:12px;color:#dc2626">❌ Dernier envoi refusé' + (r.refus.motif ? ' : ' + E(r.refus.motif) : '') + '. Merci d\'envoyer un nouveau document.</div>';
+  }
+  return h + '</div>';
+}
+function docsEntiteHtml(e, data, mode) {
+  return '<div style="border:1px solid var(--border2);border-radius:10px;padding:4px 14px 10px;margin-bottom:12px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0 4px"><div style="font-size:14px;font-weight:800">' + E(e.titre) + '</div>'
+    + (mode === 'admin' || mode === 'st' ? '<button class="btn btn-ghost btn-xs" onclick="docsForm(\'' + e.ent + '\',\'autre_' + Date.now().toString(36) + '\',\'' + mode + '\',true)">＋ Autre document</button>' : '') + '</div>'
+    + docsListe(e, data).map(function(x){ return docsLigneHtml(e, x, mode); }).join('') + '</div>';
+}
+function docsCompter(ents, data) {
+  const n = { expire: 0, j7: 0, j15: 0, j30: 0, manquant: 0, attente: 0 };
+  ents.forEach(function(e){ docsListe(e, data).forEach(function(x){
+    const et = docsEtat(x.rec);
+    if (x.rec && x.rec.attente) n.attente++;
+    if (x.rec && x.rec.valide) { if (n[et.code] !== undefined) n[et.code]++; }
+    else if (x.t.obl && !(x.rec && x.rec.attente)) n.manquant++;
+  }); });
+  return n;
+}
+function docsResumeHtml(n) {
+  const p = [];
+  if (n.expire) p.push(docsBadge('expire') + ' ' + n.expire);
+  if (n.j7) p.push(docsBadge('j7') + ' ' + n.j7);
+  if (n.j15 + n.j30) p.push(docsBadge('j30') + ' ' + (n.j15 + n.j30));
+  if (n.attente) p.push(docsBadge('attente') + ' ' + n.attente);
+  if (n.manquant) p.push('<span style="font-size:11px;color:var(--muted)">' + n.manquant + ' manquant(s)</span>');
+  return p.length ? p.join(' ') : docsBadge('ok');
+}
+// Fiche sous-traitant (page Sous-traitants) : résumé + bouton.
+function docsResumeSocHtml(soc) {
+  if (!docsStaff()) return '';
+  let res = '<span style="font-size:11px;color:var(--muted)">Chargement…</span>';
+  if (window._docsData) res = docsResumeHtml(docsCompter(docsEntites(soc), window._docsData));
+  else if (!window._docsChargeSt) { window._docsChargeSt = true; docsChargerTout().then(function(){ window._docsChargeSt = false; try { renderSoustraitants(); } catch (e) {} }); }
+  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border2)">'
+    + '<span style="font-size:12px;font-weight:700">📄 Documents :</span>' + res
+    + '<button class="btn btn-s btn-xs" style="margin-left:auto" onclick="docsOuvrirSoc(\'' + E(soc).replace(/'/g, '&#39;') + '\')">Gérer les documents</button></div>';
+}
+window.docsResumeSocHtml = docsResumeSocHtml;
+function docsFenetre(id, titre, corps) {
+  const old = document.getElementById(id); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = id;
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:340;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:760px;max-width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px"><div style="font-size:16px;font-weight:800">' + titre + '</div>'
+    + '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'' + id + '\').remove()" aria-label="Fermer"><i class="fas fa-times"></i></button></div>'
+    + '<div class="docs-corps" style="padding:14px 18px;overflow:auto">' + corps + '</div></div>';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  return ov.querySelector('.docs-corps');
+}
+window.docsOuvrirSoc = async function(soc) {
+  window._docsCtx = { mode: docsAdmin() ? 'admin' : 'vue', soc: soc };
+  const box = docsFenetre('docs-ov', '📄 Documents — ' + E(soc), 'Chargement…');
+  await docsChargerTout(true);
+  docsRedessiner();
+};
+// Un chauffeur simple n'a pas la liste des véhicules en mémoire : lecture à part.
+async function docsVehiculesSt() {
+  if (SESSION.gerant && (D.vehicules || []).length) return D.vehicules;
+  try { return (await fbGet('vehicules')) || []; } catch (e) { return []; }
+}
+window.docsMesDocuments = async function() {
+  const moi = (D.chauffeurs || []).find(function(c){ return c._id === SESSION.chauffeurId; }) || {};
+  const soc = (SESSION.gerant && SESSION.socNom) ? SESSION.socNom.trim() : (moi.soc_nom || '').trim();
+  if (!soc) { showToast('Aucune société sous-traitante liée à votre compte', true); return; }
+  window._docsCtx = { mode: 'st', soc: soc, seulCh: SESSION.gerant ? null : SESSION.chauffeurId, vehicules: await docsVehiculesSt() };
+  docsFenetre('docs-ov', '📄 Mes documents', 'Chargement…');
+  docsRedessiner();
+};
+async function docsRedessiner() {
+  const ctx = window._docsCtx; const ov = document.getElementById('docs-ov'); if (!ctx || !ov) return;
+  const box = ov.querySelector('.docs-corps');
+  const ents = docsEntites(ctx.soc, { seulCh: ctx.seulCh, vehicules: ctx.vehicules });
+  let data, refus = 0;
+  if (ctx.mode === 'st') { const r = await docsChargerEntites(ents); data = r.data; refus = r.refus; window._docsSt = data; }
+  else data = window._docsData || {};
+  const n = docsCompter(ents, data);
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:12px">'
+    + (ctx.mode === 'st' ? 'Envoyez une photo ou un PDF de chaque document avec sa date d\'expiration. MOBILEA le valide ensuite. <b>Un document obligatoire (*) expiré bloque l\'attribution de nouvelles missions.</b>'
+       : 'Alarmes : 🟠 J-30 · 🟠 J-15 · 🔴 J-7 · 🔴 expiré. Relances automatiques au sous-traitant (notification, messagerie, SMS). Un document obligatoire (*) expiré bloque l\'attribution (l\'admin peut forcer).')
+    + '</div><div style="margin-bottom:12px">' + docsResumeHtml(n) + '</div>'
+    + (refus ? '<div style="font-size:12px;color:#b45309;margin-bottom:10px">⚠️ Une partie des documents n\'est pas encore accessible : MOBILEA doit d\'abord ouvrir l\'accès (automatique à la prochaine ouverture de l\'app admin).</div>' : '')
+    + ents.map(function(e){ return docsEntiteHtml(e, data, ctx.mode); }).join('');
+}
+// ── Formulaire d'envoi / saisie ─────────────────────────────────────────────
+window.docsForm = function(ent, k, mode, nouveau) {
+  const ctx = window._docsCtx || {};
+  const e = docsEntites(ctx.soc, { seulCh: ctx.seulCh, vehicules: ctx.vehicules }).find(function(x){ return x.ent === ent; }); if (!e) return;
+  const data = mode === 'st' ? (window._docsSt || {}) : (window._docsData || {});
+  const rec = (data[ent] || {})[k] || null, t = docsTypeDef(e.kind, k, rec), v = (rec && rec.valide) || {};
+  window._docsForm = { ent: ent, k: k, mode: mode, nouveau: !!nouveau, e: e };
+  const st = 'width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:9px 10px;color:var(--white);box-sizing:border-box';
+  const box = docsFenetre('docs-form-ov', (mode === 'st' ? '📤 ' : '✏️ ') + E(nouveau ? 'Autre document' : t.nom), '');
+  box.parentElement.style.width = '460px';
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">' + E(e.titre) + '</div>'
+    + (nouveau ? '<label style="font-size:12px;font-weight:700">Nom du document</label><input id="docs-f-nom" maxlength="80" placeholder="ex. Attestation d\'assurance flotte" style="' + st + ';margin:4px 0 10px">' : '')
+    + (nouveau && mode === 'admin' ? '<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:10px"><input type="checkbox" id="docs-f-obl"> Document obligatoire (bloque les missions s\'il expire)</label>' : '')
+    + '<label style="font-size:12px;font-weight:700">Date d\'expiration</label><input type="date" id="docs-f-date" value="' + E(v.date || '') + '" style="' + st + ';margin:4px 0 6px">'
+    + (t.sansDate ? '<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:6px"><input type="checkbox" id="docs-f-sans"' + (v.sansDate ? ' checked' : '') + '> Sans date d\'expiration</label>' : '')
+    + (t.aide ? '<div style="font-size:11px;color:var(--muted);margin-bottom:10px">' + E(t.aide) + '</div>' : '<div style="margin-bottom:10px"></div>')
+    + '<label style="font-size:12px;font-weight:700">Photo ou PDF du document' + (mode === 'admin' ? ' <span style="font-weight:400;color:var(--muted)">(facultatif si déjà enregistré)</span>' : '') + '</label>'
+    + '<input type="file" id="docs-f-fichier" accept="image/*,application/pdf" style="' + st + ';margin:4px 0 12px">'
+    + '<div id="docs-f-err" style="color:#dc2626;font-size:12px;min-height:16px;margin-bottom:8px"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'docs-form-ov\').remove()">Annuler</button>'
+    + '<button class="btn btn-p btn-sm" id="docs-f-ok" onclick="docsFormEnvoyer()">' + (mode === 'st' ? '📤 Envoyer à MOBILEA' : 'Enregistrer') + '</button></div>';
+};
+window.docsFormEnvoyer = async function() {
+  const F = window._docsForm; if (!F) return;
+  const err = document.getElementById('docs-f-err'), btn = document.getElementById('docs-f-ok');
+  const g = function(id){ return document.getElementById(id); };
+  const date = (g('docs-f-date') || {}).value || '', sans = !!(g('docs-f-sans') && g('docs-f-sans').checked);
+  const file = g('docs-f-fichier') && g('docs-f-fichier').files[0];
+  const nomPerso = F.nouveau ? ((g('docs-f-nom') || {}).value || '').trim() : '';
+  if (F.nouveau && !nomPerso) { err.textContent = 'Indiquez le nom du document'; return; }
+  if (!sans && !/^\d{4}-\d{2}-\d{2}$/.test(date)) { err.textContent = 'Indiquez la date d\'expiration' + (g('docs-f-sans') ? ' (ou cochez « Sans date »)' : ''); return; }
+  if (F.mode === 'st' && !sans && date <= docsAuj()) { err.textContent = 'Cette date est déjà passée : envoyez le nouveau document.'; return; }
+  const data = F.mode === 'st' ? (window._docsSt || {}) : (window._docsData || {});
+  const rec = (data[F.ent] || {})[F.k] || {};
+  if (F.mode === 'st' && !file) { err.textContent = 'Ajoutez la photo ou le PDF du document'; return; }
+  if (F.mode === 'admin' && !file && !(rec.valide && rec.valide.url) && !(rec.attente && rec.attente.url)) { /* saisie de la date seule autorisée pour l'admin */ }
+  btn.disabled = true; err.style.color = 'var(--muted)'; err.textContent = file ? 'Envoi du fichier…' : 'Enregistrement…';
+  try {
+    let f = null;
+    if (file) f = await docsEnvoyerFichier(file, F.ent, F.k);
+    const base = { date: sans ? '' : date, sansDate: sans, at: new Date().toISOString(), par: (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || '', parNom: SESSION.name || '' };
+    const t = docsTypeDef(F.e.kind, F.k, rec);
+    if (F.mode === 'st') {
+      await docsReq('PUT', 'docs_st/' + F.ent + '/' + F.k + '/attente', Object.assign(base, f, nomPerso ? { nom: nomPerso } : {}));
+      try { await sendPushNotification('📄 Nouveau document à valider', F.e.soc + ' — ' + (nomPerso || t.nom) + ' (' + docsEntNomCourt(F.e) + ')', null, null, { key: 'role', value: 'staff' }); } catch (e) {}
+    } else {
+      const ancien = rec.valide || {};
+      const valide = Object.assign(base, f || { url: ancien.url || (rec.attente && rec.attente.url) || '', fichier: ancien.fichier || '', mime: ancien.mime || '' }, { validePar: SESSION.name || '', valideAt: new Date().toISOString() });
+      const maj = { valide: valide, attente: null, refus: null };
+      if (F.nouveau) { maj.nom = nomPerso; maj.obl = !!(g('docs-f-obl') && g('docs-f-obl').checked); }
+      await docsReq('PATCH', 'docs_st/' + F.ent, { _type: F.e.kind, _soc: F.e.soc });
+      await docsReq('PATCH', 'docs_st/' + F.ent + '/' + F.k, maj);
+      try { await addLog('📄 Document ' + (nomPerso || t.nom) + ' enregistré — ' + F.e.soc + ' (' + docsEntNomCourt(F.e) + ')'); } catch (e) {}
+      await docsMajBlocages(F.e.soc);
+    }
+    g('docs-form-ov').remove();
+    showToast(F.mode === 'st' ? '📤 Document envoyé — en attente de validation' : 'Document enregistré ✓');
+    if (F.mode !== 'st') await docsChargerTout(true);
+    docsRedessiner();
+    try { if (F.mode !== 'st') renderSoustraitants(); } catch (e) {}
+  } catch (e) {
+    btn.disabled = false; err.style.color = '#dc2626';
+    err.textContent = e.status === 401 || e.status === 403 ? 'Accès refusé : MOBILEA doit d\'abord ouvrir l\'accès à vos documents.' : (e.message || 'Erreur');
+  }
+};
+window.docsValider = async function(ent, k) {
+  if (!docsAdmin()) return;
+  const ctx = window._docsCtx || {}; const e = docsEntites(ctx.soc).find(function(x){ return x.ent === ent; }); if (!e) return;
+  const rec = ((window._docsData || {})[ent] || {})[k]; if (!rec || !rec.attente) return;
+  const a = rec.attente, t = docsTypeDef(e.kind, k, rec);
+  const maj = { valide: Object.assign({}, a, { validePar: SESSION.name || '', valideAt: new Date().toISOString() }), attente: null, refus: null };
+  if (a.nom && !rec.nom) maj.nom = a.nom;
+  try {
+    await docsReq('PATCH', 'docs_st/' + ent + '/' + k, maj);
+    try { await addLog('📄 Document validé : ' + t.nom + ' — ' + e.soc + ' (' + docsEntNomCourt(e) + ')'); } catch (er) {}
+    for (const c of docsDestinataires(e)) await docsNotifier(c, '✅ Document validé', 'Votre document ' + t.nom + ' a été validé' + (a.date ? ' (valable jusqu\'au ' + docsFr(a.date) + ')' : '') + '. Merci.', false);
+    await docsMajBlocages(e.soc);
+    showToast('Document validé ✓');
+    docsRedessiner(); try { renderSoustraitants(); } catch (er) {}
+  } catch (er) { showToast('Validation impossible : ' + (er.message || ''), true); }
+};
+window.docsRefuser = function(ent, k) {
+  window._docsRefus = { ent: ent, k: k };
+  const box = docsFenetre('docs-form-ov', '✗ Refuser le document', '');
+  box.parentElement.style.width = '420px';
+  box.innerHTML = '<label style="font-size:12px;font-weight:700">Motif (envoyé au sous-traitant)</label>'
+    + '<textarea id="docs-r-motif" rows="3" maxlength="300" placeholder="ex. Document illisible, date incorrecte…" style="width:100%;background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:9px 10px;color:var(--white);box-sizing:border-box;margin:4px 0 12px"></textarea>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'docs-form-ov\').remove()">Annuler</button><button class="btn btn-p btn-sm" style="background:#dc2626;border-color:#dc2626" onclick="docsRefusOK()">Refuser</button></div>';
+};
+window.docsRefusOK = async function() {
+  const R = window._docsRefus; if (!R || !docsAdmin()) return;
+  const ctx = window._docsCtx || {}; const e = docsEntites(ctx.soc).find(function(x){ return x.ent === R.ent; }); if (!e) return;
+  const rec = ((window._docsData || {})[R.ent] || {})[R.k] || {}, t = docsTypeDef(e.kind, R.k, rec);
+  const motif = ((document.getElementById('docs-r-motif') || {}).value || '').trim();
+  try {
+    await docsReq('PATCH', 'docs_st/' + R.ent + '/' + R.k, { refus: { motif: motif, at: new Date().toISOString(), par: SESSION.name || '' }, attente: null });
+    for (const c of docsDestinataires(e)) await docsNotifier(c, '❌ Document refusé', 'Votre document ' + t.nom + ' a été refusé' + (motif ? ' : ' + motif : '') + '.\nMerci d\'envoyer un nouveau document via l\'application MOBILEA.', false);
+    document.getElementById('docs-form-ov').remove();
+    showToast('Document refusé — le sous-traitant est prévenu');
+    await docsChargerTout(true); docsRedessiner(); try { renderSoustraitants(); } catch (er) {}
+  } catch (er) { showToast('Refus impossible : ' + (er.message || ''), true); }
+};
+// ── Côté sous-traitant : menu « Mes documents » + alerte ────────────────────
+function docsInitChauffeur(essai) {
+  essai = essai || 0;
+  if (!SESSION || SESSION.role !== 'chauffeur') return;
+  const moi = (D.chauffeurs || []).find(function(c){ return c._id === SESSION.chauffeurId; });
+  const soc = (SESSION.gerant && SESSION.socNom) ? SESSION.socNom.trim() : (moi && (moi.soc_nom || '').trim());
+  if (!soc) { if (essai < 24) setTimeout(function(){ docsInitChauffeur(essai + 1); }, 5000); return; }
+  const nav = document.getElementById('main-nav');
+  if (nav && !document.getElementById('docs-nav')) {
+    const b = document.createElement('button');
+    b.className = 'ni dyn-nav'; b.id = 'docs-nav';
+    b.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-file-alt"></i> Mes documents <span id="docs-nav-n"></span>';
+    b.onclick = function(){ docsMesDocuments(); };
+    const ancre = nav.querySelector('.dyn-nav[data-p="messagerie"]');
+    if (ancre) nav.insertBefore(b, ancre); else nav.appendChild(b);
+  }
+  // Alerte : documents expirés / à renouveler / manquants
+  docsVehiculesSt().then(function(vh){
+    const ents = docsEntites(soc, { seulCh: SESSION.gerant ? null : SESSION.chauffeurId, vehicules: vh });
+    return docsChargerEntites(ents).then(function(r){ return { r: r, ents: ents }; });
+  }).then(function(o){
+    const r = o.r, n = docsCompter(o.ents, r.data);
+    const urgent = n.expire + n.j7 + n.j15 + n.j30 + n.manquant;
+    const sp = document.getElementById('docs-nav-n');
+    if (sp) sp.innerHTML = urgent ? '<span style="background:' + (n.expire || n.j7 ? '#dc2626' : '#d97706') + ';color:#fff;border-radius:10px;padding:0 7px;font-size:11px;font-weight:800;margin-left:4px">' + urgent + '</span>' : '';
+    if (n.expire || n.j7 || n.j15 || n.j30) showToast(n.expire ? '🔴 Document expiré : envoyez le nouveau document (menu « Mes documents ») avant toute nouvelle mission.' : '🟠 Un document arrive à expiration : envoyez le nouveau via « Mes documents ».', !!n.expire);
+  }).catch(function(){});
+}
+setTimeout(function docsChDemarrer(){
+  try { if (typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'chauffeur') { docsInitChauffeur(); return; } } catch (e) {}
+  setTimeout(docsChDemarrer, 30000);
+}, 8000);
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  🚐 CHOIX DU VÉHICULE DU JOUR PAR LE CHAUFFEUR (tous les jours)
+//  • Chauffeur avec pointeuse : choix demandé au bouton « Je commence ».
+//  • Autres chauffeurs : fenêtre obligatoire à la 1re ouverture de la journée.
+//  • Tant que le véhicule du jour n'est pas choisi : impossible d'accepter une
+//    mission, de démarrer une course ou de passer en service.
+//  • Véhicule déjà attribué par l'admin / le gérant : présélectionné, le
+//    chauffeur confirme ou change.
+//  Fiche chauffeur : vehImmatJour (immat), vehJourDate (AAAA-MM-JJ du choix).
+//  Le choix est aussi noté dans /pointages (historique qui a roulé avec quoi).
+// ═══════════════════════════════════════════════════════════════════════════
+function vjAuj() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function vjChoisi(ch) {
+  if (!ch) return false;
+  if (ch.vehImmatJour && ch.vehJourDate === vjAuj()) return true;
+  // Choix fait sur CE téléphone aujourd'hui (au cas où la fiche en mémoire n'est pas encore rafraîchie).
+  try { const m = JSON.parse(localStorage.getItem('mobilea_vj_' + ch._id) || 'null'); if (m && m.date === vjAuj() && m.immat) { ch.vehImmatJour = m.immat; ch.vehJourDate = m.date; return true; } } catch (e) {}
+  return false;
+}
+window.vjChoisi = vjChoisi;
+function vjLibelle(v) { return ([v.marque, v.modele].filter(Boolean).join(' ') || 'Véhicule') + (v.immat ? ' · ' + v.immat : ''); }
+async function vjListe() {
+  let L = (D.vehicules || []);
+  if (!L.length) { try { L = (await fbGet('vehicules')) || []; } catch (e) { L = []; } }
+  return L.filter(function(v){ return !v.archived && (!v.statut || v.statut === 'actif'); })
+    .sort(function(a, b){ return vjLibelle(a).localeCompare(vjLibelle(b), 'fr'); });
+}
+// Ouvre la fenêtre de choix. Renvoie une promesse : true si un véhicule est validé.
+window.vjOuvrir = function(opts) {
+  opts = opts || {};
+  if (window._vjPromesse) return window._vjPromesse;
+  window._vjPromesse = new Promise(async function(fin){
+    const ch = maFicheChauffeur();
+    if (!ch || !SESSION || SESSION.role !== 'chauffeur') { window._vjPromesse = null; fin(false); return; }
+    const L = await vjListe();
+    const old = document.getElementById('vj-ov'); if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'vj-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;padding:16px';
+    const pre = ch.vehImmatJour || '';
+    const preV = L.find(function(v){ return (v.immat || v._id) === pre; });
+    ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:16px;width:440px;max-width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">'
+      + '<div style="padding:16px 18px 10px"><div style="font-size:17px;font-weight:800">🚐 Mon véhicule aujourd\'hui</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-top:4px;text-transform:capitalize">' + E(new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })) + '</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-top:8px;line-height:1.45">' + E(opts.texte || 'Choisissez le véhicule que vous conduisez aujourd\'hui avant de commencer.') + '</div>'
+      + (preV ? '<div style="font-size:12px;margin-top:8px;background:rgba(37,99,235,0.1);border:1px solid rgba(37,99,235,0.3);border-radius:8px;padding:7px 10px">Véhicule prévu : <b>' + E(vjLibelle(preV)) + '</b> — confirmez ou changez.</div>' : '')
+      + (L.length > 6 ? '<input id="vj-cherche" placeholder="🔍 Rechercher (immatriculation, modèle)…" autocomplete="off" style="width:100%;box-sizing:border-box;margin-top:10px;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px 12px;color:var(--white);font-size:14px">' : '')
+      + '</div><div id="vj-liste" style="overflow:auto;padding:0 18px;flex:1">'
+      + (L.length ? L.map(function(v){
+          const val = v.immat || v._id;
+          return '<label class="vj-it" data-t="' + E(vjLibelle(v).toLowerCase()) + '" style="display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--border2);border-radius:10px;margin-bottom:8px;cursor:pointer">'
+            + '<input type="radio" name="vj-v" value="' + E(val) + '"' + (val === pre ? ' checked' : '') + ' style="width:18px;height:18px;flex-shrink:0">'
+            + '<div style="min-width:0"><div style="font-size:14px;font-weight:700">' + E([v.marque, v.modele].filter(Boolean).join(' ') || 'Véhicule') + '</div><div style="font-size:12px;color:var(--muted)">' + E(v.immat || '') + (v.societe ? ' · ' + E(v.societe) : '') + '</div></div></label>';
+        }).join('') : '<div style="padding:16px;text-align:center;color:var(--muted);font-size:13px">Aucun véhicule enregistré. Contactez votre dispatch.</div>')
+      + '</div><div style="padding:12px 18px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">'
+      + (opts.fermable || !L.length ? '<button class="btn btn-ghost btn-sm" id="vj-annuler">' + (opts.fermable ? 'Annuler' : 'Fermer') + '</button>' : '')
+      + '<button class="btn btn-p" id="vj-ok" style="flex:1;min-width:160px"' + (L.length ? '' : ' disabled') + '>✓ Valider mon véhicule</button></div></div>';
+    document.body.appendChild(ov);
+    const fermer = function(r){ ov.remove(); window._vjPromesse = null; fin(r); };
+    const ch2 = ov.querySelector('#vj-cherche');
+    if (ch2) ch2.addEventListener('input', function(){ const q = ch2.value.trim().toLowerCase(); ov.querySelectorAll('.vj-it').forEach(function(x){ x.style.display = !q || x.dataset.t.indexOf(q) >= 0 ? '' : 'none'; }); });
+    const an = ov.querySelector('#vj-annuler'); if (an) an.onclick = function(){ fermer(false); };
+    ov.querySelector('#vj-ok').onclick = async function(){
+      const r = ov.querySelector('input[name="vj-v"]:checked');
+      if (!r) { showToast('Choisissez votre véhicule', true); return; }
+      const v = L.find(function(x){ return (x.immat || x._id) === r.value; });
+      this.disabled = true;
+      try {
+        await fbUpdate('chauffeurs', ch._id, { vehImmatJour: r.value, vehJourDate: vjAuj(), vehJourAt: new Date().toISOString() });
+        ch.vehImmatJour = r.value; ch.vehJourDate = vjAuj();
+        try { localStorage.setItem('mobilea_vj_' + ch._id, JSON.stringify({ date: vjAuj(), immat: r.value })); } catch (e) {}
+        try { await majMonPointage({ vehiculeId: (v && v._id) || null, vehiculeLabel: v ? ((v.marque || '') + ' ' + (v.modele || '') + (v.immat ? ' (' + v.immat + ')' : '')).trim() : r.value }); } catch (e) {}
+        showToast('🚐 Véhicule du jour : ' + (v ? vjLibelle(v) : r.value));
+        fermer(true);
+      } catch (e) { this.disabled = false; showToast('Enregistrement impossible, réessayez', true); }
+    };
+  });
+  return window._vjPromesse;
+};
+// À appeler avant d'accepter une mission / démarrer / passer en service.
+window.vjGarde = async function(texte) {
+  if (!SESSION || SESSION.role !== 'chauffeur') return true;
+  const ch = maFicheChauffeur();
+  if (!ch || vjChoisi(ch)) return true;
+  return vjOuvrir({ fermable: true, texte: texte || 'Avant d\'accepter ou de démarrer une mission, choisissez le véhicule que vous conduisez aujourd\'hui.' });
+};
+// 1re ouverture de la journée (chauffeurs sans pointeuse) ; revérifié au retour dans l'app.
+function vjVerifierOuverture() {
+  try {
+    if (!SESSION || SESSION.role !== 'chauffeur') return;
+    const ch = maFicheChauffeur(); if (!ch) return;
+    if (ch.pointeuse === true) return;            // demandé au bouton « Je commence »
+    if (vjChoisi(ch) || document.getElementById('vj-ov')) return;
+    vjOuvrir({ fermable: false });
+  } catch (e) {}
+}
+window.vjVerifierOuverture = vjVerifierOuverture;
+setTimeout(function vjDemarrer(){
+  try { if (typeof SESSION !== 'undefined' && SESSION && SESSION.role === 'chauffeur' && maFicheChauffeur()) { vjVerifierOuverture(); return; } } catch (e) {}
+  setTimeout(vjDemarrer, 5000);
+}, 6000);
+document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'visible') setTimeout(vjVerifierOuverture, 1500); });
+setInterval(vjVerifierOuverture, 10 * 60 * 1000);
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  POINTAGE CHAUFFEUR : le chauffeur declare lui-meme ses heures
@@ -8032,6 +8671,8 @@ window.pointerDebut = async function() {
   // VERROU : une heure de debut ne se saisit qu'une fois.
   const p = await monPointageDuJour();
   if(p && p.heureDebut) { showToast(MSG_VERROU, true); return; }
+  // Choix du véhicule du jour avant de commencer la journée.
+  if(!(await vjGarde('Avant de commencer votre journée, choisissez le véhicule que vous conduisez aujourd\'hui.'))) return;
   // Le chauffeur saisit son heure de début (pré-remplie avec l'heure actuelle)
   const h = _demanderHeure('🚀 Heure de début de journée');
   if(!h) return; // Annulé ou invalide
@@ -8656,8 +9297,607 @@ window.histoVehicule = async function(vehId) {
   document.body.appendChild(ov);
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  🌱 VÉHICULES : MOTORISATION, CONSOMMATION ET IMPACT CARBONE
+//  - Chaque fiche véhicule (MOBILEA et gérants) : motorisation, consommation
+//    (L/100 km et/ou kWh/100 km), carburant, CO₂ carte grise, capacité,
+//    mise en service.
+//  - CO₂ d'un transfert = km parcourus CLIENT À BORD (GPS du chauffeur entre
+//    « à bord » et la dépose) × consommation du véhicule × facteur ADEME.
+//    Rien n'est compté hors transfert. Sans GPS : distance estimée
+//    départ → arrivée (signalée « estimé »).
+//  - Facteurs d'émission ADEME (Base Empreinte, combustion + amont) :
+//    gazole 3,10 kg CO₂e/L · essence 2,70 kg CO₂e/L · électricité France
+//    0,052 kg CO₂e/kWh.
+// ═══════════════════════════════════════════════════════════════════════════
+const CO2_FE = { diesel: 3.10, essence: 2.70, elec: 0.052 };
+const CO2_MOTOS = [
+  ['electrique',   '⚡ Électrique'],
+  ['hybride',      '🔋 Hybride'],
+  ['hybride_rech', '🔌 Hybride rechargeable'],
+  ['diesel',       '⛽ Diesel'],
+  ['essence',      '⛽ Essence']
+];
+const CO2_FINIS = ['terminee', 'facturee', 'payee'];
+function co2Num(x) { const n = parseFloat(String(x == null ? '' : x).replace(',', '.')); return isNaN(n) ? null : n; }
+function co2MotoNom(m) { const t = CO2_MOTOS.find(function(x){ return x[0] === m; }); return t ? t[1] : ''; }
+function co2Fmt(kg) {
+  if (kg == null || isNaN(kg)) return '—';
+  if (kg >= 1000) return (kg / 1000).toFixed(2).replace('.', ',') + ' t';
+  return (kg >= 100 ? Math.round(kg) : Math.round(kg * 10) / 10).toString().replace('.', ',') + ' kg';
+}
+function co2Norm(s) { return String(s || '').trim().toUpperCase().replace(/[\s-]+/g, ''); }
+
+// Véhicule utilisé pour un transfert : immatriculation notée sur le transfert,
+// sinon véhicule attribué au chauffeur.
+function co2VehiculeCourse(c, vehicules) {
+  const L = vehicules || D.vehicules || [];
+  const imm = co2Norm(c.vehImmat || c.immat || '');
+  if (imm) { const v = L.find(function(x){ return co2Norm(x.immat) === imm || co2Norm(x._id) === imm; }); if (v) return v; }
+  const ch = (c.chauffeur || '').trim();
+  if (ch) { const v = L.find(function(x){ return (x.chauffeur || '').trim() === ch; }); if (v) return v; }
+  return null;
+}
+// Km à prendre en compte (client à bord uniquement).
+function co2KmCourse(c) {
+  const g = co2Num(c.kmBord);
+  if (g != null && g > 0) return { km: g, source: c.kmSource || 'gps' };
+  const e = co2Num(c.kmEstime);
+  if (e != null && e > 0) return { km: e, source: 'estime' };
+  const t = co2Num(c.trajetKm);
+  if (t != null && t > 0) return { km: t, source: 'estime' };
+  return null;
+}
+// kg CO₂e pour `km` avec le véhicule `v`.
+function co2Calcul(km, v) {
+  if (!v || !(km > 0)) return null;
+  const m = v.motorisation || '';
+  const L = co2Num(v.consoL), K = co2Num(v.consoKwh);
+  const carb = (m === 'diesel' || m === 'essence') ? m : (v.carburant === 'diesel' ? 'diesel' : 'essence');
+  let kg = null, methode = '';
+  if (m === 'electrique' && K) { kg = km * K / 100 * CO2_FE.elec; methode = K + ' kWh/100 km'; }
+  else if ((m === 'diesel' || m === 'essence' || m === 'hybride') && L) { kg = km * L / 100 * CO2_FE[carb]; methode = String(L).replace('.', ',') + ' L/100 km'; }
+  else if (m === 'hybride_rech' && (L || K)) {
+    kg = km * ((L || 0) / 100 * CO2_FE[carb] + (K || 0) / 100 * CO2_FE.elec);
+    methode = (L ? String(L).replace('.', ',') + ' L' : '') + (L && K ? ' + ' : '') + (K ? K + ' kWh' : '') + '/100 km';
+  }
+  if (kg == null) {
+    const g = co2Num(v.co2Gkm);
+    if (g) { kg = km * g / 1000; methode = g + ' g/km (carte grise)'; }
+  }
+  return kg == null ? null : { kg: Math.round(kg * 100) / 100, methode: methode };
+}
+// CO₂ d'un transfert terminé : { kg, km, source, v, methode } ou { manque }.
+function co2Course(c, vehicules) {
+  if (!c || CO2_FINIS.indexOf(c.statut) < 0) return null;
+  const k = co2KmCourse(c);
+  const v = co2VehiculeCourse(c, vehicules);
+  if (!k) return { manque: 'km' , v: v };
+  if (!v) return { manque: 'vehicule', km: k.km, source: k.source };
+  const r = co2Calcul(k.km, v);
+  if (!r) return { manque: 'conso', km: k.km, source: k.source, v: v };
+  return { kg: r.kg, km: k.km, source: k.source, v: v, methode: r.methode };
+}
+window.co2Course = co2Course;
+
+// ── Champs de la fiche véhicule (admin et gérant) ──────────────────────────
+function co2ChampsHtml(px, v, styleIn) {
+  v = v || {};
+  const st = styleIn || 'width:100%;box-sizing:border-box';
+  const champ = function(lab, inner, id) { return '<div class="fld" id="' + id + '" style="margin-bottom:10px"><label style="display:block;font-size:12px;margin-bottom:4px">' + lab + '</label>' + inner + '</div>'; };
+  const val = function(x) { return x == null ? '' : E(String(x)); };
+  return '<div id="' + px + '-co2" style="border:1px solid rgba(34,197,94,0.35);border-radius:10px;padding:12px;margin:10px 0;background:rgba(34,197,94,0.06)">'
+    + '<div style="font-size:12px;font-weight:800;color:#16a34a;margin-bottom:8px">🌱 Motorisation et impact carbone</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">'
+    + CO2_MOTOS.map(function(m){ return '<label style="display:flex;align-items:center;gap:5px;font-size:12px;border:1px solid rgba(0,0,0,0.12);border-radius:8px;padding:6px 8px;cursor:pointer"><input type="radio" name="' + px + '-moto" value="' + m[0] + '"' + (v.motorisation === m[0] ? ' checked' : '') + ' onchange="co2MajChamps(\'' + px + '\')"> ' + m[1] + '</label>'; }).join('')
+    + '</div>'
+    + champ('Carburant du moteur thermique', '<select id="' + px + '-carb" style="' + st + '"><option value="essence"' + (v.carburant !== 'diesel' ? ' selected' : '') + '>Essence</option><option value="diesel"' + (v.carburant === 'diesel' ? ' selected' : '') + '>Diesel</option></select>', px + '-f-carb')
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +   champ('Consommation carburant (L/100 km)', '<input type="number" step="0.1" min="0" id="' + px + '-consoL" value="' + val(v.consoL) + '" placeholder="ex : 8,2" style="' + st + '">', px + '-f-consoL')
+    +   champ('Consommation électrique (kWh/100 km)', '<input type="number" step="0.1" min="0" id="' + px + '-consoKwh" value="' + val(v.consoKwh) + '" placeholder="ex : 18" style="' + st + '">', px + '-f-consoKwh')
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +   champ('Émissions CO₂ carte grise (g/km)', '<input type="number" step="1" min="0" id="' + px + '-co2gkm" value="' + val(v.co2Gkm) + '" placeholder="case V.7" style="' + st + '">', px + '-f-co2')
+    +   champ('Capacité (places passagers)', '<input type="number" step="1" min="1" id="' + px + '-capa" value="' + val(v.capacite) + '" placeholder="ex : 7" style="' + st + '">', px + '-f-capa')
+    + '</div>'
+    + champ('Date de mise en service', '<input type="date" id="' + px + '-mes" value="' + val(v.miseEnService) + '" style="' + st + '">', px + '-f-mes')
+    + '<div style="font-size:11px;color:#6b7280;line-height:1.5">CO₂ compté uniquement pendant les transferts (client à bord), avec les facteurs ADEME : gazole 3,10 kg/L · essence 2,70 kg/L · électricité 0,052 kg/kWh.</div>'
+    + '</div>';
+}
+window.co2MajChamps = function(px) {
+  const sel = document.querySelector('input[name="' + px + '-moto"]:checked');
+  const m = sel ? sel.value : '';
+  const vis = function(id, on) { const el = document.getElementById(px + '-f-' + id); if (el) el.style.display = on ? '' : 'none'; };
+  vis('carb', m === 'hybride' || m === 'hybride_rech');
+  vis('consoL', m !== 'electrique');
+  vis('consoKwh', m === 'electrique' || m === 'hybride_rech' || !m);
+};
+function co2LireChamps(px) {
+  const g = function(id) { const el = document.getElementById(px + '-' + id); return el ? String(el.value || '').trim() : ''; };
+  const sel = document.querySelector('input[name="' + px + '-moto"]:checked');
+  if (!document.getElementById(px + '-co2')) return {};
+  const m = sel ? sel.value : '';
+  const n = function(x) { const v = co2Num(x); return v == null || v < 0 ? '' : v; };
+  return {
+    motorisation: m,
+    carburant: (m === 'diesel' || m === 'essence') ? m : ((m === 'hybride' || m === 'hybride_rech') ? (g('carb') || 'essence') : (m === 'electrique' ? 'electricite' : '')),
+    consoL: m === 'electrique' ? '' : n(g('consoL')),
+    consoKwh: (m === 'electrique' || m === 'hybride_rech') ? n(g('consoKwh')) : '',
+    co2Gkm: n(g('co2gkm')),
+    capacite: n(g('capa')),
+    miseEnService: g('mes')
+  };
+}
+window.co2LireChamps = co2LireChamps;
+
+// Fiche véhicule ADMIN : ajoute le bloc dans la fenêtre existante.
+function co2InjecterModalAdmin(id) {
+  try {
+    const box = document.querySelector('#mo-vehicule .mo-b'); if (!box) return;
+    const old = document.getElementById('vh-co2'); if (old) old.remove();
+    const v = id ? ((D.vehicules || []).find(function(x){ return x._id === id; }) || {}) : {};
+    const ancre = document.getElementById('vh-societe');
+    const blocAvant = ancre ? ancre.closest('.fld') : null;
+    const tmp = document.createElement('div'); tmp.innerHTML = co2ChampsHtml('vh', v);
+    const bloc = tmp.firstChild;
+    if (blocAvant && blocAvant.parentNode === box) box.insertBefore(bloc, blocAvant); else box.appendChild(bloc);
+    const kmLab = document.querySelector('#mo-vehicule label[for="vh-km"]') || (document.getElementById('vh-km') && document.getElementById('vh-km').previousElementSibling);
+    if (kmLab && /^Km$/i.test((kmLab.textContent || '').trim())) kmLab.textContent = 'Kilométrage';
+    co2MajChamps('vh');
+  } catch (e) { console.warn('[CO2] fiche véhicule', e); }
+}
+window.co2InjecterModalAdmin = co2InjecterModalAdmin;
+
+// ── Km client à bord, mesurés par le téléphone du chauffeur ────────────────
+// Chaque position reçue pendant qu'un de SES transferts est « à bord » ajoute
+// la distance parcourue (positions imprécises et sauts aberrants ignorés).
+// Gardé dans le téléphone jusqu'à la dépose, puis noté sur le transfert.
+function co2SuiviPosition(lat, lng, acc) {
+  try {
+    if (!SESSION || SESSION.role !== 'chauffeur' || !lat || !lng) return;
+    if (acc && acc > 60) return;
+    const moi = SESSION.name, id = SESSION.chauffeurId;
+    const fuid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || '';
+    const c = (D.courses || []).find(function(x){ return x && x.statut === 'onboard' && (x.chauffeur === moi || (id && x.chauffeurId === id) || (fuid && x.chauffeurUid === fuid)); });
+    if (!c) return;
+    let all = {};
+    try { all = JSON.parse(localStorage.getItem('mbl_kmbord') || '{}') || {}; } catch (e) {}
+    const s = all[c._id] || { km: 0 };
+    const now = Date.now();
+    if (s.lat != null) {
+      const d = distanceKm(s.lat, s.lng, lat, lng);
+      const dt = Math.max(1, (now - (s.at || now)) / 1000);
+      if (d < 0.01) return;                      // < 10 m : bruit GPS, on ne bouge pas le point
+      if (d / dt * 3600 <= 200) s.km = (s.km || 0) + d;   // > 200 km/h : saut aberrant ignoré
+    }
+    s.lat = lat; s.lng = lng; s.at = now;
+    all[c._id] = s;
+    // Ménage : transferts de plus de 3 jours
+    Object.keys(all).forEach(function(k){ if (all[k].at && now - all[k].at > 3 * 86400000) delete all[k]; });
+    try { localStorage.setItem('mbl_kmbord', JSON.stringify(all)); } catch (e) {}
+  } catch (e) {}
+}
+window.co2SuiviPosition = co2SuiviPosition;
+// À la dépose / fin : noter les km client à bord sur le transfert (écriture
+// séparée du changement de statut, pour ne jamais le bloquer).
+async function co2EnregistrerKmBord(courseId) {
+  try {
+    let all = {};
+    try { all = JSON.parse(localStorage.getItem('mbl_kmbord') || '{}') || {}; } catch (e) {}
+    const s = all[courseId];
+    const c = (D.courses || []).find(function(x){ return x._id === courseId; }) || {};
+    const maj = {};
+    if (s && s.km > 0.2 && !(co2Num(c.kmBord) > 0)) { maj.kmBord = Math.round(s.km * 10) / 10; maj.kmSource = 'gps'; }
+    if (!c.vehImmat) {
+      const moi = (D.chauffeurs || []).find(function(x){ return x._id === SESSION.chauffeurId; });
+      if (moi && moi.vehImmatJour) maj.vehImmat = moi.vehImmatJour;
+    }
+    if (Object.keys(maj).length) await fbUpdate('courses', courseId, maj);
+    if (s && maj.kmBord) { delete all[courseId]; try { localStorage.setItem('mbl_kmbord', JSON.stringify(all)); } catch (e) {} }
+  } catch (e) { console.warn('[CO2] km à bord', e); }
+}
+window.co2EnregistrerKmBord = co2EnregistrerKmBord;
+
+// ── Compléter les km manquants (dispatch / admin) ─────────────────────────
+// 1) historique GPS du chauffeur : points du transfert « à bord » ;
+// 2) sinon distance estimée départ → arrivée (itinéraire Google, gardé en cache) ;
+// 3) sinon ligne droite × 1,3 entre les coordonnées.
+const _co2TraceCache = {};
+async function co2KmDepuisTrace(c) {
+  const chId = c.chauffeurId || (((D.chauffeurs || []).find(function(x){ return (x.prenom + (x.nom ? ' ' + x.nom : '')) === c.chauffeur; }) || {})._id);
+  const debut = Date.parse(c.heureOnboard || '');
+  if (!chId || isNaN(debut)) return null;
+  const fin = Date.parse(c.heureDepose || c.heureTerminee || '') || (debut + 6 * 3600000);
+  const p2 = function(n){ return String(n).padStart(2, '0'); };
+  const jours = [];
+  for (let t = debut; t <= fin + 3600000; t += 86400000) { const d = new Date(t); jours.push('' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate())); }
+  const dF = new Date(fin); const jf = '' + dF.getFullYear() + p2(dF.getMonth() + 1) + p2(dF.getDate()); if (jours.indexOf(jf) < 0) jours.push(jf);
+  let pts = [];
+  for (const j of jours) {
+    const k = chId + '/' + j;
+    if (!(k in _co2TraceCache)) {
+      try {
+        const r = await fetch(FB_URL + '/gps_trails/' + encodeURIComponent(chId) + '/' + j + '.json' + authParam(await getAuthToken()));
+        _co2TraceCache[k] = r.ok ? (await r.json() || {}) : {};
+      } catch (e) { _co2TraceCache[k] = {}; }
+    }
+    pts = pts.concat(Object.values(_co2TraceCache[k] || {}));
+  }
+  pts = pts.filter(function(p){ const t = Date.parse(p.at || ''); return p && p.lat && !isNaN(t) && t >= debut - 60000 && t <= fin + 120000; })
+    .sort(function(a, b){ return Date.parse(a.at) - Date.parse(b.at); });
+  const bord = pts.filter(function(p){ return p.c === c._id ? p.st === 'onboard' : !p.c; });
+  if (bord.length < 2) return null;
+  let km = 0;
+  for (let i = 1; i < bord.length; i++) {
+    const d = distanceKm(bord[i - 1].lat, bord[i - 1].lng, bord[i].lat, bord[i].lng);
+    const dt = Math.max(1, (Date.parse(bord[i].at) - Date.parse(bord[i - 1].at)) / 1000);
+    if (d / dt * 3600 <= 200) km += d;
+  }
+  return km > 0.2 ? Math.round(km * 10) / 10 : null;
+}
+async function co2KmEstime(c) {
+  const dep = c.depart || c.lieu || '', arr = c.arrivee || '';
+  if (dep && arr && window.google && google.maps && google.maps.DistanceMatrixService) {
+    try {
+      const res = await new Promise(function(ok){ new google.maps.DistanceMatrixService().getDistanceMatrix({ origins: [dep], destinations: [arr], travelMode: 'DRIVING' }, function(r, st){ ok(st === 'OK' ? r : null); }); });
+      const e = res && res.rows && res.rows[0] && res.rows[0].elements[0];
+      if (e && e.status === 'OK' && e.distance) return Math.round(e.distance.value / 100) / 10;
+    } catch (e) {}
+  }
+  const a = co2Num(c.pickupLat), b = co2Num(c.pickupLng), x = co2Num(c.dropLat), y = co2Num(c.dropLng);
+  if (a && b && x && y) return Math.round(distanceKm(a, b, x, y) * 1.3 * 10) / 10;
+  return null;
+}
+async function co2CompleterKm(courses, max) {
+  if (!SESSION || ['admin', 'dispatch'].indexOf(SESSION.role) < 0) return 0;
+  const aFaire = (courses || []).filter(function(c){ return c && CO2_FINIS.indexOf(c.statut) >= 0 && c.type !== 'mad' && !co2KmCourse(c) && !c._co2Essai; }).slice(0, max || 40);
+  let n = 0;
+  for (const c of aFaire) {
+    c._co2Essai = true;
+    try {
+      let maj = null;
+      const g = await co2KmDepuisTrace(c);
+      if (g) maj = { kmBord: g, kmSource: 'gps_trace' };
+      else { const e = await co2KmEstime(c); if (e) maj = { kmEstime: e, kmSource: 'estime' }; }
+      if (maj) {
+        Object.assign(c, maj); n++;
+        if ((D.courses || []).some(function(x){ return x._id === c._id; })) await fbUpdate('courses', c._id, maj);
+        else { try { await fetch(FB_URL + '/courses_archive/' + encodeURIComponent(c._id) + '.json' + authParam(await getAuthToken()), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(maj) }); } catch (e) {} }
+      }
+    } catch (e) {}
+  }
+  return n;
+}
+window.co2CompleterKm = co2CompleterKm;
+// Dispatch / admin : complète en arrière-plan les transferts qui viennent de se terminer.
+function co2PlanifierCompletion() {
+  if (window._co2Planif || !SESSION || ['admin', 'dispatch'].indexOf(SESSION.role) < 0) return;
+  window._co2Planif = setTimeout(async function(){
+    window._co2Planif = null;
+    try {
+      const recents = (D.courses || []).filter(function(c){ return CO2_FINIS.indexOf(c.statut) >= 0 && Date.parse(c.heureTerminee || c.updatedAt || '') > Date.now() - 3 * 86400000; });
+      await co2CompleterKm(recents, 10);
+    } catch (e) {}
+  }, 120000);
+}
+window.co2PlanifierCompletion = co2PlanifierCompletion;
+
+// ── Bloc CO₂ dans la fiche d'un transfert ──────────────────────────────────
+function co2BlocCourse(c) {
+  const r = co2Course(c);
+  if (!r) return '';
+  const src = { gps: 'GPS client à bord', gps_trace: 'GPS client à bord', estime: 'distance estimée' };
+  let corps;
+  if (r.kg != null) {
+    corps = '<b style="font-size:15px">' + co2Fmt(r.kg) + ' CO₂e</b> · ' + String(r.km).replace('.', ',') + ' km (' + (src[r.source] || r.source) + ')'
+      + '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + E(((r.v.marque || '') + ' ' + (r.v.modele || '')).trim()) + (r.v.immat ? ' · ' + E(r.v.immat) : '') + ' · ' + co2MotoNom(r.v.motorisation) + ' · ' + E(r.methode) + '</div>';
+  } else if (r.manque === 'km') {
+    corps = 'Km client à bord inconnus. <button class="btn btn-ghost btn-xs" onclick="co2CalculerCourse(\'' + c._id + '\')">Calculer</button>';
+  } else if (r.manque === 'vehicule') {
+    corps = String(r.km).replace('.', ',') + ' km · véhicule du transfert inconnu (immatriculation non trouvée dans Gestion des véhicules)';
+  } else {
+    corps = String(r.km).replace('.', ',') + ' km · consommation à renseigner dans la fiche du véhicule ' + E((r.v && (r.v.immat || r.v.marque)) || '');
+  }
+  return '<div id="co2-bloc-' + c._id + '" style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.35);border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:13px"><span style="color:#16a34a;font-weight:800">🌱 Impact carbone</span> — ' + corps + '</div>';
+}
+window.co2BlocCourse = co2BlocCourse;
+window.co2CalculerCourse = async function(id) {
+  const c = (D.courses || []).find(function(x){ return x._id === id; }); if (!c) return;
+  delete c._co2Essai;
+  showToast('Calcul des km…');
+  const n = await co2CompleterKm([c], 1);
+  const el = document.getElementById('co2-bloc-' + id);
+  if (el) el.outerHTML = co2BlocCourse(c);
+  showToast(n ? '🌱 CO₂ calculé' : 'Km introuvables (ni GPS ni adresses exploitables)', !n);
+};
+
+// ── Bilan carbone (par client, par véhicule, par mois) ─────────────────────
+function co2SourceCourses() {
+  try { ensureArchiveLoaded(); } catch (e) {}
+  const vus = new Set((D.courses || []).map(function(c){ return c._id; }));
+  return (D.courses || []).concat((window._archiveCache || []).filter(function(c){ return !vus.has(c._id); }));
+}
+function co2Agreger(courses, cle) {
+  const m = {};
+  courses.forEach(function(c){
+    const r = co2Course(c);
+    if (!r) return;
+    const k = cle(c, r) || '—';
+    const a = m[k] = m[k] || { nom: k, n: 0, km: 0, kg: 0, sans: 0 };
+    a.n++;
+    if (r.kg != null) { a.km += r.km; a.kg += r.kg; } else a.sans++;
+  });
+  return Object.values(m).sort(function(a, b){ return b.kg - a.kg; });
+}
+window.co2BilanOuvrir = async function(vehId) {
+  if (!SESSION || ['admin', 'dispatch'].indexOf(SESSION.role) < 0) { showToast('Accès réservé au dispatch', true); return; }
+  const old = document.getElementById('co2-ov'); if (old) old.remove();
+  const auj = new Date();
+  const moisDef = auj.getFullYear() + '-' + String(auj.getMonth() + 1).padStart(2, '0');
+  const ov = document.createElement('div');
+  ov.id = 'co2-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:320;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:820px;max-width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">'
+    +   '<div style="font-size:16px;font-weight:800">🌱 Bilan carbone des transferts</div>'
+    +   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +     (vehId ? '' : '<input type="month" id="co2-mois" value="' + moisDef + '" onchange="co2BilanDessiner()" style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:6px 8px;color:var(--white)">')
+    +     '<button class="btn btn-s btn-sm" onclick="co2BilanExporter()"><i class="fas fa-file-excel" style="color:#16a34a"></i> Excel</button>'
+    +     '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'co2-ov\').remove()" aria-label="Fermer"><i class="fas fa-times"></i></button>'
+    +   '</div>'
+    + '</div>'
+    + '<div id="co2-corps" style="padding:16px 18px;overflow:auto">Calcul en cours…</div></div>';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  window._co2Bilan = { vehId: vehId || '' };
+  co2BilanDessiner();
+  // Compléter les km manquants de la période puis redessiner.
+  try {
+    const n = await co2CompleterKm(co2BilanCourses(), 60);
+    if (n && document.getElementById('co2-ov')) co2BilanDessiner();
+  } catch (e) {}
+};
+function co2BilanCourses() {
+  const B = window._co2Bilan || {};
+  const toutes = co2SourceCourses().filter(function(c){ return CO2_FINIS.indexOf(c.statut) >= 0 && c.type !== 'mad'; });
+  if (B.vehId) {
+    const v = (D.vehicules || []).find(function(x){ return x._id === B.vehId; });
+    const lim = new Date(); lim.setMonth(lim.getMonth() - 11, 1);
+    const d1 = lim.getFullYear() + '-' + String(lim.getMonth() + 1).padStart(2, '0');
+    return toutes.filter(function(c){ return String(c.datetime || '').slice(0, 7) >= d1 && co2VehiculeCourse(c) === v; });
+  }
+  const m = (document.getElementById('co2-mois') || {}).value || '';
+  return toutes.filter(function(c){ return String(c.datetime || '').slice(0, 7) === m; });
+}
+window.co2BilanDessiner = function() {
+  const box = document.getElementById('co2-corps'); if (!box) return;
+  const B = window._co2Bilan || {};
+  const L = co2BilanCourses();
+  const th = 'text-align:left;padding:7px 8px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)';
+  const td = 'padding:7px 8px;font-size:12px;border-bottom:1px solid var(--border)';
+  const table = function(titre, lignes, col) {
+    if (!lignes.length) return '';
+    return '<div style="font-size:13px;font-weight:800;margin:14px 0 6px">' + titre + '</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>'
+      + '<th style="' + th + '">' + col + '</th><th style="' + th + ';text-align:right">Transferts</th><th style="' + th + ';text-align:right">Km à bord</th><th style="' + th + ';text-align:right">CO₂e</th><th style="' + th + ';text-align:right">Par transfert</th></tr></thead><tbody>'
+      + lignes.map(function(a){ const nk = a.n - a.sans; return '<tr><td style="' + td + '">' + E(a.nom) + (a.sans ? ' <span style="color:#f59e0b;font-size:11px">(' + a.sans + ' sans données)</span>' : '') + '</td><td style="' + td + ';text-align:right">' + a.n + '</td><td style="' + td + ';text-align:right">' + Math.round(a.km).toLocaleString('fr-FR') + '</td><td style="' + td + ';text-align:right;font-weight:700;color:#16a34a">' + co2Fmt(a.kg) + '</td><td style="' + td + ';text-align:right">' + (nk ? co2Fmt(a.kg / nk) : '—') + '</td></tr>'; }).join('')
+      + '</tbody></table></div>';
+  };
+  const tot = co2Agreger(L, function(){ return 'Total'; })[0] || { n: 0, km: 0, kg: 0, sans: 0 };
+  let h = '';
+  if (B.vehId) {
+    const v = (D.vehicules || []).find(function(x){ return x._id === B.vehId; }) || {};
+    h += '<div style="font-size:13px;margin-bottom:6px"><b>' + E(((v.marque || '') + ' ' + (v.modele || '')).trim()) + '</b> ' + E(v.immat || '') + ' · ' + (co2MotoNom(v.motorisation) || '<span style="color:#f59e0b">motorisation à renseigner</span>') + '</div>';
+  }
+  h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">'
+    + [['Transferts', String(tot.n)], ['Km client à bord', Math.round(tot.km).toLocaleString('fr-FR') + ' km'], ['CO₂e total', co2Fmt(tot.kg)], ['Sans données', String(tot.sans)]]
+      .map(function(x){ return '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--muted)">' + x[0] + '</div><div style="font-size:18px;font-weight:800;margin-top:2px">' + x[1] + '</div></div>'; }).join('')
+    + '</div>';
+  if (!L.length) h += '<div style="padding:20px;text-align:center;color:var(--muted)">Aucun transfert terminé sur cette période.</div>';
+  if (B.vehId) h += table('Par mois', co2Agreger(L, function(c){ return String(c.datetime || '').slice(0, 7); }).sort(function(a, b){ return b.nom.localeCompare(a.nom); }), 'Mois');
+  else {
+    h += table('Par client', co2Agreger(L, function(c){ return (c.client || '').trim() || '—'; }), 'Client');
+    h += table('Par véhicule', co2Agreger(L, function(c, r){ return r.v ? (((r.v.marque || '') + ' ' + (r.v.modele || '')).trim() + (r.v.immat ? ' · ' + r.v.immat : '')) : 'Véhicule inconnu'; }), 'Véhicule');
+  }
+  if (tot.sans) h += '<div style="margin-top:12px;font-size:11px;color:#b45309">« Sans données » : km introuvables, véhicule non reconnu ou consommation non renseignée dans la fiche du véhicule.</div>';
+  h += '<div style="margin-top:10px;font-size:11px;color:var(--muted)">Km comptés uniquement client à bord. Facteurs ADEME : gazole 3,10 kg CO₂e/L · essence 2,70 kg/L · électricité 0,052 kg/kWh.</div>';
+  box.innerHTML = h;
+};
+window.co2BilanExporter = async function() {
+  if (typeof gxXlsx !== 'function' || !(await gxXlsx())) { showToast('Module Excel indisponible', true); return; }
+  const L = co2BilanCourses();
+  if (!L.length) { showToast('Aucun transfert sur cette période', true); return; }
+  const src = { gps: 'GPS', gps_trace: 'GPS', estime: 'Estimé' };
+  const det = L.map(function(c){
+    const r = co2Course(c) || {};
+    const j = String(c.datetime || '').slice(0, 10).split('-');
+    return {
+      'Date': j.length === 3 ? j[2] + '/' + j[1] + '/' + j[0] : '', 'Client': c.client || '', 'Réf.': c.ref || '',
+      'Départ': c.depart || c.lieu || '', 'Arrivée': c.arrivee || '', 'Chauffeur': c.chauffeur || '',
+      'Véhicule': r.v ? (((r.v.marque || '') + ' ' + (r.v.modele || '')).trim()) : '', 'Immatriculation': r.v ? (r.v.immat || '') : '',
+      'Motorisation': r.v ? co2MotoNom(r.v.motorisation).replace(/^[^A-Za-zÀ-ÿ]+/, '') : '',
+      'Km client à bord': r.km != null ? r.km : '', 'Source km': src[r.source] || '',
+      'kg CO₂e': r.kg != null ? r.kg : '', 'Calcul': r.methode || (r.manque ? 'manque : ' + r.manque : '')
+    };
+  });
+  const parCli = co2Agreger(L, function(c){ return (c.client || '').trim() || '—'; }).map(function(a){ return { 'Client': a.nom, 'Transferts': a.n, 'Km client à bord': Math.round(a.km * 10) / 10, 'kg CO₂e': Math.round(a.kg * 100) / 100, 'Sans données': a.sans }; });
+  const X = window.XLSX, wb = X.utils.book_new();
+  X.utils.book_append_sheet(wb, X.utils.json_to_sheet(parCli), 'Par client');
+  X.utils.book_append_sheet(wb, X.utils.json_to_sheet(det), 'Détail');
+  const B = window._co2Bilan || {};
+  const nom = 'Bilan_carbone_' + (B.vehId ? 'vehicule_12_mois' : ((document.getElementById('co2-mois') || {}).value || '')) + '.xlsx';
+  await gxEnregistrer(wb, nom);
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  📄 RAPPORT ANNUEL ENVIRONNEMENTAL (clients corporate : Deloitte…)
+//  Pour une année et un client (ou tous) : kilométrage client à bord par
+//  motorisation, puis impact carbone par motorisation. Imprimable en PDF et
+//  exportable en Excel.
+// ═══════════════════════════════════════════════════════════════════════════
+const CO2_ORDRE_MOTO = ['electrique', 'hybride_rech', 'hybride', 'diesel', 'essence', ''];
+function co2NomMotoRapport(m) { return m ? co2MotoNom(m) : '❔ Non renseignée'; }
+async function co2AttendreArchive() {
+  try { ensureArchiveLoaded(); } catch (e) {}
+  for (let i = 0; i < 60 && window._archiveCache === null; i++) await new Promise(function(r){ setTimeout(r, 250); });
+}
+function co2RapportCourses() {
+  const an = (document.getElementById('co2a-an') || {}).value || String(new Date().getFullYear());
+  const cli = (document.getElementById('co2a-cli') || {}).value || '';
+  return co2SourceCourses().filter(function(c){
+    return CO2_FINIS.indexOf(c.statut) >= 0 && c.type !== 'mad' && String(c.datetime || '').slice(0, 4) === an
+      && (!cli || (c.client || '').trim().toUpperCase() === cli.toUpperCase());
+  });
+}
+function co2RapportCalcul(L) {
+  const par = {}; let sansKm = 0;
+  L.forEach(function(c){
+    const r = co2Course(c);
+    if (!r) return;
+    if (r.km == null) { sansKm++; return; }
+    const m = (r.v && r.v.motorisation) || '';
+    const a = par[m] = par[m] || { moto: m, n: 0, km: 0, kgKm: 0, kg: 0 };
+    a.n++; a.km += r.km;
+    if (r.kg != null) { a.kg += r.kg; a.kgKm += r.km; }
+  });
+  const lignes = CO2_ORDRE_MOTO.filter(function(m){ return par[m]; }).map(function(m){ return par[m]; });
+  const tot = lignes.reduce(function(t, a){ t.n += a.n; t.km += a.km; t.kg += a.kg; t.kgKm += a.kgKm; return t; }, { n: 0, km: 0, kg: 0, kgKm: 0 });
+  return { lignes: lignes, tot: tot, sansKm: sansKm, total: L.length };
+}
+window.co2RapportAnnuel = async function() {
+  if (!SESSION || ['admin', 'dispatch'].indexOf(SESSION.role) < 0) { showToast('Accès réservé au dispatch', true); return; }
+  const old = document.getElementById('co2a-ov'); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'co2a-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:320;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:860px;max-width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">'
+    +   '<div style="font-size:16px;font-weight:800">📄 Rapport annuel environnemental</div>'
+    +   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +     '<select id="co2a-an" onchange="co2RapportDessiner(true)" style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:6px 8px;color:var(--white)"></select>'
+    +     '<select id="co2a-cli" onchange="co2RapportDessiner(true)" style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:6px 8px;color:var(--white);max-width:220px"><option value="">Tous les clients</option></select>'
+    +     '<button class="btn btn-s btn-sm" onclick="co2RapportImprimer()"><i class="fas fa-file-pdf" style="color:#dc2626"></i> PDF</button>'
+    +     '<button class="btn btn-s btn-sm" onclick="co2RapportExcel()"><i class="fas fa-file-excel" style="color:#16a34a"></i> Excel</button>'
+    +     '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'co2a-ov\').remove()" aria-label="Fermer"><i class="fas fa-times"></i></button>'
+    +   '</div></div>'
+    + '<div id="co2a-corps" style="padding:16px 18px;overflow:auto">Chargement de l\'historique…</div></div>';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  await co2AttendreArchive();
+  const toutes = co2SourceCourses().filter(function(c){ return CO2_FINIS.indexOf(c.statut) >= 0; });
+  const ans = Array.from(new Set(toutes.map(function(c){ return String(c.datetime || '').slice(0, 4); }).filter(function(a){ return /^\d{4}$/.test(a); }))).sort().reverse();
+  const anCour = String(new Date().getFullYear());
+  if (ans.indexOf(anCour) < 0) ans.unshift(anCour);
+  const sa = document.getElementById('co2a-an'); if (!sa) return;
+  sa.innerHTML = ans.map(function(a){ return '<option value="' + a + '">' + a + '</option>'; }).join('');
+  const vusCli = {};
+  toutes.forEach(function(c){ const n = (c.client || '').trim(); if (n && !vusCli[n.toUpperCase()]) vusCli[n.toUpperCase()] = n; });
+  const clis = Object.keys(vusCli).map(function(k){ return vusCli[k]; }).sort(function(a, b){ return a.localeCompare(b, 'fr'); });
+  document.getElementById('co2a-cli').innerHTML = '<option value="">Tous les clients</option>' + clis.map(function(c){ return '<option value="' + E(c) + '">' + E(c) + '</option>'; }).join('');
+  co2RapportDessiner(true);
+};
+window.co2RapportDessiner = async function(completer) {
+  const box = document.getElementById('co2a-corps'); if (!box) return;
+  const L = co2RapportCourses();
+  const R = co2RapportCalcul(L);
+  const an = (document.getElementById('co2a-an') || {}).value, cli = (document.getElementById('co2a-cli') || {}).value;
+  const th = 'text-align:left;padding:8px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)';
+  const td = 'padding:8px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap';
+  const kmF = function(x){ return Math.round(x).toLocaleString('fr-FR') + ' km'; };
+  const pct = function(x){ return R.tot.km ? String(Math.round(x / R.tot.km * 1000) / 10).replace('.', ',') + '\u00a0%' : '—'; };
+  let h = '<div style="font-size:13px;color:var(--muted);margin-bottom:10px">' + E(cli || 'Tous les clients') + ' · année ' + E(an) + ' · km comptés client à bord uniquement</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:6px">'
+    + [['Transferts', String(R.total)], ['Km client à bord', kmF(R.tot.km)], ['CO₂e total', co2Fmt(R.tot.kg)], ['Moyenne', R.tot.kgKm ? Math.round(R.tot.kg / R.tot.kgKm * 1000) + ' g CO₂e/km' : '—']]
+      .map(function(x){ return '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--muted)">' + x[0] + '</div><div style="font-size:18px;font-weight:800;margin-top:2px">' + x[1] + '</div></div>'; }).join('')
+    + '</div>';
+  if (!R.lignes.length) h += '<div style="padding:20px;text-align:center;color:var(--muted)">Aucun transfert terminé avec des kilomètres sur cette période.</div>';
+  else {
+    h += '<div style="font-size:14px;font-weight:800;margin:16px 0 6px">Kilométrage par motorisation</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th + '">Motorisation</th><th style="' + th + ';text-align:right">Kilomètres</th><th style="' + th + ';text-align:right">Part</th><th style="' + th + ';text-align:right">Transferts</th></tr></thead><tbody>'
+      + R.lignes.map(function(a){ return '<tr><td style="' + td + '">' + co2NomMotoRapport(a.moto) + '</td><td style="' + td + ';text-align:right;font-weight:700">' + kmF(a.km) + '</td><td style="' + td + ';text-align:right">' + pct(a.km) + '</td><td style="' + td + ';text-align:right">' + a.n + '</td></tr>'; }).join('')
+      + '<tr><td style="' + td + ';font-weight:800">Total</td><td style="' + td + ';text-align:right;font-weight:800">' + kmF(R.tot.km) + '</td><td style="' + td + ';text-align:right">100 %</td><td style="' + td + ';text-align:right">' + R.tot.n + '</td></tr></tbody></table></div>';
+    h += '<div style="font-size:14px;font-weight:800;margin:18px 0 6px">Impact carbone</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th + '">Motorisation</th><th style="' + th + ';text-align:right">Km</th><th style="' + th + ';text-align:right">CO₂e</th><th style="' + th + ';text-align:right">g CO₂e/km</th></tr></thead><tbody>'
+      + R.lignes.map(function(a){ return '<tr><td style="' + td + '">' + co2NomMotoRapport(a.moto) + '</td><td style="' + td + ';text-align:right">' + Math.round(a.km).toLocaleString('fr-FR') + '</td><td style="' + td + ';text-align:right;font-weight:700;color:#16a34a">' + (a.kgKm ? co2Fmt(a.kg) : '—') + '</td><td style="' + td + ';text-align:right">' + (a.kgKm ? Math.round(a.kg / a.kgKm * 1000) : '—') + '</td></tr>'; }).join('')
+      + '<tr><td style="' + td + ';font-weight:800">Total</td><td style="' + td + ';text-align:right;font-weight:800">' + Math.round(R.tot.km).toLocaleString('fr-FR') + '</td><td style="' + td + ';text-align:right;font-weight:800;color:#16a34a">' + co2Fmt(R.tot.kg) + '</td><td style="' + td + ';text-align:right">' + (R.tot.kgKm ? Math.round(R.tot.kg / R.tot.kgKm * 1000) : '—') + '</td></tr></tbody></table></div>';
+  }
+  const nonRens = R.lignes.find(function(a){ return !a.moto; });
+  if (nonRens || R.sansKm || R.tot.km - R.tot.kgKm > 0.5) h += '<div style="margin-top:12px;font-size:12px;color:#b45309;line-height:1.5">'
+    + (nonRens ? '❔ « Non renseignée » : ' + kmF(nonRens.km) + ' sur des véhicules sans motorisation dans Gestion des véhicules (ou véhicule non reconnu). Complétez les fiches véhicules pour les intégrer.<br>' : '')
+    + ((R.tot.km - R.tot.kgKm - (nonRens ? nonRens.km : 0)) > 0.5 ? kmF(R.tot.km - R.tot.kgKm - (nonRens ? nonRens.km : 0)) + ' sur des véhicules sans consommation renseignée : CO₂ non calculé pour ces km.<br>' : '')
+    + (R.sansKm ? R.sansKm + ' transfert(s) sans kilomètres connus.' : '') + '</div>';
+  h += '<div style="margin-top:10px;font-size:11px;color:var(--muted);line-height:1.5">Méthode : km parcourus client à bord (GPS du chauffeur ; à défaut distance estimée départ → arrivée) × consommation du véhicule × facteurs d\'émission ADEME (gazole 3,10 kg CO₂e/L, essence 2,70 kg CO₂e/L, électricité 0,052 kg CO₂e/kWh, combustion + amont).</div>';
+  h += '<div id="co2a-etat" style="margin-top:8px;font-size:11px;color:var(--muted)"></div>';
+  box.innerHTML = h;
+  window._co2Rapport = { an: an, cli: cli, R: R };
+  if (completer) {
+    const manquants = L.filter(function(c){ return !co2KmCourse(c) && !c._co2Essai; }).length;
+    if (manquants) {
+      const et = document.getElementById('co2a-etat'); if (et) et.textContent = 'Recherche des kilomètres de ' + manquants + ' transfert(s)…';
+      try { const n = await co2CompleterKm(L, 300); if (n && document.getElementById('co2a-corps')) co2RapportDessiner(false); else if (et) et.textContent = ''; } catch (e) {}
+    }
+  }
+};
+window.co2RapportExcel = async function() {
+  const S = window._co2Rapport; if (!S || !S.R.lignes.length) { showToast('Aucune donnée à exporter', true); return; }
+  if (!(await gxXlsx())) return;
+  const X = window.XLSX, wb = X.utils.book_new();
+  const net = function(m){ return co2NomMotoRapport(m).replace(/^[^A-Za-zÀ-ÿ]+/, ''); };
+  const t1 = S.R.lignes.map(function(a){ return { 'Motorisation': net(a.moto), 'Kilomètres': Math.round(a.km), 'Part (%)': S.R.tot.km ? Math.round(a.km / S.R.tot.km * 1000) / 10 : 0, 'Transferts': a.n }; });
+  t1.push({ 'Motorisation': 'Total', 'Kilomètres': Math.round(S.R.tot.km), 'Part (%)': 100, 'Transferts': S.R.tot.n });
+  const t2 = S.R.lignes.map(function(a){ return { 'Motorisation': net(a.moto), 'Km': Math.round(a.km), 'kg CO₂e': a.kgKm ? Math.round(a.kg * 10) / 10 : '', 'g CO₂e/km': a.kgKm ? Math.round(a.kg / a.kgKm * 1000) : '' }; });
+  t2.push({ 'Motorisation': 'Total', 'Km': Math.round(S.R.tot.km), 'kg CO₂e': Math.round(S.R.tot.kg * 10) / 10, 'g CO₂e/km': S.R.tot.kgKm ? Math.round(S.R.tot.kg / S.R.tot.kgKm * 1000) : '' });
+  X.utils.book_append_sheet(wb, X.utils.json_to_sheet(t1), 'Km par motorisation');
+  X.utils.book_append_sheet(wb, X.utils.json_to_sheet(t2), 'Impact carbone');
+  X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([
+    ['Rapport annuel environnemental — MOBILEA'], ['Client', S.cli || 'Tous les clients'], ['Année', S.an], [],
+    ['Méthode', 'Km parcourus client à bord (GPS du chauffeur ; à défaut distance estimée départ → arrivée) × consommation du véhicule × facteurs ADEME'],
+    ['Facteurs', 'Gazole 3,10 kg CO₂e/L · essence 2,70 kg CO₂e/L · électricité 0,052 kg CO₂e/kWh (combustion + amont)']
+  ]), 'Méthode');
+  await gxEnregistrer(wb, 'Rapport_environnemental_' + (S.cli ? S.cli.replace(/[^a-z0-9]+/gi, '_') + '_' : '') + S.an + '.xlsx');
+};
+window.co2RapportImprimer = function() {
+  const S = window._co2Rapport; if (!S || !S.R.lignes.length) { showToast('Aucune donnée à imprimer', true); return; }
+  const R = S.R;
+  const ligne1 = R.lignes.map(function(a){ return '<tr><td>' + co2NomMotoRapport(a.moto) + '</td><td class="r">' + Math.round(a.km).toLocaleString('fr-FR') + ' km</td><td class="r">' + (R.tot.km ? (Math.round(a.km / R.tot.km * 1000) / 10).toString().replace('.', ',') : 0) + ' %</td></tr>'; }).join('');
+  const ligne2 = R.lignes.map(function(a){ return '<tr><td>' + co2NomMotoRapport(a.moto) + '</td><td class="r">' + Math.round(a.km).toLocaleString('fr-FR') + '</td><td class="r"><b>' + (a.kgKm ? co2Fmt(a.kg) : '—') + '</b></td><td class="r">' + (a.kgKm ? Math.round(a.kg / a.kgKm * 1000) : '—') + '</td></tr>'; }).join('');
+  openPrintableDoc('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Rapport environnemental ' + E(S.an) + '</title><style>'
+    + 'body{font-family:Helvetica,Arial,sans-serif;color:#111;padding:36px;max-width:780px;margin:auto;font-size:13px;line-height:1.5}'
+    + '.h{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #16a34a;padding-bottom:14px;margin-bottom:20px}'
+    + '.co{font-size:24px;font-weight:900;color:#c9a84c;letter-spacing:2px}.t{font-size:20px;font-weight:800;text-align:right}.s{color:#555;font-size:12px}'
+    + '.k{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}.k div{background:#f0fdf4;border-radius:8px;padding:10px}.k b{display:block;font-size:17px;margin-top:2px}'
+    + 'h2{font-size:15px;margin:22px 0 8px}table{width:100%;border-collapse:collapse}th{background:#14532d;color:#fff;text-align:left;padding:8px 10px;font-size:11px}td{padding:8px 10px;border-bottom:1px solid #e5e7eb}.r{text-align:right}'
+    + 'tfoot td{font-weight:800;border-top:2px solid #14532d}.m{margin-top:24px;font-size:10.5px;color:#555;background:#f8fafc;border-radius:6px;padding:10px 12px}@media print{body{padding:14mm}}</style></head><body>'
+    + '<div class="h"><div><div class="co">MOBILEA</div><div class="s">MOBILEA SARL — SIREN 514 879 030<br>Bailly-Romainvilliers 77700</div></div>'
+    + '<div><div class="t">Rapport annuel environnemental</div><div class="s" style="text-align:right">' + E(S.cli || 'Tous les clients') + ' · Année ' + E(S.an) + '<br>Édité le ' + new Date().toLocaleDateString('fr-FR') + '</div></div></div>'
+    + '<div class="k"><div>Transferts<b>' + R.total + '</b></div><div>Km client à bord<b>' + Math.round(R.tot.km).toLocaleString('fr-FR') + '</b></div><div>CO₂e total<b>' + co2Fmt(R.tot.kg) + '</b></div><div>Moyenne<b>' + (R.tot.kgKm ? Math.round(R.tot.kg / R.tot.kgKm * 1000) + ' g/km' : '—') + '</b></div></div>'
+    + '<h2>Kilométrage par motorisation</h2><table><thead><tr><th>Motorisation</th><th class="r">Kilomètres</th><th class="r">Part</th></tr></thead><tbody>' + ligne1 + '</tbody><tfoot><tr><td>Total</td><td class="r">' + Math.round(R.tot.km).toLocaleString('fr-FR') + ' km</td><td class="r">100 %</td></tr></tfoot></table>'
+    + '<h2>Impact carbone</h2><table><thead><tr><th>Motorisation</th><th class="r">Km</th><th class="r">CO₂e</th><th class="r">g CO₂e/km</th></tr></thead><tbody>' + ligne2 + '</tbody><tfoot><tr><td>Total</td><td class="r">' + Math.round(R.tot.km).toLocaleString('fr-FR') + '</td><td class="r">' + co2Fmt(R.tot.kg) + '</td><td class="r">' + (R.tot.kgKm ? Math.round(R.tot.kg / R.tot.kgKm * 1000) : '—') + '</td></tr></tfoot></table>'
+    + '<div class="m"><b>Méthode.</b> Seuls les kilomètres parcourus avec le client à bord sont comptés (GPS du chauffeur entre la prise en charge et la dépose ; à défaut, distance estimée départ → arrivée). CO₂e = km × consommation réelle du véhicule × facteur d\'émission ADEME (Base Empreinte, combustion + amont) : gazole 3,10 kg CO₂e/L, essence 2,70 kg CO₂e/L, électricité France 0,052 kg CO₂e/kWh.'
+    + (R.sansKm ? ' ' + R.sansKm + ' transfert(s) sans kilomètres connus ne sont pas inclus.' : '') + '</div>'
+    + '</body></html>');
+};
+
+// Récap du mois en cours pour la carte d'un véhicule.
+function co2ResumeVehicule(v) {
+  const m = new Date().toISOString().slice(0, 7);
+  const L = (D.courses || []).filter(function(c){ return CO2_FINIS.indexOf(c.statut) >= 0 && String(c.datetime || '').slice(0, 7) === m && co2VehiculeCourse(c) === v; });
+  let km = 0, kg = 0, n = 0;
+  L.forEach(function(c){ const r = co2Course(c); if (r && r.kg != null) { km += r.km; kg += r.kg; n++; } });
+  return { n: L.length, ok: n, km: km, kg: kg };
+}
+window.co2ResumeVehicule = co2ResumeVehicule;
+
 function renderVehicules() {
   const g=document.getElementById('cg-vh');if(!g)return;
+  // Barre « Bilan carbone » au-dessus de la liste (ajoutée une seule fois).
+  try {
+    if(!document.getElementById('co2-barre') && g.parentNode && ['admin','dispatch'].includes(SESSION.role)) {
+      const b=document.createElement('div'); b.id='co2-barre';
+      b.style.cssText='display:flex;justify-content:flex-end;margin-bottom:10px';
+      b.style.gap='8px'; b.style.flexWrap='wrap';
+      b.innerHTML='<button class="btn btn-s btn-sm" onclick="co2BilanOuvrir()" style="border-color:rgba(34,197,94,0.5)">🌱 Bilan carbone des transferts</button>'
+        +'<button class="btn btn-s btn-sm" onclick="co2RapportAnnuel()" style="border-color:rgba(34,197,94,0.5)">📄 Rapport annuel environnemental</button>';
+      g.parentNode.insertBefore(b,g);
+    }
+  } catch(e){}
   if(!D.vehicules.length){g.innerHTML=`<div class="t-empty" style="grid-column:1/-1"><i class="fas fa-car"></i><p>Aucun véhicule</p></div>`;return;}
   g.innerHTML=D.vehicules.map(v=>{
     const age = v.annee ? new Date().getFullYear() - parseInt(v.annee) : null;
@@ -8675,9 +9915,15 @@ function renderVehicules() {
         <div style="background:var(--dark);border-radius:var(--r-xs);padding:8px;border:1px solid var(--border);text-align:center"><div class="text-gold fw7 ff-syne" style="font-size:14px">${v.km?parseInt(v.km).toLocaleString('fr-FR'):'-'}</div><div style="font-size:9px;color:var(--muted)">Km</div></div>
       </div>
       <div style="font-size:11px;color:var(--muted2);margin-bottom:10px">👤 ${v.chauffeur||'Non assigné'}</div>
+      ${(()=>{ const r=co2ResumeVehicule(v); const mo=co2MotoNom(v.motorisation); const conso=[v.consoL?String(v.consoL).replace('.',',')+' L/100':'', v.consoKwh?String(v.consoKwh).replace('.',',')+' kWh/100':''].filter(Boolean).join(' + ');
+        return `<div style="font-size:11px;margin-bottom:10px;padding:7px 9px;border-radius:var(--r-xs);background:rgba(34,197,94,0.07);border:1px solid rgba(34,197,94,0.25)">
+          <div>${mo?E(mo):'<span style="color:var(--orange)">Motorisation à renseigner</span>'}${conso?' · '+E(conso):''}</div>
+          <div style="margin-top:3px;color:var(--muted2)">🌱 Ce mois : ${Math.round(r.km).toLocaleString('fr-FR')} km à bord · <b style="color:#16a34a">${co2Fmt(r.kg)}</b> CO₂e${r.n?` · ${r.n} transfert${r.n>1?'s':''}${r.n>r.ok?` (${r.n-r.ok} sans données)`:''}`:''}</div>
+        </div>`; })()}
       <div class="ic-foot">
         <span class="bdg bdg-muted">${{van:'🚐 Van',sprinter:'🚌 Sprinter',bus:'🚍 Bus',limousine:'🥂 Limousine'}[v.type]||'🚗 Berline'}</span>
         <button class="btn btn-ghost btn-xs" onclick="histoVehicule('${v._id}')" title="Qui a utilisé ce véhicule" aria-label="Qui a utilisé ce véhicule"><i class="fas fa-history" aria-hidden="true"></i></button>
+        <button class="btn btn-ghost btn-xs" onclick="co2BilanOuvrir('${v._id}')" title="Bilan carbone sur 12 mois" aria-label="Bilan carbone">🌱</button>
         <button class="btn btn-s btn-xs" onclick="openVehiculeModal('${v._id}')" aria-label="Modifier"><i class="fas fa-edit" aria-hidden="true"></i></button>
         <button class="btn btn-d btn-xs" onclick="delVehicule('${v._id}')" aria-label="Supprimer"><i class="fas fa-trash" aria-hidden="true"></i></button>
       </div>
@@ -8708,6 +9954,7 @@ window.openVehiculeModal = function(id) {
     document.getElementById('mo-vh-title').textContent='Ajouter véhicule';
     document.getElementById('vh-save-lbl').textContent='Ajouter';
   }
+  co2InjecterModalAdmin(id);
   openMo('vehicule');
 };
 window.openVehiculeModal=window.openVehiculeModal;
@@ -8718,6 +9965,7 @@ window.saveVehicule = async function() {
   if(!marque){showToast('Marque obligatoire',true);return;}
   const editId = document.getElementById('vh-edit-id').value;
   const data = {marque,modele:sanitize(document.getElementById('vh-modele').value,50),immat:sanitize(document.getElementById('vh-immat').value,20),annee:document.getElementById('vh-annee').value,type:document.getElementById('vh-type').value,km:document.getElementById('vh-km').value,chauffeur:document.getElementById('vh-ch').value,societe:document.getElementById('vh-societe')?.value||'',updatedAt:new Date().toISOString()};
+  Object.assign(data, co2LireChamps('vh'));
   closeMo('vehicule');
   if(editId){await fbUpdate('vehicules',editId,data);showToast('Véhicule mis à jour ✓');}
   else{data.statut='actif';data.createdAt=new Date().toISOString();await fbPush('vehicules',data);showToast('Véhicule ajouté ✓');}
@@ -9805,6 +11053,7 @@ function buildInvoiceData() {
       ref: c.ref||'',
       waitFee,
       waitMin: w ? w.waitMin : 0,
+      co2: (function(){ try { const r = co2Course(c); return r && r.kg != null ? r : null; } catch(e){ return null; } })(),
       ht: htv,
       tva: ttc-htv,
       ttc
@@ -9813,8 +11062,10 @@ function buildInvoiceData() {
   const totalHT = ht(totalTTC);
   const totalTVA = totalTTC - totalHT;
   const numFacture = `BL-${dateStart.replace(/-/g,'')}-${(clientName.replace(/[^A-Z0-9]/gi,'').slice(0,4)||'CLI').toUpperCase()}`;
+  const _co2L = lines.filter(l => l.co2);
+  const co2Total = { kg: _co2L.reduce((a,l)=>a+l.co2.kg,0), km: _co2L.reduce((a,l)=>a+l.co2.km,0), n: _co2L.length, total: lines.length };
 
-  return { clientName, clientObj, dateStart, dateEnd, periodeLabel, moisLabel:periodeLabel, courses, lines, totalHT, totalTVA, totalTTC, numFacture };
+  return { clientName, clientObj, dateStart, dateEnd, periodeLabel, moisLabel:periodeLabel, courses, lines, totalHT, totalTVA, totalTTC, numFacture, co2Total };
 }
 
 window.previewInvoice = function() {
@@ -9865,6 +11116,7 @@ window.previewInvoice = function() {
           <div style="display:flex;justify-content:space-between;padding:8px 0;border-top:2px solid #c9a84c;font-size:15px;font-weight:800;color:#c9a84c"><span>Total TTC</span><span>${inv.totalTTC.toFixed(2)}€</span></div>
         </div>
       </div>
+      ${inv.co2Total && inv.co2Total.n ? `<div style="font-size:12px;color:#16a34a;margin-top:10px;text-align:center">🌱 Impact carbone : <b>${co2Fmt(inv.co2Total.kg)} CO₂e</b> · ${Math.round(inv.co2Total.km).toLocaleString('fr-FR')} km client à bord${inv.co2Total.n < inv.co2Total.total ? ` (${inv.co2Total.n}/${inv.co2Total.total} transferts calculés)` : ''}</div>` : ''}
       <div style="font-size:13px;color:#666;margin-top:12px;text-align:center">${inv.courses.length} course(s) • ${inv.moisLabel}</div>
     </div>`;
   box.scrollIntoView({behavior:'smooth', block:'nearest'});
@@ -10015,7 +11267,7 @@ window.generateInvoicePDF = function() {
       <tbody>
         ${inv.lines.map(l=>`<tr>
           <td>${l.date}</td>
-          <td>${E(l.trajet)}${l.waitFee>0?`<br><span style="font-size:9px;color:#d97706">+ Attente ${fmtWaitDuration(l.waitMin)} : ${l.waitFee}€</span>`:''}</td>
+          <td>${E(l.trajet)}${l.waitFee>0?`<br><span style="font-size:9px;color:#d97706">+ Attente ${fmtWaitDuration(l.waitMin)} : ${l.waitFee}€</span>`:''}${l.co2?`<br><span style="font-size:9px;color:#16a34a">🌱 ${co2Fmt(l.co2.kg)} CO₂e · ${String(l.co2.km).replace('.',',')} km</span>`:''}</td>
           <td>${E(l.chauffeur)}</td>
           <td style="font-size:9px;color:#999">${E(l.ref)}</td>
           <td style="text-align:right">${l.ht.toFixed(2)}€</td>
@@ -10029,6 +11281,7 @@ window.generateInvoicePDF = function() {
       <div class="totline" style="color:#666"><span>TVA 10%</span><span>${inv.totalTVA.toFixed(2)}€</span></div>
       <div class="totfinal"><span>Total TTC</span><span>${inv.totalTTC.toFixed(2)}€</span></div>
     </div></div>
+    ${inv.co2Total && inv.co2Total.n ? `<div style="margin-top:18px;padding:10px 14px;border-left:4px solid #16a34a;background:#f0fdf4;border-radius:4px;font-size:11px;color:#14532d">🌱 <b>Impact carbone de la période : ${co2Fmt(inv.co2Total.kg)} CO₂e</b> pour ${Math.round(inv.co2Total.km).toLocaleString('fr-FR')} km parcourus client à bord${inv.co2Total.n < inv.co2Total.total ? ` (${inv.co2Total.n} transferts sur ${inv.co2Total.total} calculés)` : ''}. Calcul : consommation réelle des véhicules × facteurs ADEME.</div>` : ''}
     <div class="foot">
       ${inv.courses.length} course(s) facturée(s) pour la période ${inv.moisLabel}.<br>
       MOBILEA SARL au capital social — SIREN 514 879 030 — Bailly-Romainvilliers 77700.<br>
@@ -10208,6 +11461,7 @@ window.printFac = function(id, num) {
     <div class="tr"><span>TVA 10%</span><span>${tva.toFixed(2)} €</span></div>
     <div class="tr total"><span>TOTAL TTC</span><span>${ttc.toFixed(2)} €</span></div>
   </div>
+  ${(()=>{ try { const r = co2Course(c); return r && r.kg != null ? `<div style="margin-top:14px;padding:8px 12px;border-left:4px solid #16a34a;background:#f0fdf4;border-radius:4px;font-size:11px;color:#14532d">🌱 Impact carbone de ce transfert : <b>${co2Fmt(r.kg)} CO₂e</b> pour ${String(r.km).replace('.',',')} km client à bord (facteurs ADEME).</div>` : ''; } catch(e){ return ''; } })()}
   <div class="men">TVA applicable selon l'article 259 A du CGI — Transport de personnes (taux 10%).<br>
   Pénalités de retard au taux légal + indemnité forfaitaire 40€ (art. L.441-6 Code de commerce). Pas d'escompte pour paiement anticipé.</div>
   <div class="footer">${SOC.nom} SASU — SIRET ${SOC.siret}<br>${SOC.adresse}, ${SOC.cp} ${SOC.ville} — ${SOC.site}</div>
@@ -11454,6 +12708,7 @@ async function renderGerantVehicules() {
         <div>
           <div style="font-size:14px;font-weight:700;color:var(--white)">${E(v.marque||'')} ${E(v.modele||'')}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px">${v.immat?'🔖 '+E(v.immat):''}${v.type?' · '+E(v.type):''}${v.annee?' · '+E(v.annee):''}</div>
+          ${v.motorisation?`<div style="font-size:11px;color:#16a34a;margin-top:2px">🌱 ${E(co2MotoNom(v.motorisation))}${v.consoL?' · '+E(String(v.consoL).replace('.',','))+' L/100':''}${v.consoKwh?' · '+E(String(v.consoKwh).replace('.',','))+' kWh/100':''}</div>`:''}
           ${(_gvOpt && (v.societe||'').trim() === g.socNom) ? `<div style="display:flex;gap:6px;margin-top:8px"><button class="btn btn-ghost btn-xs" onclick="gvehEditer('${v._id}')" aria-label="Modifier"><i class="fas fa-edit" aria-hidden="true"></i> Modifier</button><button class="btn btn-ghost btn-xs" style="color:#dc2626" onclick="gvehSupprimer('${v._id}')" aria-label="Supprimer"><i class="fas fa-trash" aria-hidden="true"></i></button></div>` : ''}
           ${util?`<div style="font-size:11px;color:#3b82f6;margin-top:4px">🚐 Aujourd'hui : ${E(util.prenom+(util.nom?' '+util.nom:''))}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:4px">Non attribué</div>'}
         </div>
@@ -13652,6 +14907,8 @@ async function verifierOffresPrioritairesExpirees() {
 window.accepterOffreOuverte = async function(id) {
   const c = D.courses.find(x=>x._id===id);
   if(!c) return;
+  if(!(await docsGarde((D.chauffeurs||[]).find(x=>x._id===SESSION.chauffeurId), { moi:true }))) return;
+  if(!(await vjGarde())) return;
   if(!confirm(`Accepter ce transfert ?\n\n📍 ${(c.depart||c.lieu||'')} → ${(c.arrivee||'')}\n📅 ${c.datetime ? new Date(c.datetime).toLocaleString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : ''}\n\nVous serez responsable de cette course.`)) return;
   try {
     // Relire l'état frais depuis Firebase (anti-collision entre chauffeurs)
@@ -13737,6 +14994,9 @@ window.driverNextStep = async function(id, nextStatut) {
 
   // Le statut "Sur place" ne nécessite plus de vérification de localisation :
   // le chauffeur peut se déclarer sur place librement, sans contrôle de distance.
+
+  // Véhicule du jour obligatoire pour accepter / démarrer une mission.
+  if((nextStatut === 'acceptee' || nextStatut === 'en_route') && !(await vjGarde())) return;
 
   await driverUpd(id, nextStatut, null);
 
@@ -15325,6 +16585,7 @@ window.assignAgendaGroupe = async function() {
   const drv = document.getElementById('agenda-drv')?.value;
   if(!drv){showToast('Sélectionner un chauffeur',true);return;}
   if(!ids.length){showToast('Sélectionner au moins une course',true);return;}
+  if(!(await docsGarde(drv))) return;
   showToast(`Assignation de ${ids.length} course(s)...`);
   for(const id of ids) {
     const _uidDrv = chauffeurUidByName(drv);
@@ -15644,6 +16905,9 @@ window.doClientLogin = async function() {
     type: found.type || 'particulier',
     source: found.source || '',
     profileId: found._id, // ID du document Firestore pour les mises à jour
+    // Agent sécurité d'un client : consultation seule des transferts de SON site.
+    isSecurite: found.type === 'securite',
+    siteId: found.type === 'securite' ? (found.siteId || null) : null,
   };
 
   localStorage.setItem(ADMIN_KEY, JSON.stringify(SESSION));
@@ -16029,6 +17293,7 @@ window.confirmClientCancel = async function(courseId) {
 };
 
 function renderClientPortal() {
+  try { xtBoutonClient(); } catch(e) {}
   if(SESSION.role!=='client') return;
   const societe = SESSION.societe;
   const cpName=document.getElementById('cp-company-name');const cpUser=document.getElementById('cp-user-name');
@@ -18807,6 +20072,7 @@ window.dispatchToNearest = async function(courseId, departLat, departLng) {
   // Chauffeurs disponibles avec GPS actif et véhicule compatible
   const candidats = allChauffeurs.filter(ch=>{
     if(ch.statut==='indisponible' || ch.archived) return false;
+    if(docsBloque(ch)) return false;
     if(!ch.gps||!ch.gpsActive) return false;
     const chVeh = ch.vehicule||'berline';
     if(veh==='van'&&chVeh==='berline') return false;
@@ -18883,6 +20149,7 @@ async function buildOfferCandidates(course, departLat, departLng) {
   const need = rank[veh] || 1;
   let candidats = allChauffeurs.filter(ch=>{
     if(ch.statut==='indisponible' || ch.archived) return false;
+    if(docsBloque(ch)) return false;
     if(!ch.gps||!ch.gpsActive) return false;
     const chVeh = ch.vehicule||'berline';
     const chRank = rank[chVeh] || 1;
@@ -19059,6 +20326,8 @@ async function checkExpiredOffers(courses) {
 
 // Le chauffeur accepte l'offre qui lui est proposée
 window.acceptOffer = async function(courseId) {
+  if(!(await docsGarde((D.chauffeurs||[]).find(x=>x._id===SESSION.chauffeurId), { moi:true }))) return;
+  if(!(await vjGarde())) return;
   const allCourses = await fbGet('courses');
   const course = allCourses.find(c=>c._id===courseId);
   if(!course || course.statut !== 'offre_en_cours' || course.offerChauffeurId !== SESSION.chauffeurId) {
@@ -20138,6 +21407,7 @@ function _ccChauffeursVisibles() {
 window.populateCcHistDrivers = function(){
   const sel = document.getElementById('cc-hist-driver');
   if(!sel) return;
+  try { vrBouton(); } catch(e) {}
 
   // Alimenter le select caché (pour compat avec voirTraceChauffeur qui lit sel.value)
   // ★ Pour un gérant : uniquement les chauffeurs de sa société.
@@ -20230,7 +21500,7 @@ function htNettoyer(data, dateStr) {
     if (isNaN(t) && /^\d{6}$/.test(k)) t = new Date(dateStr + 'T' + k.slice(0,2) + ':' + k.slice(2,4) + ':' + k.slice(4,6)).getTime();
     if (isNaN(t)) return;
     if (p.a != null && p.a > 150) return;                       // GPS trop imprécis
-    brut.push({ lat:p.lat, lng:p.lng, t:t, a:p.a, s:p.s, c:p.c || '', st:p.st || '', i:p.i ? 1 : 0 });
+    brut.push({ lat:p.lat, lng:p.lng, t:t, a:p.a, s:p.s, c:p.c || '', st:p.st || '', i:p.i ? 1 : 0, h:p.h, v:p.v || '' });
   });
   brut.sort(function(a,b){ return a.t - b.t; });
   const out = [];
@@ -20291,6 +21561,389 @@ window.effacerTraceChauffeur = function(){
   const info = document.getElementById('cc-hist-info'); if (info) info.textContent = '';
   const pn = document.getElementById('cc-hist-panel'); if (pn) pn.remove();
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  📊 RAPPORT VITESSE PAR CHAUFFEUR — à partir de l'historique GPS (gps_trails)
+//  Pour chaque chauffeur : km parcourus, vitesse moyenne (en mouvement),
+//  vitesse maximale enregistrée par le GPS, durée en mouvement, trajets
+//  (heure, position, vitesse). Filtres jour / semaine / mois / chauffeur /
+//  véhicule. Volontairement SANS comptage de « dépassements » : le GPS ne
+//  connaît pas la limitation de la route, et la CNIL exclut l'usage de la
+//  géolocalisation pour contrôler le respect des limitations de vitesse.
+//  Accès : admin, dispatch, gérant (option « Suivi », SES chauffeurs).
+//  Les résumés des journées passées sont gardés sur l'appareil (IndexedDB,
+//  90 jours) pour ne pas retélécharger l'historique à chaque ouverture.
+// ═══════════════════════════════════════════════════════════════════════════
+const VR = { gen: 0, data: {}, noms: {}, periode: null, chargement: false };
+const VR_CACHE_V = 1;
+function vrP2(n) { return String(n).padStart(2, '0'); }
+function vrJourCle(d) { return '' + d.getFullYear() + vrP2(d.getMonth() + 1) + vrP2(d.getDate()); }
+function vrJourIso(k) { return k.slice(0, 4) + '-' + k.slice(4, 6) + '-' + k.slice(6, 8); }
+function vrJourFr(k) { return k.slice(6, 8) + '/' + k.slice(4, 6) + '/' + k.slice(0, 4); }
+function vrAcces() {
+  if (!SESSION) return false;
+  if (SESSION.role === 'admin' || SESSION.role === 'dispatch') return true;
+  try { return gOpt('suivi'); } catch (e) { return false; }
+}
+// Jours de la période (jour, semaine lundi → dimanche, mois), jamais après aujourd'hui.
+function vrPeriode(type, refIso) {
+  const ref = new Date((refIso || new Date().toISOString().slice(0, 10)) + 'T12:00:00');
+  let d0 = new Date(ref), d1 = new Date(ref), label = '';
+  if (type === 'semaine') {
+    const dec = (ref.getDay() + 6) % 7; d0.setDate(ref.getDate() - dec); d1 = new Date(d0); d1.setDate(d0.getDate() + 6);
+    label = 'Semaine du ' + d0.toLocaleDateString('fr-FR') + ' au ' + d1.toLocaleDateString('fr-FR');
+  } else if (type === 'mois') {
+    d0 = new Date(ref.getFullYear(), ref.getMonth(), 1, 12); d1 = new Date(ref.getFullYear(), ref.getMonth() + 1, 0, 12);
+    label = ref.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+    label = label.charAt(0).toUpperCase() + label.slice(1);
+  } else label = ref.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const auj = vrJourCle(new Date()), jours = [];
+  for (const d = new Date(d0); d <= d1; d.setDate(d.getDate() + 1)) { const k = vrJourCle(d); if (k <= auj) jours.push(k); }
+  return { type: type, ref: refIso, jours: jours, label: label };
+}
+// Cap (0 = Nord, 90 = Est) entre deux points, et son nom.
+function vrCap(a, b) {
+  const r = Math.PI / 180, y = Math.sin((b.lng - a.lng) * r) * Math.cos(b.lat * r);
+  const x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lng - a.lng) * r);
+  return Math.round((Math.atan2(y, x) / r + 360) % 360);
+}
+function vrDir(deg) { return deg == null ? '' : ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'][Math.round(deg / 45) % 8]; }
+function vrDuree(ms) { return htDur((ms || 0) / 60000); }
+function vrPos(lat, lng) { return (Math.round(lat * 1e4) / 1e4) + ', ' + (Math.round(lng * 1e4) / 1e4); }
+// Véhicule d'un point : immatriculation enregistrée avec le point, sinon le véhicule attribué au chauffeur.
+function vrVehicule(v, nomCh) {
+  const L = D.vehicules || [];
+  if (v) {
+    const x = L.find(function(o){ return o.immat === v || o._id === v || (o.immat && co2Norm(o.immat) === co2Norm(v)); });
+    return x ? (x.immat || v) : v;
+  }
+  const y = nomCh ? L.find(function(o){ return (o.chauffeur || '').trim() === nomCh; }) : null;
+  return y ? (y.immat || '') : '';
+}
+function vrVehNom(imm) {
+  if (!imm) return 'Non renseigné';
+  const x = (D.vehicules || []).find(function(o){ return o.immat === imm; });
+  return x ? ((x.marque || '') + ' ' + (x.modele || '')).trim() + ' · ' + imm : imm;
+}
+// Analyse d'une journée : statistiques par véhicule + liste des trajets.
+function vrAnalyserJour(data, jour, nomCh) {
+  const pts = htNettoyer(data, vrJourIso(jour));
+  const res = { parVeh: {}, trajets: [] };
+  if (pts.length < 2) return { resume: res, pts: pts };
+  pts.forEach(function(p){ p.veh = vrVehicule(p.v, nomCh); });
+  const stops = htArrets(pts);
+  const dansArret = function(k){ return stops.some(function(s){ return s.i0 <= k - 1 && k <= s.i1; }); };
+  const st = function(veh){ return res.parVeh[veh] = res.parVeh[veh] || { km: 0, kmMouv: 0, mouvMs: 0, vmax: 0, vmaxAt: 0, vmaxLat: 0, vmaxLng: 0 }; };
+  const vmaxPt = function(o, v, p){ if (v > o.vmax) { o.vmax = v; o.vmaxAt = p.t; o.vmaxLat = p.lat; o.vmaxLng = p.lng; } };
+  let tr = null;
+  const fermer = function(){ if (tr && tr.km >= 0.3) { tr.km = Math.round(tr.km * 100) / 100; res.trajets.push(tr); } tr = null; };
+  for (let k = 1; k < pts.length; k++) {
+    const a = pts[k - 1], b = pts[k];
+    if (htTrou(a, b)) { fermer(); continue; }
+    const d = distanceKm(a.lat, a.lng, b.lat, b.lng), dt = b.t - a.t;
+    const o = st(b.veh);
+    o.km += d;
+    const vSeg = dt > 0 ? d / (dt / 3600000) : 0;
+    const roule = dt > 0 && dt <= 300000 && vSeg >= 5;
+    if (roule) { o.mouvMs += dt; o.kmMouv += d; }
+    // Vitesse instantanée du GPS (précision ≤ 50 m) ; à défaut, vitesse moyenne du segment.
+    let v = null;
+    if (b.s != null && (b.a == null || b.a <= 50) && b.s <= 200) v = b.s;
+    else if (dt >= 10000 && d >= 0.05 && vSeg <= 170) v = Math.round(vSeg);
+    if (v != null) vmaxPt(o, v, b);
+    if (dansArret(k)) { fermer(); continue; }
+    if (!tr) tr = { debut: a.t, fin: a.t, km: 0, mouvMs: 0, vmax: 0, lat0: a.lat, lng0: a.lng, lat1: a.lat, lng1: a.lng, veh: b.veh, c: '' };
+    tr.km += d; tr.fin = b.t; tr.lat1 = b.lat; tr.lng1 = b.lng;
+    if (roule) tr.mouvMs += dt;
+    if (v != null && v > tr.vmax) tr.vmax = v;
+    if (b.c && !tr.c) tr.c = b.c;
+  }
+  fermer();
+  Object.keys(res.parVeh).forEach(function(k){ const o = res.parVeh[k]; o.km = Math.round(o.km * 100) / 100; o.kmMouv = Math.round(o.kmMouv * 100) / 100; });
+  return { resume: res, pts: pts };
+}
+// Cache local des journées passées (IndexedDB : n'encombre pas le localStorage de l'app).
+function vrIdb() {
+  if (window._vrIdbP) return window._vrIdbP;
+  window._vrIdbP = new Promise(function(ok){
+    try {
+      const r = indexedDB.open('mbl_vitesse', 1);
+      r.onupgradeneeded = function(){ try { r.result.createObjectStore('jours'); } catch (e) {} };
+      r.onsuccess = function(){ ok(r.result); }; r.onerror = function(){ ok(null); }; r.onblocked = function(){ ok(null); };
+    } catch (e) { ok(null); }
+  });
+  return window._vrIdbP;
+}
+async function vrCacheGet(k) {
+  const db = await vrIdb(); if (!db) return null;
+  return new Promise(function(ok){ try { const q = db.transaction('jours').objectStore('jours').get(k); q.onsuccess = function(){ ok(q.result || null); }; q.onerror = function(){ ok(null); }; } catch (e) { ok(null); } });
+}
+async function vrCachePut(k, v) {
+  const db = await vrIdb(); if (!db) return;
+  try { db.transaction('jours', 'readwrite').objectStore('jours').put(v, k); } catch (e) {}
+}
+// Même durée de conservation que l'historique GPS (90 jours).
+async function vrCachePurger() {
+  const db = await vrIdb(); if (!db) return;
+  const lim = new Date(); lim.setDate(lim.getDate() - 90); const limite = vrJourCle(lim);
+  try {
+    const q = db.transaction('jours', 'readwrite').objectStore('jours').openCursor();
+    q.onsuccess = function(){ const c = q.result; if (!c) return; const j = String(c.key).split('|')[2] || ''; if (j < limite) c.delete(); c.continue(); };
+  } catch (e) {}
+}
+// Charge les journées d'un chauffeur (cache d'abord, puis une seule requête Firebase pour les jours manquants).
+async function vrChargerChauffeur(ch, jours, tok, garderPoints) {
+  const auj = vrJourCle(new Date()), nom = ((ch.prenom || '') + (ch.nom ? ' ' + ch.nom : '')).trim();
+  const out = { jours: {}, pts: {}, refuse: false };
+  const manquants = [];
+  for (const j of jours) {
+    if (j < auj && !garderPoints) { const c = await vrCacheGet(VR_CACHE_V + '|' + ch._id + '|' + j); if (c) { out.jours[j] = c; continue; } }
+    manquants.push(j);
+  }
+  if (!manquants.length) return out;
+  const ap = authParam(tok), base = FB_URL + '/gps_trails/' + encodeURIComponent(ch._id);
+  let data = null, ok = false;
+  try {
+    const q = (ap ? ap + '&' : '?') + 'orderBy=' + encodeURIComponent('"$key"') + '&startAt=' + encodeURIComponent('"' + manquants[0] + '"') + '&endAt=' + encodeURIComponent('"' + manquants[manquants.length - 1] + '"');
+    const r = await fetch(base + '.json' + q);
+    if (r.ok) { data = (await r.json()) || {}; ok = true; }
+  } catch (e) {}
+  if (!ok) {
+    // Requête par plage refusée : lecture jour par jour.
+    data = {}; ok = true;
+    for (const j of manquants) {
+      try { const r = await fetch(base + '/' + j + '.json' + ap); if (r.ok) data[j] = await r.json(); else { ok = false; out.refuse = r.status === 401 || r.status === 403; } }
+      catch (e) { ok = false; }
+    }
+  }
+  for (const j of manquants) {
+    const a = vrAnalyserJour(data[j], j, nom);
+    out.jours[j] = a.resume;
+    if (garderPoints) out.pts[j] = a.pts;
+    if (ok && j < auj) vrCachePut(VR_CACHE_V + '|' + ch._id + '|' + j, a.resume);
+  }
+  return out;
+}
+// Cumul sur la période pour un chauffeur (filtré par véhicule si demandé).
+function vrCumul(chId, veh) {
+  const D2 = VR.data[chId] || {}, t = { km: 0, kmMouv: 0, mouvMs: 0, vmax: 0, vmaxAt: 0, vmaxLat: 0, vmaxLng: 0, jours: 0, trajets: 0, parJour: [] };
+  Object.keys(D2).sort().forEach(function(j){
+    const r = D2[j]; if (!r) return;
+    const j0 = { jour: j, km: 0, kmMouv: 0, mouvMs: 0, vmax: 0, trajets: 0 };
+    Object.keys(r.parVeh || {}).forEach(function(k){
+      if (veh && k !== veh) return;
+      const o = r.parVeh[k];
+      j0.km += o.km; j0.kmMouv += o.kmMouv; j0.mouvMs += o.mouvMs; if (o.vmax > j0.vmax) j0.vmax = o.vmax;
+      if (o.vmax > t.vmax) { t.vmax = o.vmax; t.vmaxAt = o.vmaxAt; t.vmaxLat = o.vmaxLat; t.vmaxLng = o.vmaxLng; }
+    });
+    j0.trajets = (r.trajets || []).filter(function(x){ return !veh || x.veh === veh; }).length;
+    if (j0.km >= 0.3) { t.jours++; t.parJour.push(j0); }
+    t.km += j0.km; t.kmMouv += j0.kmMouv; t.mouvMs += j0.mouvMs; t.trajets += j0.trajets;
+  });
+  t.vmoy = t.mouvMs ? Math.round(t.kmMouv / (t.mouvMs / 3600000)) : 0;
+  return t;
+}
+function vrTrajets(chId, veh) {
+  const D2 = VR.data[chId] || {}, L = [];
+  Object.keys(D2).sort().forEach(function(j){ ((D2[j] || {}).trajets || []).forEach(function(x){ if (!veh || x.veh === veh) L.push(Object.assign({ jour: j }, x)); }); });
+  return L;
+}
+function vrFiltres() {
+  const g = function(id){ return (document.getElementById(id) || {}).value || ''; };
+  return { type: g('vr-type') || 'jour', ref: g('vr-date'), ch: g('vr-ch'), veh: g('vr-veh') };
+}
+function vrSel(id, extra) { return '<select id="' + id + '" ' + (extra || '') + ' style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:6px 8px;color:var(--white);max-width:220px">'; }
+window.vrOuvrir = function(chId) {
+  if (!vrAcces()) { showToast('Accès réservé au dispatch (ou gérant avec l\'option Suivi)', true); return; }
+  const old = document.getElementById('vr-ov'); if (old) old.remove();
+  const chs = _ccChauffeursVisibles().slice().sort(function(a, b){ return ((a.prenom || '') + (a.nom || '')).localeCompare((b.prenom || '') + (b.nom || ''), 'fr'); });
+  VR.noms = {}; chs.forEach(function(c){ VR.noms[c._id] = ((c.prenom || '') + (c.nom ? ' ' + c.nom : '')).trim() || 'Sans nom'; });
+  const ov = document.createElement('div');
+  ov.id = 'vr-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:330;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:980px;max-width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:10px">'
+    +   '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><div style="font-size:16px;font-weight:800">📊 Rapport vitesse par chauffeur</div>'
+    +   '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'vr-ov\').remove()" aria-label="Fermer"><i class="fas fa-times"></i></button></div>'
+    +   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +     vrSel('vr-type', 'onchange="vrCharger()"') + '<option value="jour">Jour</option><option value="semaine">Semaine</option><option value="mois">Mois</option></select>'
+    +     '<input type="date" id="vr-date" onchange="vrCharger()" value="' + new Date().toISOString().slice(0, 10) + '" style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:6px 8px;color:var(--white)">'
+    +     vrSel('vr-ch', 'onchange="vrCharger()"') + '<option value="">Tous les chauffeurs</option>' + chs.map(function(c){ return '<option value="' + E(c._id) + '">' + E(VR.noms[c._id]) + '</option>'; }).join('') + '</select>'
+    +     vrSel('vr-veh', 'onchange="vrDessiner()"') + '<option value="">Tous les véhicules</option></select>'
+    +     '<button class="btn btn-s btn-sm" onclick="vrImprimer()"><i class="fas fa-file-pdf" style="color:#dc2626"></i> PDF</button>'
+    +     '<button class="btn btn-s btn-sm" onclick="vrExcel()"><i class="fas fa-file-excel" style="color:#16a34a"></i> Excel</button>'
+    +   '</div></div>'
+    + '<div id="vr-corps" style="padding:16px 18px;overflow:auto">Chargement…</div></div>';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  if (chId) document.getElementById('vr-ch').value = chId;
+  vrCachePurger();
+  vrCharger();
+};
+window.vrCharger = async function() {
+  const box = document.getElementById('vr-corps'); if (!box) return;
+  const f = vrFiltres();
+  const gen = ++VR.gen;
+  VR.periode = vrPeriode(f.type, f.ref); VR.data = {}; VR.refus = 0;
+  if (!VR.periode.jours.length) { box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted)">Période dans le futur.</div>'; return; }
+  let ids = f.ch ? [f.ch] : Object.keys(VR.noms);
+  const tok = await getAuthToken();
+  // Admin / dispatch : seuls les chauffeurs ayant un historique (lecture des clés uniquement).
+  if (!f.ch && SESSION && (SESSION.role === 'admin' || SESSION.role === 'dispatch')) {
+    try { const r = await fetch(FB_URL + '/gps_trails.json' + (authParam(tok) ? authParam(tok) + '&' : '?') + 'shallow=true'); if (r.ok) { const k = (await r.json()) || {}; ids = ids.filter(function(id){ return k[id]; }); } } catch (e) {}
+  }
+  let fait = 0;
+  const etat = function(){ if (gen === VR.gen && document.getElementById('vr-corps')) box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted)">Lecture de l\'historique GPS… ' + fait + ' / ' + ids.length + ' chauffeur(s)</div>'; };
+  etat();
+  const file = ids.slice();
+  const travail = async function(){
+    while (file.length && gen === VR.gen) {
+      const id = file.shift(), ch = (D.chauffeurs || []).find(function(c){ return c._id === id; }) || { _id: id, prenom: VR.noms[id] || '' };
+      try { const r = await vrChargerChauffeur(ch, VR.periode.jours, tok, false); if (gen !== VR.gen) return; VR.data[id] = r.jours; if (r.refuse) VR.refus++; } catch (e) {}
+      fait++; etat();
+    }
+  };
+  await Promise.all([1, 2, 3, 4, 5, 6].map(travail));
+  if (gen !== VR.gen) return;
+  // Liste des véhicules présents sur la période
+  const vehs = {};
+  Object.keys(VR.data).forEach(function(id){ Object.keys(VR.data[id]).forEach(function(j){ Object.keys((VR.data[id][j] || {}).parVeh || {}).forEach(function(v){ vehs[v] = 1; }); }); });
+  const sv = document.getElementById('vr-veh');
+  if (sv) { const cur = sv.value; sv.innerHTML = '<option value="">Tous les véhicules</option>' + Object.keys(vehs).sort().map(function(v){ return '<option value="' + E(v) + '">' + E(vrVehNom(v)) + '</option>'; }).join(''); if (vehs[cur]) sv.value = cur; }
+  vrDessiner();
+};
+window.vrDetail = function(id) { const s = document.getElementById('vr-ch'); if (s) { s.value = id; vrCharger(); } };
+window.vrVoirCarte = function(id, jour) {
+  const ov = document.getElementById('vr-ov'); if (ov) ov.remove();
+  try { gp('cartechauffeurs'); } catch (e) {}
+  setTimeout(function(){
+    try {
+      const sel = document.getElementById('cc-hist-driver'), dt = document.getElementById('cc-hist-date');
+      if (sel) { if (![].some.call(sel.options, function(o){ return o.value === id; })) sel.insertAdjacentHTML('beforeend', '<option value="' + E(id) + '">' + E(VR.noms[id] || '') + '</option>'); sel.value = id; }
+      const inp = document.getElementById('cc-hist-search'); if (inp) inp.value = VR.noms[id] || '';
+      if (dt) dt.value = vrJourIso(jour);
+      voirTraceChauffeur();
+    } catch (e) {}
+  }, 700);
+};
+window.vrDessiner = function() {
+  const box = document.getElementById('vr-corps'); if (!box || !VR.periode) return;
+  const f = vrFiltres();
+  const th = 'text-align:left;padding:8px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap';
+  const td = 'padding:8px;font-size:13px;border-bottom:1px solid var(--border);white-space:nowrap';
+  const kmF = function(x){ return Math.round(x).toLocaleString('fr-FR') + ' km'; };
+  const kpi = function(L){ return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px">' + L.map(function(x){ return '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--muted)">' + x[0] + '</div><div style="font-size:18px;font-weight:800;margin-top:2px">' + x[1] + '</div>' + (x[2] ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + x[2] + '</div>' : '') + '</div>'; }).join('') + '</div>'; };
+  const vmaxQuand = function(t){ return t.vmaxAt ? new Date(t.vmaxAt).toLocaleDateString('fr-FR') + ' à ' + htH(t.vmaxAt) : ''; };
+  let h = '<div style="font-size:13px;color:var(--muted);margin-bottom:10px">' + E(VR.periode.label) + (f.veh ? ' · ' + E(vrVehNom(f.veh)) : '') + '</div>';
+  if (!f.ch) {
+    const L = Object.keys(VR.data).map(function(id){ return { id: id, nom: VR.noms[id] || id, t: vrCumul(id, f.veh) }; }).filter(function(x){ return x.t.km >= 0.3; }).sort(function(a, b){ return b.t.km - a.t.km; });
+    const T = L.reduce(function(s, x){ s.km += x.t.km; s.kmMouv += x.t.kmMouv; s.mouvMs += x.t.mouvMs; if (x.t.vmax > s.vmax) { s.vmax = x.t.vmax; s.qui = x.nom; } return s; }, { km: 0, kmMouv: 0, mouvMs: 0, vmax: 0, qui: '' });
+    VR.vue = { tous: L, T: T };
+    h += kpi([['Chauffeurs actifs', String(L.length)], ['Km parcourus', kmF(T.km)], ['Vitesse moyenne', T.mouvMs ? Math.round(T.kmMouv / (T.mouvMs / 3600000)) + ' km/h' : '—', 'en mouvement'], ['Vitesse max enregistrée', T.vmax ? T.vmax + ' km/h' : '—', E(T.qui)], ['Durée en mouvement', vrDuree(T.mouvMs)]]);
+    if (!L.length) h += '<div style="padding:20px;text-align:center;color:var(--muted)">Aucun déplacement enregistré sur cette période.</div>';
+    else h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th + '">Chauffeur</th><th style="' + th + ';text-align:right">Km</th><th style="' + th + ';text-align:right">Vit. moyenne</th><th style="' + th + ';text-align:right">Vit. max enregistrée</th><th style="' + th + ';text-align:right">Durée en mouvement</th><th style="' + th + ';text-align:right">Jours</th><th style="' + th + ';text-align:right">Trajets</th><th style="' + th + '"></th></tr></thead><tbody>'
+      + L.map(function(x){ return '<tr><td style="' + td + ';font-weight:700">' + E(x.nom) + '</td><td style="' + td + ';text-align:right">' + kmF(x.t.km) + '</td><td style="' + td + ';text-align:right">' + (x.t.vmoy ? x.t.vmoy + ' km/h' : '—') + '</td><td style="' + td + ';text-align:right" title="' + E(vmaxQuand(x.t)) + '"><b>' + (x.t.vmax ? x.t.vmax + ' km/h' : '—') + '</b></td><td style="' + td + ';text-align:right">' + vrDuree(x.t.mouvMs) + '</td><td style="' + td + ';text-align:right">' + x.t.jours + '</td><td style="' + td + ';text-align:right">' + x.t.trajets + '</td><td style="' + td + '"><button class="btn btn-ghost btn-xs" onclick="vrDetail(\'' + E(x.id) + '\')">Détail ›</button></td></tr>'; }).join('')
+      + '</tbody></table></div>';
+  } else {
+    const t = vrCumul(f.ch, f.veh), tr = vrTrajets(f.ch, f.veh);
+    VR.vue = { ch: f.ch, t: t, tr: tr };
+    h += '<div style="font-size:15px;font-weight:800;margin-bottom:8px">👤 ' + E(VR.noms[f.ch] || '') + ' <button class="btn btn-ghost btn-xs" onclick="document.getElementById(\'vr-ch\').value=\'\';vrCharger()">‹ Tous les chauffeurs</button></div>';
+    h += kpi([['Km parcourus', kmF(t.km)], ['Vitesse moyenne', t.vmoy ? t.vmoy + ' km/h' : '—', 'en mouvement'], ['Vitesse max enregistrée', t.vmax ? t.vmax + ' km/h' : '—', vmaxQuand(t)], ['Durée en mouvement', vrDuree(t.mouvMs)], ['Trajets', String(t.trajets), t.jours + ' jour(s) actif(s)']]);
+    if (VR.periode.jours.length > 1 && t.parJour.length) h += '<div style="font-size:14px;font-weight:800;margin:6px 0">Par jour</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th + '">Jour</th><th style="' + th + ';text-align:right">Km</th><th style="' + th + ';text-align:right">Vit. moyenne</th><th style="' + th + ';text-align:right">Vit. max</th><th style="' + th + ';text-align:right">Durée en mouvement</th><th style="' + th + ';text-align:right">Trajets</th></tr></thead><tbody>'
+      + t.parJour.map(function(j){ return '<tr><td style="' + td + '">' + vrJourFr(j.jour) + '</td><td style="' + td + ';text-align:right">' + kmF(j.km) + '</td><td style="' + td + ';text-align:right">' + (j.mouvMs ? Math.round(j.kmMouv / (j.mouvMs / 3600000)) + ' km/h' : '—') + '</td><td style="' + td + ';text-align:right">' + (j.vmax || '—') + ' km/h</td><td style="' + td + ';text-align:right">' + vrDuree(j.mouvMs) + '</td><td style="' + td + ';text-align:right">' + j.trajets + '</td></tr>'; }).join('') + '</tbody></table></div>';
+    h += '<div style="font-size:14px;font-weight:800;margin:16px 0 6px">Trajets</div>';
+    if (!tr.length) h += '<div style="padding:14px;text-align:center;color:var(--muted)">Aucun trajet enregistré.</div>';
+    else h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th + '">Jour</th><th style="' + th + '">Heure</th><th style="' + th + '">Départ → arrivée</th><th style="' + th + ';text-align:right">Km</th><th style="' + th + ';text-align:right">Durée</th><th style="' + th + ';text-align:right">Vit. moy.</th><th style="' + th + ';text-align:right">Vit. max</th><th style="' + th + '"></th></tr></thead><tbody>'
+      + tr.slice(0, 500).map(function(x){
+          const vm = x.mouvMs ? Math.round(x.km / (x.mouvMs / 3600000)) : 0;
+          const lien = function(la, ln){ return '<a href="https://www.google.com/maps?q=' + la + ',' + ln + '" target="_blank" rel="noopener" style="color:var(--gold)">📍 ' + vrPos(la, ln) + '</a>'; };
+          return '<tr><td style="' + td + '">' + vrJourFr(x.jour).slice(0, 5) + '</td><td style="' + td + '">' + htH(x.debut) + ' → ' + htH(x.fin) + '</td><td style="' + td + ';font-size:11px">' + lien(x.lat0, x.lng0) + ' → ' + lien(x.lat1, x.lng1) + (x.c ? ' <span style="color:#3b82f6">· transfert</span>' : '') + '</td><td style="' + td + ';text-align:right">' + (Math.round(x.km * 10) / 10).toString().replace('.', ',') + '</td><td style="' + td + ';text-align:right">' + vrDuree(x.fin - x.debut) + '</td><td style="' + td + ';text-align:right">' + (vm || '—') + '</td><td style="' + td + ';text-align:right;font-weight:700">' + (x.vmax || '—') + '</td><td style="' + td + '"><button class="btn btn-ghost btn-xs" onclick="vrVoirCarte(\'' + E(f.ch) + '\',\'' + x.jour + '\')" title="Voir sur la carte">🗺️</button></td></tr>';
+        }).join('') + '</tbody></table></div>' + (tr.length > 500 ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">500 premiers trajets affichés — liste complète dans l\'export Excel.</div>' : '');
+  }
+  if (VR.refus) h += '<div style="margin-top:10px;font-size:12px;color:#b45309">⚠️ Historique non accessible pour ' + VR.refus + ' chauffeur(s).</div>';
+  h += '<div style="margin-top:12px;font-size:11px;color:var(--muted);line-height:1.5">Vitesse maximale <b>enregistrée par le GPS du téléphone</b> (positions précises à 50 m près ; pics impossibles écartés). Elle n\'est pas comparée à la limitation de la route : ce rapport ne compte pas de dépassements. Vitesse moyenne et durée : temps <b>en mouvement</b> uniquement (arrêts exclus). Historique GPS conservé 90 jours.</div>';
+  box.innerHTML = h;
+};
+// Points GPS détaillés d'un chauffeur (pour l'export Excel).
+async function vrPointsChauffeur(id) {
+  const ch = (D.chauffeurs || []).find(function(c){ return c._id === id; }) || { _id: id, prenom: VR.noms[id] || '' };
+  const r = await vrChargerChauffeur(ch, VR.periode.jours, await getAuthToken(), true);
+  const L = [];
+  Object.keys(r.pts).sort().forEach(function(j){
+    const P = r.pts[j];
+    P.forEach(function(p, k){
+      const cap = p.h != null ? p.h : (k && distanceKm(P[k - 1].lat, P[k - 1].lng, p.lat, p.lng) > 0.02 ? vrCap(P[k - 1], p) : null);
+      L.push({ 'Date': vrJourFr(j), 'Heure': new Date(p.t).toLocaleTimeString('fr-FR'), 'Latitude': p.lat, 'Longitude': p.lng, 'Vitesse (km/h)': p.s != null ? p.s : '', 'Direction (°)': cap != null ? cap : '', 'Direction': vrDir(cap), 'Véhicule': p.veh || '', 'Statut': HT_ST[p.st] || '', 'Transfert': p.c || '' });
+    });
+  });
+  return L;
+}
+window.vrExcel = async function() {
+  if (!VR.vue) { showToast('Rien à exporter', true); return; }
+  if (!(await gxXlsx())) return;
+  const X = window.XLSX, wb = X.utils.book_new(), f = vrFiltres();
+  const r1 = function(x){ return Math.round(x * 10) / 10; };
+  const ids = f.ch ? [f.ch] : (VR.vue.tous || []).map(function(x){ return x.id; });
+  const synth = ids.map(function(id){ const t = vrCumul(id, f.veh); return { 'Chauffeur': VR.noms[id] || id, 'Km parcourus': r1(t.km), 'Vitesse moyenne (km/h)': t.vmoy || '', 'Vitesse max enregistrée (km/h)': t.vmax || '', 'Vitesse max le': t.vmaxAt ? new Date(t.vmaxAt).toLocaleString('fr-FR') : '', 'Position vitesse max': t.vmaxAt ? vrPos(t.vmaxLat, t.vmaxLng) : '', 'Durée en mouvement (h)': r1(t.mouvMs / 3600000), 'Jours actifs': t.jours, 'Trajets': t.trajets }; });
+  const parJour = [], trajets = [];
+  ids.forEach(function(id){
+    vrCumul(id, f.veh).parJour.forEach(function(j){ parJour.push({ 'Chauffeur': VR.noms[id] || id, 'Jour': vrJourFr(j.jour), 'Km': r1(j.km), 'Vitesse moyenne (km/h)': j.mouvMs ? Math.round(j.kmMouv / (j.mouvMs / 3600000)) : '', 'Vitesse max (km/h)': j.vmax || '', 'Durée en mouvement (h)': r1(j.mouvMs / 3600000), 'Trajets': j.trajets }); });
+    vrTrajets(id, f.veh).forEach(function(x){ trajets.push({ 'Chauffeur': VR.noms[id] || id, 'Jour': vrJourFr(x.jour), 'Départ': htH(x.debut), 'Arrivée': htH(x.fin), 'Position départ': vrPos(x.lat0, x.lng0), 'Position arrivée': vrPos(x.lat1, x.lng1), 'Km': r1(x.km), 'Durée (min)': Math.round((x.fin - x.debut) / 60000), 'Vitesse moyenne (km/h)': x.mouvMs ? Math.round(x.km / (x.mouvMs / 3600000)) : '', 'Vitesse max (km/h)': x.vmax || '', 'Véhicule': x.veh || '', 'Transfert': x.c || '' }); });
+  });
+  X.utils.book_append_sheet(wb, X.utils.json_to_sheet(synth.length ? synth : [{ 'Chauffeur': 'Aucune donnée' }]), 'Synthèse');
+  if (parJour.length) X.utils.book_append_sheet(wb, X.utils.json_to_sheet(parJour), 'Par jour');
+  if (trajets.length) X.utils.book_append_sheet(wb, X.utils.json_to_sheet(trajets), 'Trajets');
+  if (f.ch) {
+    showToast('Préparation des points GPS…');
+    let pts = []; try { pts = await vrPointsChauffeur(f.ch); } catch (e) {}
+    if (f.veh) pts = pts.filter(function(p){ return p['Véhicule'] === f.veh; });
+    if (pts.length) X.utils.book_append_sheet(wb, X.utils.json_to_sheet(pts.slice(0, 100000)), 'Points GPS');
+  }
+  X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([['Rapport vitesse — MOBILEA'], ['Période', VR.periode.label], ['Chauffeur', f.ch ? (VR.noms[f.ch] || '') : 'Tous'], ['Véhicule', f.veh ? vrVehNom(f.veh) : 'Tous'], [],
+    ['Vitesse max', 'Vitesse enregistrée par le GPS du téléphone (précision ≤ 50 m), non comparée à la limitation de la route : pas de comptage de dépassements.'],
+    ['Vitesse moyenne / durée', 'Temps en mouvement uniquement (arrêts exclus).'], ['Conservation', 'Historique GPS détaillé conservé 90 jours.']]), 'Méthode');
+  const nom = 'Rapport_vitesse_' + (f.ch ? String(VR.noms[f.ch] || '').replace(/[^a-z0-9]+/gi, '_') + '_' : '') + VR.periode.jours[0] + (VR.periode.jours.length > 1 ? '-' + VR.periode.jours[VR.periode.jours.length - 1] : '') + '.xlsx';
+  await gxEnregistrer(wb, nom);
+};
+window.vrImprimer = function() {
+  if (!VR.vue) { showToast('Rien à imprimer', true); return; }
+  const f = vrFiltres();
+  const ligne = function(c){ return '<tr>' + c.map(function(x, i){ return '<td' + (i ? ' class="r"' : '') + '>' + x + '</td>'; }).join('') + '</tr>'; };
+  const kmF = function(x){ return Math.round(x).toLocaleString('fr-FR') + ' km'; };
+  let corps = '';
+  if (!f.ch) {
+    corps = '<table><thead><tr><th>Chauffeur</th><th class="r">Km</th><th class="r">Vit. moyenne</th><th class="r">Vit. max enregistrée</th><th class="r">Durée en mouvement</th><th class="r">Trajets</th></tr></thead><tbody>'
+      + (VR.vue.tous || []).map(function(x){ return ligne([E(x.nom), kmF(x.t.km), x.t.vmoy ? x.t.vmoy + ' km/h' : '—', x.t.vmax ? x.t.vmax + ' km/h' : '—', vrDuree(x.t.mouvMs), x.t.trajets]); }).join('') + '</tbody></table>';
+  } else {
+    const t = VR.vue.t;
+    corps = '<div class="k"><div>Km parcourus<b>' + kmF(t.km) + '</b></div><div>Vitesse moyenne<b>' + (t.vmoy ? t.vmoy + ' km/h' : '—') + '</b></div><div>Vitesse max enregistrée<b>' + (t.vmax ? t.vmax + ' km/h' : '—') + '</b></div><div>Durée en mouvement<b>' + vrDuree(t.mouvMs) + '</b></div></div>'
+      + (t.parJour.length > 1 ? '<h2>Par jour</h2><table><thead><tr><th>Jour</th><th class="r">Km</th><th class="r">Vit. moyenne</th><th class="r">Vit. max</th><th class="r">Durée en mouvement</th></tr></thead><tbody>' + t.parJour.map(function(j){ return ligne([vrJourFr(j.jour), kmF(j.km), j.mouvMs ? Math.round(j.kmMouv / (j.mouvMs / 3600000)) + ' km/h' : '—', (j.vmax || '—') + ' km/h', vrDuree(j.mouvMs)]); }).join('') + '</tbody></table>' : '')
+      + '<h2>Trajets</h2><table><thead><tr><th>Jour</th><th>Heure</th><th>Départ → arrivée</th><th class="r">Km</th><th class="r">Vit. moy.</th><th class="r">Vit. max</th></tr></thead><tbody>'
+      + VR.vue.tr.slice(0, 300).map(function(x){ return '<tr><td>' + vrJourFr(x.jour).slice(0, 5) + '</td><td>' + htH(x.debut) + ' → ' + htH(x.fin) + '</td><td style="font-size:10px">' + vrPos(x.lat0, x.lng0) + ' → ' + vrPos(x.lat1, x.lng1) + '</td><td class="r">' + (Math.round(x.km * 10) / 10).toString().replace('.', ',') + '</td><td class="r">' + (x.mouvMs ? Math.round(x.km / (x.mouvMs / 3600000)) : '—') + '</td><td class="r">' + (x.vmax || '—') + '</td></tr>'; }).join('') + '</tbody></table>';
+  }
+  openPrintableDoc('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Rapport vitesse</title><style>'
+    + 'body{font-family:Helvetica,Arial,sans-serif;color:#111;padding:32px;max-width:820px;margin:auto;font-size:12.5px;line-height:1.45}'
+    + '.h{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #c9a84c;padding-bottom:12px;margin-bottom:18px}'
+    + '.co{font-size:24px;font-weight:900;color:#c9a84c;letter-spacing:2px}.t{font-size:19px;font-weight:800;text-align:right}.s{color:#555;font-size:12px}'
+    + '.k{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.k div{background:#f8f5ec;border-radius:8px;padding:10px}.k b{display:block;font-size:16px;margin-top:2px}'
+    + 'h2{font-size:14px;margin:18px 0 6px}table{width:100%;border-collapse:collapse}th{background:#1f2937;color:#fff;text-align:left;padding:7px 8px;font-size:10.5px}td{padding:6px 8px;border-bottom:1px solid #e5e7eb}.r{text-align:right}'
+    + '.m{margin-top:20px;font-size:10.5px;color:#555;background:#f8fafc;border-radius:6px;padding:10px 12px}@media print{body{padding:12mm}}</style></head><body>'
+    + '<div class="h"><div><div class="co">MOBILEA</div><div class="s">MOBILEA SARL — SIREN 514 879 030<br>Bailly-Romainvilliers 77700</div></div>'
+    + '<div><div class="t">Rapport vitesse' + (f.ch ? ' — ' + E(VR.noms[f.ch] || '') : '') + '</div><div class="s" style="text-align:right">' + E(VR.periode.label) + (f.veh ? '<br>' + E(vrVehNom(f.veh)) : '') + '<br>Édité le ' + new Date().toLocaleDateString('fr-FR') + '</div></div></div>'
+    + corps
+    + '<div class="m"><b>Méthode.</b> Vitesse maximale enregistrée par le GPS du téléphone du chauffeur (positions précises à 50 m près, pics impossibles écartés), non comparée à la limitation de la route : ce rapport ne compte pas de dépassements. Vitesse moyenne et durée calculées sur le temps en mouvement uniquement. Historique GPS conservé 90 jours.</div>'
+    + '</body></html>');
+};
+// Bouton dans la barre « Historique de déplacement » (Carte chauffeurs).
+function vrBouton() {
+  if (!vrAcces() || document.getElementById('vr-btn')) return;
+  const bar = document.getElementById('cc-historique-bar'); if (!bar) return;
+  const b = document.createElement('button');
+  b.id = 'vr-btn'; b.className = 'btn btn-s btn-sm'; b.type = 'button';
+  b.innerHTML = '📊 Rapport vitesse';
+  b.onclick = function(){ vrOuvrir(((document.getElementById('cc-hist-driver') || {}).value) || ''); };
+  bar.appendChild(b);
+}
 
 window.voirTraceChauffeur = async function(){
   const sel = document.getElementById('cc-hist-driver');
@@ -21355,6 +23008,7 @@ function resetDriverInactivity() {
 });
 
 window.toggleDriverService = async function() {
+  if(!_driverOnService && !(await vjGarde('Avant de passer en service, choisissez le véhicule que vous conduisez aujourd\'hui.'))) return;
   _driverOnService = !_driverOnService;
   const btn = document.getElementById('service-btn');
   const btnText = document.getElementById('service-btn-text');
@@ -21508,6 +23162,7 @@ window.onNativeGPS = async function(pos) {
   try {
     gpsActive = true;
     _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
+    co2SuiviPosition(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
     const now = Date.now();
     if(now - _gpsLastSent < _gpsIntervalMs()) return; // 15 s en course, 60 s sinon (économie)
     _gpsLastSent = now;
@@ -21547,6 +23202,7 @@ function gpsGardienDemarrer() {
       navigator.geolocation.getCurrentPosition(function(pos){
         window._gpsGardienEnCours = false;
         _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
+        co2SuiviPosition(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
         _gpsLastSent = Date.now();
         gpsActive = true;
         sendGPS(pos).catch(function(){});
@@ -21598,8 +23254,9 @@ async function sendGPS(pos) {
   try { await checkGeofenceZone(pos.coords.latitude, pos.coords.longitude); } catch(e){}
   // Alerte « arrivée imminente » au client partenaire (ex. Value Retail) X min avant.
   try { await checkArriveeClient(pos.coords.latitude, pos.coords.longitude); } catch(e){}
+  try { await checkArriveeSecurite(pos.coords.latitude, pos.coords.longitude); } catch(e){}
   // Historique de déplacement : enregistre un point (throttlé) pour rejouer le trajet.
-  try { await enregistrerTrace(ch._id, pos.coords.latitude, pos.coords.longitude, { acc:_acc, vit:_vit, cap:h }); } catch(e){}
+  try { await enregistrerTrace(ch._id, pos.coords.latitude, pos.coords.longitude, { acc:_acc, vit:_vit, cap:h, veh: ch.vehImmatJour || '' }); } catch(e){}
   try { chPubMaj(ch, { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:_acc, at:new Date().toISOString(), heading:h, speed:_vit }, true); } catch(e){}
 }
 
@@ -21677,6 +23334,8 @@ async function enregistrerTrace(driverId, lat, lng, extra){
   if (extra.acc) point.a = extra.acc;                                   // précision (m)
   if (extra.vit != null) point.s = Math.round(extra.vit * 3.6);         // vitesse (km/h)
   if (immobile) point.i = 1;                                            // point témoin (à l'arrêt)
+  if (extra.cap != null) point.h = extra.cap;                           // direction (degrés, 0 = Nord)
+  if (extra.veh) point.v = String(extra.veh).slice(0, 40);              // véhicule du jour
   // Transfert en cours : permet de retrouver prise en charge et dépose dans l'historique.
   try {
     const moi = SESSION.name, uid = SESSION.uid;
@@ -21737,6 +23396,435 @@ async function checkArriveeClient(lat, lng) {
     }
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  🛡️ ESPACE SÉCURITÉ CLIENT (agents de sécurité d'un site client)
+//  • Le client (compte partenaire) ou l'admin MOBILEA crée des SITES (adresse
+//    du bâtiment) et des comptes « Agent sécurité » rattachés à un site.
+//  • L'agent voit, en lecture seule, les transferts qui partent de / arrivent
+//    à SON site : horaires, lieux, passagers (✅/❌), chauffeur, véhicule,
+//    statut, arrivée du chauffeur, prise en charge, no-show, historique, et la
+//    position en direct des chauffeurs qui viennent chercher ou déposer.
+//  • Alerte quand le chauffeur est à ~10 min du site (notification envoyée par
+//    l'app du chauffeur + alerte dans l'écran sécurité s'il est ouvert).
+//  Données : /secu_sites/{id} = {soc, nom, adresse, lat, lng, rayonKm, notif}
+//            /secu_agents/{uid} = {societe, siteId, prenom, nom, email}
+//            /client_accounts (type « securite »), /roles = « securite »,
+//            /partner_societies/{uid} = société (lecture de SES transferts).
+// ═══════════════════════════════════════════════════════════════════════════
+const SECU_ETA_MIN = 10;
+const SECU_ACTIFS = ['attribuee', 'acceptee', 'en_route', 'sur_place', 'onboard'];
+function secuNorm(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toUpperCase(); }
+function secuP2(n) { return String(n).padStart(2, '0'); }
+function secuIso(d) { return d.getFullYear() + '-' + secuP2(d.getMonth() + 1) + '-' + secuP2(d.getDate()); }
+function secuH(iso) { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : secuP2(d.getHours()) + ':' + secuP2(d.getMinutes()); }
+async function secuReq(method, path, body, query) {
+  const tok = await getAuthToken();
+  const p = new URLSearchParams(); if (tok) p.set('auth', tok);
+  Object.keys(query || {}).forEach(function(k){ p.set(k, query[k]); });
+  const r = await fetch(FB_URL + '/' + path + '.json?' + p.toString(), { method: method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+  return method === 'GET' ? r.json() : true;
+}
+function secuListe(o) { return o ? Object.keys(o).map(function(k){ return Object.assign({ _id: k }, o[k]); }) : []; }
+async function secuSitesDe(soc) { try { return secuListe(await secuReq('GET', 'secu_sites', undefined, { orderBy: '"soc"', equalTo: JSON.stringify(soc) })); } catch (e) { return []; } }
+async function secuAgentsDe(soc) { try { return secuListe(await secuReq('GET', 'secu_agents', undefined, { orderBy: '"societe"', equalTo: JSON.stringify(soc) })); } catch (e) { return []; } }
+// Un transfert concerne-t-il le site ? Départ ou arrivée dans le rayon du site
+// (coordonnées), sinon nom / adresse du site retrouvés dans l'adresse.
+function secuSens(c, s) {
+  const r = parseFloat(s.rayonKm) || 0.5;
+  const pres = function(lat, lng, txt){
+    if (parseFloat(lat) && parseFloat(lng) && s.lat && s.lng) return distanceKm(parseFloat(lat), parseFloat(lng), s.lat, s.lng) <= r;
+    const t = secuNorm(txt); if (!t) return false;
+    const n = secuNorm(s.nom), a = secuNorm((s.adresse || '').split(',')[0]);
+    return (n.length >= 4 && t.indexOf(n) >= 0) || (a.length >= 6 && t.indexOf(a) >= 0);
+  };
+  if (pres(c.pickupLat, c.pickupLng, c.depart || c.lieu)) return 'depart';
+  if (pres(c.dropLat, c.dropLng, c.arrivee)) return 'arrivee';
+  return null;
+}
+// ── Création / suppression des agents (admin ou compte principal du client) ─
+function secuMdpAleatoire() {
+  const a = new Uint8Array(18); crypto.getRandomValues(a);
+  return Array.from(a).map(function(x){ return 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!#%'[x % 59]; }).join('') + 'a9!';
+}
+async function secuCreerAgent(o) {
+  const email = String(o.email || '').trim().toLowerCase();
+  if (!isValidEmail(email)) throw new Error('E-mail invalide');
+  let uid = null;
+  const app2 = firebase.initializeApp(firebaseConfig, 'SecSecu_' + Date.now());
+  try {
+    // Mot de passe aléatoire jamais affiché : l'agent choisit le sien via l'e-mail reçu.
+    const cred = await app2.auth().createUserWithEmailAndPassword(email, secuMdpAleatoire());
+    uid = cred && cred.user && cred.user.uid;
+    try { await app2.auth().sendPasswordResetEmail(email); } catch (e) {}
+    await app2.auth().signOut();
+  } catch (e) {
+    try { await app2.delete(); } catch (_) {}
+    if (e && e.code === 'auth/email-already-in-use') throw new Error('Cet e-mail a déjà un compte MOBILEA : utilisez une autre adresse.');
+    throw new Error('Création du compte impossible');
+  }
+  try { await app2.delete(); } catch (e) {}
+  if (!uid) throw new Error('Création du compte impossible');
+  // Ordre imposé par les règles : société, puis rôle, puis fiches.
+  await secuReq('PUT', 'partner_societies/' + uid, o.soc);
+  await secuReq('PUT', 'roles/' + uid, 'securite');
+  const now = new Date().toISOString();
+  const cle = 'secu_' + uid;
+  await secuReq('PUT', 'client_accounts/' + cle, { type: 'securite', uid: uid, email: email, prenom: o.prenom || '', nom: o.nom || '', societe: o.soc, siteId: o.siteId, user: email, createdAt: now, createdBy: SESSION.name || '' });
+  await secuReq('PUT', 'secu_agents/' + uid, { societe: o.soc, siteId: o.siteId, prenom: o.prenom || '', nom: o.nom || '', email: email, compte: cle, createdAt: now, createdBy: SESSION.name || '' });
+  await secuReq('PATCH', 'secu_sites/' + o.siteId + '/notif', { [uid]: email });
+  return uid;
+}
+async function secuSupprimerAgent(a) {
+  try { await secuReq('DELETE', 'secu_sites/' + a.siteId + '/notif/' + a._id); } catch (e) {}
+  try { await secuReq('DELETE', 'client_accounts/' + (a.compte || ('secu_' + a._id))); } catch (e) {}
+  try { await secuReq('DELETE', 'roles/' + a._id); } catch (e) {}
+  try { await secuReq('DELETE', 'partner_societies/' + a._id); } catch (e) {}
+  await secuReq('DELETE', 'secu_agents/' + a._id);
+}
+// ── Fenêtre de gestion (sites + agents) ─────────────────────────────────────
+async function secuSocCourante() {
+  if (SESSION.isPartenaire) {
+    let soc = window._partSocServeur || '';
+    if (!soc) { try { const v = await secuReq('GET', 'partner_societies/' + ((window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.uid)); if (typeof v === 'string') soc = v; } catch (e) {} }
+    return soc || SESSION.societe || '';
+  }
+  return '';
+}
+window.secuGerer = async function(soc) {
+  const admin = SESSION && SESSION.role === 'admin';
+  if (!admin && !(SESSION && SESSION.isPartenaire)) { showToast('Accès non autorisé', true); return; }
+  if (!admin) soc = await secuSocCourante();
+  if (!soc) { showToast('Société introuvable', true); return; }
+  window._secuSoc = soc;
+  const old = document.getElementById('secu-ov'); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'secu-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:340;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:720px;max-width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px"><div style="font-size:16px;font-weight:800">🛡️ Agents sécurité — ' + E(soc) + '</div><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'secu-ov\').remove()" aria-label="Fermer"><i class="fas fa-times"></i></button></div>'
+    + '<div id="secu-corps" style="padding:14px 18px;overflow:auto">Chargement…</div></div>';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  secuGererDessiner();
+};
+async function secuGererDessiner() {
+  const box = document.getElementById('secu-corps'); if (!box) return;
+  const soc = window._secuSoc;
+  const [sites, agents] = await Promise.all([secuSitesDe(soc), secuAgentsDe(soc)]);
+  window._secuSites = sites; window._secuAgents = agents;
+  const ligne = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)';
+  box.innerHTML = '<div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:12px">Un agent sécurité voit, en lecture seule, les transferts qui partent de / arrivent à <b>son site</b> : passagers, chauffeur, véhicule, horaires, statut, et la position des chauffeurs en approche. Il reçoit une alerte quand un chauffeur est à ~10 min. Il choisit lui-même son mot de passe (lien reçu par e-mail).</div>'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin:4px 0"><div style="font-size:14px;font-weight:800">📍 Sites</div><button class="btn btn-s btn-xs" onclick="secuSiteForm()">＋ Ajouter un site</button></div>'
+    + (sites.length ? sites.map(function(s){ return '<div style="' + ligne + '"><div style="min-width:0"><div style="font-weight:700;font-size:13px">' + E(s.nom || 'Site') + '</div><div style="font-size:12px;color:var(--muted)">' + E(s.adresse || '') + ' · rayon ' + (parseFloat(s.rayonKm) || 0.5) * 1000 + ' m</div></div><div style="display:flex;gap:6px"><button class="btn btn-ghost btn-xs" onclick="secuSiteForm(\'' + E(s._id) + '\')">✏️</button><button class="btn btn-ghost btn-xs" style="color:#dc2626" onclick="secuSiteSupprimer(\'' + E(s._id) + '\')">🗑️</button></div></div>'; }).join('') : '<div style="padding:10px 0;color:var(--muted);font-size:13px">Aucun site. Ajoutez d\'abord l\'adresse du bâtiment à sécuriser.</div>')
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin:18px 0 4px"><div style="font-size:14px;font-weight:800">👮 Agents sécurité</div>' + (sites.length ? '<button class="btn btn-s btn-xs" onclick="secuAgentForm()">＋ Créer un accès</button>' : '') + '</div>'
+    + (agents.length ? agents.map(function(a){ const s = sites.find(function(x){ return x._id === a.siteId; }); return '<div style="' + ligne + '"><div style="min-width:0"><div style="font-weight:700;font-size:13px">' + E(((a.prenom || '') + ' ' + (a.nom || '')).trim() || a.email) + '</div><div style="font-size:12px;color:var(--muted)">' + E(a.email || '') + ' · ' + E(s ? s.nom : 'site supprimé') + '</div></div><button class="btn btn-ghost btn-xs" style="color:#dc2626" onclick="secuAgentSupprimer(\'' + E(a._id) + '\')">Retirer l\'accès</button></div>'; }).join('') : '<div style="padding:10px 0;color:var(--muted);font-size:13px">Aucun agent.</div>');
+}
+function secuSousFenetre(titre, html) {
+  const old = document.getElementById('secu-f-ov'); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'secu-f-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:345;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:440px;max-width:100%;padding:18px"><div style="font-size:15px;font-weight:800;margin-bottom:12px">' + titre + '</div>' + html
+    + '<div id="secu-f-err" style="color:#dc2626;font-size:12px;min-height:16px;margin:8px 0"></div><div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'secu-f-ov\').remove()">Annuler</button><button class="btn btn-p btn-sm" id="secu-f-ok">Enregistrer</button></div></div>';
+  document.body.appendChild(ov);
+  return ov;
+}
+const SECU_IN = 'width:100%;box-sizing:border-box;background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:9px 10px;color:var(--white);margin:4px 0 10px';
+window.secuSiteForm = function(id) {
+  const s = (window._secuSites || []).find(function(x){ return x._id === id; }) || {};
+  const ov = secuSousFenetre(id ? '✏️ Modifier le site' : '📍 Nouveau site',
+    '<label style="font-size:12px;font-weight:700">Nom du site</label><input id="secu-s-nom" maxlength="60" value="' + E(s.nom || '') + '" placeholder="ex. Tour Majunga — accueil" style="' + SECU_IN + '">'
+    + '<label style="font-size:12px;font-weight:700">Adresse</label><input id="secu-s-adr" maxlength="160" value="' + E(s.adresse || '') + '" placeholder="ex. 6 place de la Pyramide, 92800 Puteaux" style="' + SECU_IN + '">'
+    + '<label style="font-size:12px;font-weight:700">Rayon autour de l\'adresse</label><select id="secu-s-r" style="' + SECU_IN + '">' + [0.2, 0.3, 0.5, 1].map(function(r){ return '<option value="' + r + '"' + ((parseFloat(s.rayonKm) || 0.5) === r ? ' selected' : '') + '>' + r * 1000 + ' m</option>'; }).join('') + '</select>');
+  ov.querySelector('#secu-f-ok').onclick = async function(){
+    const err = document.getElementById('secu-f-err');
+    const nom = document.getElementById('secu-s-nom').value.trim(), adr = document.getElementById('secu-s-adr').value.trim(), r = parseFloat(document.getElementById('secu-s-r').value) || 0.5;
+    if (!nom || !adr) { err.textContent = 'Nom et adresse obligatoires'; return; }
+    this.disabled = true; err.style.color = 'var(--muted)'; err.textContent = 'Localisation de l\'adresse…';
+    let lat = s.lat, lng = s.lng;
+    if (adr !== s.adresse || !lat) {
+      try {
+        const g = await new Promise(function(ok, ko){ new google.maps.Geocoder().geocode({ address: adr, region: 'fr' }, function(res, st){ st === 'OK' && res[0] ? ok(res[0].geometry.location) : ko(st); }); });
+        lat = g.lat(); lng = g.lng();
+      } catch (e) { this.disabled = false; err.style.color = '#dc2626'; err.textContent = 'Adresse introuvable : précisez-la (numéro, rue, ville).'; return; }
+    }
+    const data = { soc: window._secuSoc, nom: nom, adresse: adr, lat: lat, lng: lng, rayonKm: r, majAt: new Date().toISOString() };
+    try {
+      if (id) await secuReq('PATCH', 'secu_sites/' + id, data);
+      else await secuReq('POST', 'secu_sites', data);
+      ov.remove(); showToast('Site enregistré ✓'); secuGererDessiner();
+    } catch (e) { this.disabled = false; err.style.color = '#dc2626'; err.textContent = 'Enregistrement refusé (' + (e.status || '') + ')'; }
+  };
+};
+window.secuSiteSupprimer = async function(id) {
+  if ((window._secuAgents || []).some(function(a){ return a.siteId === id; })) { showToast('Retirez d\'abord les agents de ce site', true); return; }
+  try { await secuReq('DELETE', 'secu_sites/' + id); showToast('Site supprimé'); secuGererDessiner(); } catch (e) { showToast('Suppression refusée', true); }
+};
+window.secuAgentForm = function() {
+  const sites = window._secuSites || [];
+  const ov = secuSousFenetre('👮 Nouvel accès agent sécurité',
+    '<div style="display:flex;gap:8px"><div style="flex:1"><label style="font-size:12px;font-weight:700">Prénom</label><input id="secu-a-p" maxlength="40" style="' + SECU_IN + '"></div><div style="flex:1"><label style="font-size:12px;font-weight:700">Nom</label><input id="secu-a-n" maxlength="40" style="' + SECU_IN + '"></div></div>'
+    + '<label style="font-size:12px;font-weight:700">E-mail de l\'agent (identifiant)</label><input id="secu-a-e" type="email" maxlength="100" placeholder="securite.accueil@exemple.com" style="' + SECU_IN + '">'
+    + '<label style="font-size:12px;font-weight:700">Site</label><select id="secu-a-s" style="' + SECU_IN + '">' + sites.map(function(s){ return '<option value="' + E(s._id) + '">' + E(s.nom) + '</option>'; }).join('') + '</select>'
+    + '<div style="font-size:11px;color:var(--muted)">L\'agent reçoit un e-mail pour choisir son mot de passe, puis se connecte à l\'espace client MOBILEA.</div>');
+  ov.querySelector('#secu-f-ok').onclick = async function(){
+    const err = document.getElementById('secu-f-err');
+    const o = { prenom: document.getElementById('secu-a-p').value.trim(), nom: document.getElementById('secu-a-n').value.trim(), email: document.getElementById('secu-a-e').value.trim(), siteId: document.getElementById('secu-a-s').value, soc: window._secuSoc };
+    if (!o.email || !o.siteId) { err.textContent = 'E-mail et site obligatoires'; return; }
+    this.disabled = true; err.style.color = 'var(--muted)'; err.textContent = 'Création du compte…';
+    try { await secuCreerAgent(o); ov.remove(); showToast('Accès créé ✓ — e-mail envoyé à ' + o.email); try { addLog('🛡️ Accès agent sécurité créé : ' + o.email + ' (' + o.soc + ')'); } catch (e) {} secuGererDessiner(); }
+    catch (e) { this.disabled = false; err.style.color = '#dc2626'; err.textContent = e.message || 'Erreur'; }
+  };
+};
+window.secuAgentSupprimer = function(uid) {
+  const a = (window._secuAgents || []).find(function(x){ return x._id === uid; }); if (!a) return;
+  showConfirm('Retirer l\'accès ?', (a.email || '') + ' ne pourra plus consulter les transferts.', async function(){
+    try { await secuSupprimerAgent(a); showToast('Accès retiré'); secuGererDessiner(); } catch (e) { showToast('Suppression refusée', true); }
+  });
+};
+// Admin : choix de la société
+window.secuAdmin = async function() {
+  if (!SESSION || SESSION.role !== 'admin') return;
+  const socs = Array.from(new Set((D.client_accounts || []).filter(function(a){ return a.type === 'partner' && a.societe; }).map(function(a){ return a.societe.trim(); }))).sort(function(a, b){ return a.localeCompare(b, 'fr'); });
+  const ov = secuSousFenetre('🛡️ Agents sécurité — choisir le client', '<select id="secu-adm-soc" style="' + SECU_IN + '">' + socs.map(function(s){ return '<option value="' + E(s) + '">' + E(s) + '</option>'; }).join('') + '</select>' + (socs.length ? '' : '<div style="font-size:12px;color:var(--muted)">Aucun compte partenaire.</div>'));
+  ov.querySelector('#secu-f-ok').textContent = 'Ouvrir';
+  ov.querySelector('#secu-f-ok').onclick = function(){ const s = document.getElementById('secu-adm-soc').value; ov.remove(); if (s) secuGerer(s); };
+};
+function secuBoutonAdmin() {
+  if (!SESSION || SESSION.role !== 'admin' || document.getElementById('secu-adm-btn')) return;
+  const h = document.querySelector('#page-comptes-clients .sec-h'); if (!h) return;
+  const b = document.createElement('button');
+  b.id = 'secu-adm-btn'; b.className = 'btn btn-s btn-sm'; b.type = 'button';
+  b.innerHTML = '🛡️ Agents sécurité'; b.onclick = function(){ secuAdmin(); };
+  const last = h.querySelector('.btn'); if (last) h.insertBefore(b, last); else h.appendChild(b);
+}
+window.secuBoutonAdmin = secuBoutonAdmin;
+// ── Navigation côté client ──────────────────────────────────────────────────
+function secuNavClient() {
+  if (!SESSION || SESSION.role !== 'client') return;
+  const nav = document.getElementById('main-nav'); if (!nav) return;
+  if (SESSION.isSecurite) {
+    nav.querySelectorAll('.dyn-nav').forEach(function(n){ n.remove(); });
+    secuPageCreer();
+    const b = document.createElement('button');
+    b.className = 'ni on dyn-nav'; b.dataset.p = 'securite';
+    b.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-shield-alt"></i> Sécurité';
+    b.onclick = function(){ secuOuvrirPage(b); };
+    nav.prepend(b);
+    const r = document.getElementById('sb-role'); if (r) r.textContent = 'Sécurité — ' + (SESSION.societe || '');
+    secuOuvrirPage(b);
+  } else if (SESSION.isPartenaire && !document.querySelector('.dyn-nav[data-p="secu-agents"]')) {
+    const b = document.createElement('button');
+    b.className = 'ni dyn-nav'; b.dataset.p = 'secu-agents';
+    b.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-shield-alt"></i> Agents sécurité';
+    b.onclick = function(){ secuGerer(); };
+    const ref = nav.querySelector('.dyn-nav[data-p="clientprofil"]');
+    if (ref) nav.insertBefore(b, ref); else nav.appendChild(b);
+  }
+}
+window.secuNavClient = secuNavClient;
+// ── Écran de l'agent sécurité ───────────────────────────────────────────────
+const SECU = { site: null, L: [], ch: {}, alertes: {}, ecoute: null, timer: null, vue: 'jour' };
+function secuPageCreer() {
+  if (document.getElementById('page-securite')) return;
+  const ref = document.getElementById('page-clientportal') || document.querySelector('.page');
+  const d = document.createElement('div');
+  d.className = 'page'; d.id = 'page-securite';
+  d.innerHTML = '<div id="secu-root"></div>';
+  (ref ? ref.parentNode : document.body).appendChild(d);
+}
+async function secuOuvrirPage(btn) {
+  gp('securite', btn);
+  const t = document.getElementById('page-title'); if (t) t.textContent = 'Sécurité';
+  const root = document.getElementById('secu-root'); if (!root) return;
+  if (!SECU.site) {
+    root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Chargement…</div>';
+    try { SECU.site = await secuReq('GET', 'secu_sites/' + SESSION.siteId); if (SECU.site) SECU.site._id = SESSION.siteId; } catch (e) {}
+    if (!SECU.site) { root.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Site introuvable. Contactez votre responsable.</div>'; return; }
+  }
+  const auj = secuIso(new Date());
+  root.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
+    + '<div><div style="font-size:18px;font-weight:800">🛡️ ' + E(SECU.site.nom || 'Site') + '</div><div style="font-size:12px;color:var(--muted)">' + E(SECU.site.adresse || '') + ' · ' + E(SESSION.societe || '') + '</div></div>'
+    + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+    +   '<button class="btn btn-s btn-sm" id="secu-v-jour" onclick="secuVue(\'jour\')">Aujourd\'hui</button>'
+    +   '<button class="btn btn-ghost btn-sm" id="secu-v-hist" onclick="secuVue(\'hist\')">Historique</button>'
+    +   '<span id="secu-hist-dates" style="display:none;gap:6px;align-items:center"><input type="date" id="secu-du" value="' + secuIso(new Date(Date.now() - 7 * 86400000)) + '" onchange="secuChargerHist()" style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:6px;color:var(--white)"> → <input type="date" id="secu-au" value="' + auj + '" onchange="secuChargerHist()" style="background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:6px;color:var(--white)"></span>'
+    + '</div></div>'
+    + '<div id="secu-alerte"></div>'
+    + '<div id="secu-carte" style="height:260px;border-radius:12px;border:1px solid var(--border2);margin-bottom:12px;background:var(--dark)"></div>'
+    + '<div id="secu-liste"></div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:10px">Consultation seule. Alerte automatique quand un chauffeur est à ~' + SECU_ETA_MIN + ' min du site. Les positions des chauffeurs sont visibles uniquement pendant leurs transferts vers / depuis votre site.</div>';
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(function(){}); } catch (e) {}
+  secuCarteInit();
+  secuEcouter();
+}
+window.secuVue = function(v) {
+  SECU.vue = v;
+  document.getElementById('secu-v-jour').className = 'btn btn-' + (v === 'jour' ? 's' : 'ghost') + ' btn-sm';
+  document.getElementById('secu-v-hist').className = 'btn btn-' + (v === 'hist' ? 's' : 'ghost') + ' btn-sm';
+  document.getElementById('secu-hist-dates').style.display = v === 'hist' ? 'inline-flex' : 'none';
+  document.getElementById('secu-carte').style.display = v === 'hist' ? 'none' : '';
+  if (v === 'hist') secuChargerHist(); else secuDessiner();
+};
+// Transferts de la société en temps réel (seules les modifications transitent ensuite).
+function secuEcouter() {
+  if (SECU.ecoute) return;
+  const soc = SESSION.societe;
+  const surDonnees = function(o){ SECU.L = secuListe(o); secuDessiner(); secuPositions(); };
+  try {
+    if (window.fbDB) {
+      const ref = window.fbDB.ref('courses').orderByChild('client').equalTo(soc);
+      ref.on('value', function(s){ surDonnees(s.val()); }, function(){ SECU.ecoute = null; secuSondage(); });
+      SECU.ecoute = ref;
+    } else secuSondage();
+  } catch (e) { secuSondage(); }
+  if (!SECU.timer) SECU.timer = setInterval(function(){ if (document.getElementById('secu-root')) secuPositions(); }, 20000);
+}
+async function secuSondage() {
+  try { SECU.L = secuListe(await secuReq('GET', 'courses', undefined, { orderBy: '"client"', equalTo: JSON.stringify(SESSION.societe) })); } catch (e) {}
+  secuDessiner(); secuPositions();
+  setTimeout(function(){ if (!SECU.ecoute && document.getElementById('secu-root')) secuSondage(); }, 60000);
+}
+// Position des chauffeurs des transferts en cours vers / depuis le site.
+async function secuPositions() {
+  if (!SECU.site) return;
+  const actifs = SECU.L.filter(function(c){ return SECU_ACTIFS.indexOf(c.statut) >= 0 && secuSens(c, SECU.site); });
+  for (const c of actifs) {
+    try {
+      let g = null;
+      if (c.chauffeurId) { const ch = await secuReq('GET', 'chauffeurs/' + c.chauffeurId); if (ch) { g = ch.gps; c._vehJour = ch.vehImmatJour; } }
+      else if (c.chauffeurUid) { const r = secuListe(await secuReq('GET', 'chauffeurs', undefined, { orderBy: '"uid"', equalTo: JSON.stringify(c.chauffeurUid) })); if (r[0]) { g = r[0].gps; c._vehJour = r[0].vehImmatJour; } }
+      if (!g && parseFloat(c.extLastLat)) g = { lat: parseFloat(c.extLastLat), lng: parseFloat(c.extLastLng), at: c.extLastPos };
+      if (g && g.lat) SECU.ch[c._id] = g;
+    } catch (e) {}
+  }
+  secuCarteMaj(actifs);
+  secuVerifierAlertes(actifs);
+  if (SECU.vue === 'jour') secuDessiner();
+}
+function secuEta(c) {
+  const g = SECU.ch[c._id]; if (!g || !g.lat || !SECU.site) return null;
+  const d = distanceKm(g.lat, g.lng, SECU.site.lat, SECU.site.lng);
+  return { km: Math.round(d * 10) / 10, min: Math.max(1, Math.round(d * 1.3 / 35 * 60)), at: g.at };
+}
+function secuVerifierAlertes(actifs) {
+  actifs.forEach(function(c){
+    const sens = secuSens(c, SECU.site);
+    const vient = (sens === 'depart' && ['attribuee', 'acceptee', 'en_route'].indexOf(c.statut) >= 0) || (sens === 'arrivee' && c.statut === 'onboard');
+    if (!vient) return;
+    const e = secuEta(c); if (!e || e.min > SECU_ETA_MIN) return;
+    const cle = 'mobilea_secu_al_' + c._id + '_' + c.statut;
+    try { if (localStorage.getItem(cle)) return; localStorage.setItem(cle, '1'); } catch (er) { if (SECU.alertes[cle]) return; }
+    SECU.alertes[cle] = 1;
+    const pax = (Array.isArray(c.passagers) ? c.passagers : []).filter(function(p){ return p && p.present !== false; }).map(function(p){ return ((p.prenom || '') + ' ' + (p.nom || '')).trim(); }).filter(Boolean).join(', ');
+    const txt = (c.chauffeur || 'Le chauffeur') + (sens === 'depart' ? ' vient chercher ' : ' amène ') + (pax || 'les passagers') + ' — arrivée dans ~' + e.min + ' min';
+    const box = document.getElementById('secu-alerte');
+    if (box) box.insertAdjacentHTML('afterbegin', '<div style="background:rgba(220,38,38,0.12);border:1px solid rgba(220,38,38,0.5);border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:13px;font-weight:700">🔔 ' + E(txt) + ' <span style="font-weight:400;color:var(--muted)">(' + secuH(new Date().toISOString()) + ')</span></div>');
+    try { afficherNotifZone('🛡️ Arrivée dans ~' + e.min + ' min', txt); } catch (er) {}
+    try { const ac = new (window.AudioContext || window.webkitAudioContext)(); [0, 0.25, 0.5].forEach(function(t){ const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = 880; g.gain.value = 0.2; o.connect(g); g.connect(ac.destination); o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.15); }); } catch (er) {}
+  });
+}
+function secuCarteInit() {
+  const el = document.getElementById('secu-carte'); if (!el) return;
+  try {
+    if (!(window.google && google.maps)) { el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Carte indisponible</div>'; return; }
+    SECU.map = new google.maps.Map(el, { center: { lat: SECU.site.lat, lng: SECU.site.lng }, zoom: 13, disableDefaultUI: true, zoomControl: true });
+    new google.maps.Marker({ map: SECU.map, position: { lat: SECU.site.lat, lng: SECU.site.lng }, title: SECU.site.nom, label: '🛡️' });
+    new google.maps.Circle({ map: SECU.map, center: { lat: SECU.site.lat, lng: SECU.site.lng }, radius: (parseFloat(SECU.site.rayonKm) || 0.5) * 1000, strokeOpacity: 0.4, fillOpacity: 0.06 });
+    SECU.marq = {};
+  } catch (e) {}
+}
+function secuCarteMaj(actifs) {
+  if (!SECU.map) return;
+  const vus = {};
+  actifs.forEach(function(c){
+    const g = SECU.ch[c._id]; if (!g) return; vus[c._id] = 1;
+    const pos = { lat: g.lat, lng: g.lng };
+    if (SECU.marq[c._id]) SECU.marq[c._id].setPosition(pos);
+    else SECU.marq[c._id] = new google.maps.Marker({ map: SECU.map, position: pos, title: c.chauffeur || '', label: '🚗' });
+  });
+  Object.keys(SECU.marq).forEach(function(k){ if (!vus[k]) { SECU.marq[k].setMap(null); delete SECU.marq[k]; } });
+}
+function secuVehicule(c) {
+  const imm = c.vehImmat || c._vehJour || c.immat || '';
+  return imm ? imm : (c.numveh || '');
+}
+function secuCarteHtml(c) {
+  const sens = secuSens(c, SECU.site);
+  const pax = Array.isArray(c.passagers) && c.passagers.length ? c.passagers : (c.passager ? [{ prenom: c.passager, present: c.statut !== 'noshow' }] : []);
+  const e = SECU_ACTIFS.indexOf(c.statut) >= 0 ? secuEta(c) : null;
+  const st = { nouvelle: ['#6b7280', 'Prévu'], attribuee: ['#2563eb', 'Chauffeur attribué'], acceptee: ['#2563eb', 'Confirmé'], en_route: ['#d97706', '🚗 En route'], sur_place: ['#d97706', '📍 Chauffeur sur place'], onboard: ['#16a34a', '👤 Passagers à bord'], depose: ['#16a34a', '🏁 Déposé'], terminee: ['#16a34a', '✔ Terminé'], facturee: ['#16a34a', '✔ Terminé'], payee: ['#16a34a', '✔ Terminé'], annulee: ['#6b7280', 'Annulé'], noshow: ['#dc2626', '👻 No-show'] }[c.statut] || ['#6b7280', c.statut || ''];
+  const veh = secuVehicule(c);
+  return '<div style="border:1px solid var(--border2);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--card)">'
+    + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap"><div style="font-size:16px;font-weight:800">' + E((c.datetime || '').slice(11, 16)) + ' <span style="font-size:12px;font-weight:600;color:var(--muted)">' + (sens === 'depart' ? '🛫 Départ du site' : '🛬 Arrivée sur le site') + (SECU.vue === 'hist' ? ' · ' + E(new Date((c.datetime || '').slice(0, 10) + 'T12:00').toLocaleDateString('fr-FR')) : '') + '</span></div>'
+    + '<span style="font-size:11px;font-weight:800;color:#fff;background:' + st[0] + ';border-radius:20px;padding:3px 10px">' + st[1] + '</span></div>'
+    + (e ? '<div style="margin-top:6px;font-size:13px;font-weight:700;color:' + (e.min <= SECU_ETA_MIN ? '#dc2626' : '#d97706') + '">📍 Chauffeur à ' + e.km + ' km — arrivée estimée ~' + e.min + ' min</div>' : '')
+    + '<div style="font-size:13px;margin-top:6px">' + E(c.depart || c.lieu || '') + ' <span style="color:var(--muted)">→</span> ' + E(c.arrivee || '') + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-top:10px;font-size:12px">'
+    +   '<div><div style="color:var(--muted)">Chauffeur</div><div style="font-weight:700">' + E(c.chauffeur || 'Non attribué') + '</div>' + (c.chauffeurTel ? '<div>' + E(c.chauffeurTel) + '</div>' : '') + '</div>'
+    +   '<div><div style="color:var(--muted)">Véhicule</div><div style="font-weight:800;font-size:15px;letter-spacing:1px">' + E(veh || '—') + '</div><div>' + E({ berline: 'Berline', van: 'Van', sprinter: 'Sprinter', bus: 'Bus' }[c.vehicule] || '') + '</div></div>'
+    +   '<div><div style="color:var(--muted)">Chauffeur arrivé</div><div style="font-weight:700">' + (secuH(c.heureSurPlace) || '—') + '</div></div>'
+    +   '<div><div style="color:var(--muted)">Prise en charge réelle</div><div style="font-weight:700">' + (secuH(c.heureOnboard) || '—') + '</div></div>'
+    + '</div>'
+    + '<div style="margin-top:10px;font-size:13px"><div style="color:var(--muted);font-size:12px;margin-bottom:3px">Passagers' + (c.vol ? ' · vol/train ' + E(c.vol) : '') + '</div>'
+    + (pax.length ? pax.map(function(p){ const abs = p.present === false; return '<div>' + (abs ? '❌ ' : '✅ ') + E(((p.prenom || '') + ' ' + (p.nom || '')).trim() || 'Passager') + (abs ? ' <span style="color:#dc2626;font-size:11px">absent</span>' : '') + '</div>'; }).join('') : '<div style="color:var(--muted)">—</div>')
+    + '</div></div>';
+}
+function secuDessiner() {
+  const box = document.getElementById('secu-liste'); if (!box || !SECU.site || SECU.vue !== 'jour') return;
+  const auj = secuIso(new Date());
+  const L = SECU.L.filter(function(c){ return String(c.datetime || '').slice(0, 10) === auj && c.creePar !== 'gerant' && secuSens(c, SECU.site); })
+    .sort(function(a, b){ return String(a.datetime).localeCompare(String(b.datetime)); });
+  const enCours = L.filter(function(c){ return SECU_ACTIFS.indexOf(c.statut) >= 0; }), autres = L.filter(function(c){ return SECU_ACTIFS.indexOf(c.statut) < 0; });
+  box.innerHTML = (L.length ? '' : '<div style="padding:24px;text-align:center;color:var(--muted)">Aucun transfert aujourd\'hui pour ce site.</div>')
+    + (enCours.length ? '<div style="font-size:13px;font-weight:800;margin:6px 0">En cours / à venir (' + enCours.length + ')</div>' + enCours.map(secuCarteHtml).join('') : '')
+    + (autres.length ? '<div style="font-size:13px;font-weight:800;margin:14px 0 6px">Autres transferts du jour (' + autres.length + ')</div>' + autres.map(secuCarteHtml).join('') : '');
+}
+window.secuChargerHist = async function() {
+  const box = document.getElementById('secu-liste'); if (!box) return;
+  const du = document.getElementById('secu-du').value, au = document.getElementById('secu-au').value;
+  box.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted)">Chargement…</div>';
+  let arch = [];
+  try { arch = secuListe(await secuReq('GET', 'courses_archive', undefined, { orderBy: '"client"', equalTo: JSON.stringify(SESSION.societe) })); } catch (e) {}
+  const vus = {}; SECU.L.forEach(function(c){ vus[c._id] = 1; });
+  const L = SECU.L.concat(arch.filter(function(c){ return !vus[c._id]; })).filter(function(c){ const j = String(c.datetime || '').slice(0, 10); return j >= du && j <= au && c.creePar !== 'gerant' && secuSens(c, SECU.site); })
+    .sort(function(a, b){ return String(b.datetime).localeCompare(String(a.datetime)); });
+  if (SECU.vue !== 'hist') return;
+  box.innerHTML = L.length ? '<div style="font-size:13px;font-weight:800;margin:6px 0">' + L.length + ' transfert(s)</div>' + L.slice(0, 300).map(secuCarteHtml).join('') : '<div style="padding:24px;text-align:center;color:var(--muted)">Aucun transfert sur cette période.</div>';
+};
+// ── Côté CHAUFFEUR : alerte aux agents sécurité à ~10 min du site ───────────
+async function checkArriveeSecurite(lat, lng) {
+  if (!lat || !lng || !SESSION || SESSION.role !== 'chauffeur') return;
+  const moi = SESSION.name, uid = SESSION.uid || (window.fbAuth && window.fbAuth.currentUser ? window.fbAuth.currentUser.uid : null);
+  const actives = (D.courses || []).filter(function(c){ return (c.chauffeur === moi || (uid && c.chauffeurUid === uid) || (SESSION.chauffeurId && c.chauffeurId === SESSION.chauffeurId)) && SECU_ACTIFS.indexOf(c.statut) >= 0; });
+  if (!actives.length) return;
+  if (!window._secuSitesCache || Date.now() - window._secuSitesCache.t > 10 * 60 * 1000) {
+    try { window._secuSitesCache = { t: Date.now(), L: secuListe(await secuReq('GET', 'secu_sites')) }; } catch (e) { window._secuSitesCache = { t: Date.now(), L: [] }; }
+  }
+  const sites = window._secuSitesCache.L.filter(function(s){ return s.lat && s.lng && s.notif && Object.keys(s.notif).length; });
+  if (!sites.length) return;
+  for (const c of actives) {
+    for (const s of sites) {
+      if (secuNorm(s.soc) !== secuNorm(c.client)) continue;
+      const sens = secuSens(c, s);
+      const vient = (sens === 'depart' && ['attribuee', 'acceptee', 'en_route'].indexOf(c.statut) >= 0) || (sens === 'arrivee' && c.statut === 'onboard');
+      if (!vient) continue;
+      const d = distanceKm(lat, lng, s.lat, s.lng), eta = Math.max(1, Math.round(d * 1.3 / 35 * 60));
+      if (eta > SECU_ETA_MIN) continue;
+      const cle = 'mobilea_secu_push_' + c._id + '_' + s._id + '_' + (sens === 'depart' ? 'p' : 'd');
+      try { if (localStorage.getItem(cle)) continue; localStorage.setItem(cle, '1'); } catch (e) { if ((window._secuPush || {})[cle]) continue; }
+      window._secuPush = window._secuPush || {}; window._secuPush[cle] = 1;
+      const pax = (Array.isArray(c.passagers) ? c.passagers : []).filter(function(p){ return p && p.present !== false; }).map(function(p){ return ((p.prenom || '') + ' ' + (p.nom || '')).trim(); }).filter(Boolean).join(', ');
+      const moiCh = (D.chauffeurs || []).find(function(x){ return x._id === SESSION.chauffeurId; }) || {};
+      const veh = c.vehImmat || moiCh.vehImmatJour || '';
+      const msg = (c.chauffeur || moi || 'Le chauffeur') + (veh ? ' (' + veh + ')' : '') + (sens === 'depart' ? ' vient chercher ' : ' amène ') + (pax || 'les passagers') + ' — arrivée dans ~' + eta + ' min';
+      try { await sendPushNotification('🛡️ ' + (s.nom || 'Site') + ' — arrivée dans ~' + eta + ' min', msg, null, Object.keys(s.notif).map(function(k){ return s.notif[k]; }).filter(function(x){ return String(x).indexOf('@') > 0; }).slice(0, 20)); } catch (e) {}
+    }
+  }
+}
+window.checkArriveeSecurite = checkArriveeSecurite;
 
 // ── SUIVI GPS CENTRALISÉ (watchPosition) ────────────────────────────────────
 // UNE SEULE activation : l'iPhone demande l'autorisation une fois, puis pousse
@@ -21820,6 +23908,7 @@ function demarrerSuiviGPS() {
     async (pos) => {
       gpsActive = true;
       _lastGpsPos = { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy||0), at:new Date().toISOString() };
+      co2SuiviPosition(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
       // Limiter les écritures Firebase à une toutes les 15 s max (économie).
       const now = Date.now();
       if(now - _gpsLastSent < _gpsIntervalMs()) return; // 15 s en course, 60 s sinon
@@ -22322,6 +24411,8 @@ window.driverUpd = async function(id, statut, note) {
   } catch(e){}
 
   const ok = await fbUpdate('courses', id, update);
+  // 🌱 Km client à bord (mesurés par le téléphone) notés à part sur le transfert.
+  if(statut === 'depose' || statut === 'terminee') { try { co2EnregistrerKmBord(id); } catch(e){} }
   if(statut) await addLog(`${E(SESSION.name)} → ${statut}${note?' ('+note+')':''}`);
   // Synchroniser le changement de statut vers LogiPax (Deloitte / Magical Shuttle)
   if(statut) {
@@ -23079,6 +25170,7 @@ function gp(name, btn) {
   if(name==='aiphone') { setTimeout(()=>{ try{ mobileaAiPhoneOpen(); }catch(e){} }, 150); }
   if(name==='parametres') { setTimeout(()=>{ try{ renderApiKeys(); }catch(e){} try{ renderClientColors(); }catch(e){} try{ loadDriverTimeout(); }catch(e){} try{ majEtatNotif(); }catch(e){} }, 200); }
   if(name==='pointage') { setTimeout(()=>{ try{ renderPointage(); }catch(e){} }, 200); }
+  if(name==='comptes-clients') { setTimeout(()=>{ try{ secuBoutonAdmin(); }catch(e){} }, 100); }
   if(name==='dispatch') { setTimeout(()=>{
     try {
       const ag = document.getElementById('dv-planning-agenda');
@@ -23492,65 +25584,266 @@ window.genRef = function() {
   if(el) el.value = genRefVal();
 };
 
-// ── EXPORT EXCEL ──
-window.exportExcel = function() {
-  const list = D.courses;
-  if(!list.length){showToast('Aucune course à exporter',true);return;}
-
-  let csv = '\uFEFF'; // BOM for Excel UTF-8
-  const headers = [
-    'Référence','Date','Heure','Client','Téléphone','Type',
-    'Départ','Arrivée/Lieu','Durée MAD','Terminaux',
-    'Véhicule','N° Véhicule','Chauffeur','Passagers','Bagages',
-    'N° Vol','Catégorie','Prix HT (€)','TVA 10% (€)','Prix TTC (€)',
-    'Statut','Notes','Créé le'
-  ];
-  csv += headers.join(';') + '\n';
-
-  list.forEach(c => {
-    const ttc = parseFloat(c.prix)||0;
-    const htv = ht(ttc);
-    const tva = ttc - htv;
-    const dt = c.datetime ? new Date(c.datetime) : null;
-    const date = dt ? dt.toLocaleDateString('fr-FR') : '';
-    const heure = dt ? dt.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}) : '';
-    const row = [
-      c.ref||'',
-      date, heure,
-      c.client||'',
-      c.tel||'',
-      c.type==='mad'?'Mise à disposition':'Transfert',
-      c.depart||c.lieu||'',
-      c.arrivee||'',
-      c.duree||'',
-      c.terminaux||'',
-      {berline:'Berline',van:'Van',sprinter:'Sprinter',bus:'Bus'}[c.vehicule]||'',
-      c.numveh||'',
-      c.chauffeur||'',
-      c.pax||1,
-      c.bags||0,
-      c.vol||'',
-      c.cat||'',
-      htv.toFixed(2),
-      tva.toFixed(2),
-      ttc.toFixed(2),
-      c.statut||'',
-      (c.notes||'').replace(/;/g,','),
-      c.createdAt ? new Date(c.createdAt).toLocaleDateString('fr-FR') : ''
-    ];
-    csv += row.map(v=>`"${v}"`).join(';') + '\n';
-  });
-
-  if (gEstNatif()) { gExporterFichier(`black-limousine-${new Date().toISOString().slice(0,10)}.csv`, csv, 'text/csv'); return; }
-  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `black-limousine-${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-  showToast(`Export Excel — ${list.length} courses ✓`);
+// ── EXPORT EXCEL ── (remplacé par l'extraction complète avec filtres)
+window.exportExcel = function() { xtOuvrir(); };
+// ═══════════════════════════════════════════════════════════════════════════
+//  📊 EXTRACTION EXCEL DES TRANSFERTS (admin / dispatch + clients corporate)
+//  Un transfert par ligne : date, heure, passagers (✅ présent / ❌ absent),
+//  départ, arrivée, chauffeur, véhicule, statut, no-show + informations
+//  opérationnelles (heure théorique / réelle, retard, chauffeur interne /
+//  sous-traitant / externe, type de véhicule, distance, durée…).
+//  Filtres : journée, semaine, mois, client (« événement »), période libre.
+//  Feuilles : Transferts, Passagers (1 ligne par passager), Synthèse.
+//  Côté client : uniquement ses transferts, sans prix chauffeur, marge ni notes.
+//  Les transferts privés des gérants ne sont jamais inclus.
+// ═══════════════════════════════════════════════════════════════════════════
+const XT = { L: [], periode: null };
+function xtP2(n) { return String(n).padStart(2, '0'); }
+function xtIso(d) { return d.getFullYear() + '-' + xtP2(d.getMonth() + 1) + '-' + xtP2(d.getDate()); }
+function xtStaff() { return !!(SESSION && (SESSION.role === 'admin' || SESSION.role === 'dispatch')); }
+function xtPeriode() {
+  const g = function(id){ return (document.getElementById(id) || {}).value || ''; };
+  const type = g('xt-type') || 'jour', ref = g('xt-date') || xtIso(new Date());
+  const r = new Date(ref + 'T12:00:00');
+  let d0 = new Date(r), d1 = new Date(r), label;
+  if (type === 'semaine') { d0.setDate(r.getDate() - (r.getDay() + 6) % 7); d1 = new Date(d0); d1.setDate(d0.getDate() + 6); label = 'Semaine du ' + d0.toLocaleDateString('fr-FR') + ' au ' + d1.toLocaleDateString('fr-FR'); }
+  else if (type === 'mois') { d0 = new Date(r.getFullYear(), r.getMonth(), 1, 12); d1 = new Date(r.getFullYear(), r.getMonth() + 1, 0, 12); label = r.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }); }
+  else if (type === 'perso') { const a = g('xt-du') || ref, b = g('xt-au') || a; d0 = new Date(a + 'T12:00:00'); d1 = new Date((b < a ? a : b) + 'T12:00:00'); label = 'Du ' + d0.toLocaleDateString('fr-FR') + ' au ' + d1.toLocaleDateString('fr-FR'); }
+  else label = r.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  return { type: type, du: xtIso(d0), au: xtIso(d1), label: label.charAt(0).toUpperCase() + label.slice(1) };
+}
+function xtMin(a, b) { if (!a || !b) return null; const x = new Date(a).getTime(), y = new Date(b).getTime(); return isNaN(x) || isNaN(y) ? null : Math.round((y - x) / 60000); }
+function xtHeure(iso) { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : xtP2(d.getHours()) + ':' + xtP2(d.getMinutes()); }
+function xtNomPax(p) { return ((p.prenom || '') + (p.nom ? ' ' + p.nom : '')).trim() || 'Passager'; }
+function xtPassagers(c) {
+  const L = Array.isArray(c.passagers) ? c.passagers.filter(Boolean) : [];
+  if (L.length) return L.map(function(p){ return { nom: xtNomPax(p), present: p.present !== false, tel: p.tel || '', vol: p.vol || '' }; });
+  const nom = (c.passager || (c.passagerAutre && c.passagerAutre.nom) || '').trim();
+  return nom ? [{ nom: nom, present: c.statut !== 'noshow', tel: '', vol: c.vol || '' }] : [];
+}
+function xtTypeChauffeur(c) {
+  if (!c.chauffeur) return '';
+  const ch = (D.chauffeurs || []).find(function(x){ return x._id === c.chauffeurId || ((x.prenom || '') + (x.nom ? ' ' + x.nom : '')).trim() === (c.chauffeur || '').trim(); });
+  if (!ch) return c.extToken || c.extChauffeurNom ? 'Externe (lien)' : 'Externe';
+  return (ch.soc_nom || '').trim() ? 'Sous-traitant (' + ch.soc_nom.trim() + ')' : 'Interne MOBILEA';
+}
+function xtVehicule(c) {
+  const imm = c.vehImmat || c.immat || '';
+  const v = imm ? (D.vehicules || []).find(function(x){ return x.immat === imm || x._id === imm; }) : null;
+  return v ? ([v.marque, v.modele].filter(Boolean).join(' ') + ' · ' + (v.immat || '')).trim() : (imm || c.numveh || '');
+}
+const XT_VEH = { berline: 'Berline', van: 'Van', sprinter: 'Sprinter', bus: 'Bus' };
+const XT_ST = { offre_en_cours: 'Proposée à un chauffeur', offre_ouverte: 'À prendre', offre_prioritaire: 'Proposée aux prioritaires', en_cours: 'En cours' };
+function xtStatut(c) { return (STATUT_LABELS[c.statut] || XT_ST[c.statut] || c.statut || '').replace(/[^\p{L}\p{N}\s\-'’]/gu, '').trim(); }
+function xtLigne(c, staff) {
+  const dt = c.datetime ? new Date(c.datetime) : null;
+  const prevu = dt && !isNaN(dt) ? dt.toISOString() : null;
+  const pax = xtPassagers(c);
+  const retard = xtMin(prevu, c.heureSurPlace);
+  const dureeReelle = xtMin(c.heureOnboard, c.heureDepose || c.heureTerminee);
+  const km = parseFloat(c.kmBord) || null, kmEst = parseFloat(c.trajetKm) || parseFloat(c.kmEstime) || null;
+  const ttc = parseFloat(c.prix) || 0, pch = parseFloat(c.prixChauffeur);
+  const o = {
+    'Référence': c.ref || '',
+    'Date': dt && !isNaN(dt) ? dt.toLocaleDateString('fr-FR') : '',
+    'Heure': (c.datetime || '').slice(11, 16),
+    'Client': c.client || '',
+    'Type': c.type === 'mad' ? 'Mise à disposition' : 'Transfert',
+    'Départ': c.depart || c.lieu || '',
+    'Arrivée': c.arrivee || '',
+    'N° vol / train': c.vol || '',
+    'Passagers (✅ présent / ❌ absent)': pax.map(function(p){ return (p.present ? '✅ ' : '❌ ') + p.nom; }).join(' ; '),
+    'Nb passagers': pax.length || parseInt(c.pax) || '',
+    'Présents': pax.length ? pax.filter(function(p){ return p.present; }).length : '',
+    'Absents': pax.length ? pax.filter(function(p){ return !p.present; }).length : '',
+    'Bagages': c.bags || c.bagages || '',
+    'Chauffeur': c.extChauffeurNom && c.extChauffeurNom === c.chauffeur ? c.extChauffeurNom : (c.chauffeur || ''),
+    'Véhicule': xtVehicule(c),
+    'Type de véhicule': XT_VEH[c.vehicule] || c.vehicule || '',
+    'Statut': xtStatut(c),
+    'No-show': c.statut === 'noshow' ? 'Oui' : 'Non',
+    'Heure théorique': (c.datetime || '').slice(11, 16),
+    'Chauffeur sur place': xtHeure(c.heureSurPlace),
+    'Heure réelle (prise en charge)': xtHeure(c.heureOnboard),
+    'Heure de dépose': xtHeure(c.heureDepose || c.heureTerminee),
+    'Retard chauffeur (min)': retard == null ? '' : Math.max(0, retard),
+    'Ponctualité': retard == null ? '' : (retard <= 5 ? 'À l\'heure' : 'En retard'),
+    'Attente client (min)': c.heureOnboard && c.heureSurPlace ? Math.max(0, xtMin(prevu && prevu > c.heureSurPlace ? prevu : c.heureSurPlace, c.heureOnboard) || 0) : '',
+    'Distance (km)': km ? Math.round(km * 10) / 10 : (kmEst ? Math.round(kmEst * 10) / 10 : ''),
+    'Distance : source': km ? 'GPS (client à bord)' : (kmEst ? 'Estimée' : ''),
+    'Durée prévue (min)': parseInt(c.trajetMin) || '',
+    'Durée réelle (min)': dureeReelle != null && dureeReelle >= 0 ? dureeReelle : '',
+    'Prix TTC (€)': ttc ? Math.round(ttc * 100) / 100 : '',
+    'Prix HT (€)': ttc ? Math.round(ht(ttc) * 100) / 100 : ''
+  };
+  if (staff) {
+    o['Chauffeur interne / externe'] = xtTypeChauffeur(c);
+    o['Prix chauffeur (€)'] = isNaN(pch) ? '' : pch;
+    o['Marge (€)'] = isNaN(pch) || !ttc ? '' : Math.round((ttc - pch) * 100) / 100;
+    try { const r = co2Course(c); o['CO₂ (kg)'] = r && r.kg != null ? Math.round(r.kg * 10) / 10 : ''; } catch (e) { o['CO₂ (kg)'] = ''; }
+    o['Paiement'] = c.payMode || c.mode_paiement || '';
+    o['Code facturation'] = c.codeFact || '';
+    o['Créé par'] = c.createdByClient || c.creePar || c.source || '';
+    o['Notes'] = (c.notes || '').replace(/\s+/g, ' ').slice(0, 500);
+  }
+  return o;
+}
+// ── Données ─────────────────────────────────────────────────────────────────
+async function xtCoursesClient() {
+  const uid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.partenaireUid || SESSION.uid || '';
+  const tok = await getAuthToken();
+  const lire = async function(chemin, champ, val){
+    const p = new URLSearchParams(); if (tok) p.set('auth', tok);
+    p.set('orderBy', JSON.stringify(champ)); p.set('equalTo', JSON.stringify(val));
+    try { const r = await fetch(FB_URL + '/' + chemin + '.json?' + p.toString()); if (!r.ok) return []; const d = await r.json(); return d ? Object.keys(d).map(function(k){ return Object.assign({ _id: k }, d[k]); }) : []; } catch (e) { return []; }
+  };
+  let soc = '';
+  if (SESSION.isPartenaire) {
+    soc = window._partSocServeur || '';
+    if (!soc && uid) { try { const r = await fetch(FB_URL + '/partner_societies/' + uid + '.json' + authParam(tok)); const v = r.ok ? await r.json() : null; if (typeof v === 'string') soc = v; } catch (e) {} }
+    soc = soc || SESSION.societe || '';
+  }
+  const lots = await Promise.all([
+    soc ? lire('courses', 'client', soc) : [], uid ? lire('courses', 'createdByUid', uid) : [],
+    soc ? lire('courses_archive', 'client', soc) : [], uid ? lire('courses_archive', 'createdByUid', uid) : []
+  ]);
+  const parId = {};
+  lots.forEach(function(L){ L.forEach(function(c){ if (c && c._id) parId[c._id] = c; }); });
+  (D.courses || []).forEach(function(c){ if (c && c._id && !parId[c._id]) parId[c._id] = c; });
+  return Object.keys(parId).map(function(k){ return parId[k]; });
+}
+async function xtSource() {
+  if (xtStaff()) { await co2AttendreArchive(); return co2SourceCourses().filter(function(c){ return c && c.creePar !== 'gerant'; }); }
+  return (await xtCoursesClient()).filter(function(c){ return c && c.creePar !== 'gerant'; });
+}
+function xtFiltrer() {
+  const P = xtPeriode(); XT.periode = P;
+  const g = function(id){ return (document.getElementById(id) || {}).value || ''; };
+  const cli = g('xt-cli'), st = g('xt-statut'), ch = g('xt-ch');
+  return XT.L.filter(function(c){
+    const j = String(c.datetime || '').slice(0, 10);
+    if (!j || j < P.du || j > P.au) return false;
+    if (cli && (c.client || '').trim().toUpperCase() !== cli.toUpperCase()) return false;
+    if (ch && (c.chauffeur || '').trim() !== ch) return false;
+    if (st === 'termines' && ['terminee', 'facturee', 'payee', 'depose'].indexOf(c.statut) < 0) return false;
+    if (st === 'annules' && c.statut !== 'annulee') return false;
+    if (st === 'noshow' && c.statut !== 'noshow') return false;
+    if (st === 'avenir' && ['terminee', 'facturee', 'payee', 'depose', 'annulee', 'noshow'].indexOf(c.statut) >= 0) return false;
+    if (st === 'sansannules' && c.statut === 'annulee') return false;
+    return true;
+  }).sort(function(a, b){ return String(a.datetime || '').localeCompare(String(b.datetime || '')); });
+}
+// ── Interface ───────────────────────────────────────────────────────────────
+window.xtOuvrir = async function() {
+  if (!SESSION || !(xtStaff() || SESSION.role === 'client')) { showToast('Accès non autorisé', true); return; }
+  const old = document.getElementById('xt-ov'); if (old) old.remove();
+  const sel = 'background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:7px 9px;color:var(--white);font-size:13px;max-width:100%';
+  const ov = document.createElement('div');
+  ov.id = 'xt-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:330;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:880px;max-width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:10px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div style="font-size:16px;font-weight:800">📊 Extraction Excel des transferts</div><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'xt-ov\').remove()" aria-label="Fermer"><i class="fas fa-times"></i></button></div>'
+    +   '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    +     '<select id="xt-type" onchange="xtTypeChange()" style="' + sel + '"><option value="jour">Journée</option><option value="semaine">Semaine</option><option value="mois" selected>Mois</option><option value="perso">Période personnalisée</option></select>'
+    +     '<input type="date" id="xt-date" value="' + xtIso(new Date()) + '" onchange="xtDessiner()" style="' + sel + '">'
+    +     '<span id="xt-perso" style="display:none;gap:6px;align-items:center"><input type="date" id="xt-du" value="' + xtIso(new Date(Date.now() - 6 * 86400000)) + '" onchange="xtDessiner()" style="' + sel + '"> → <input type="date" id="xt-au" value="' + xtIso(new Date()) + '" onchange="xtDessiner()" style="' + sel + '"></span>'
+    +     (xtStaff() ? '<select id="xt-cli" onchange="xtDessiner()" style="' + sel + ';max-width:200px"><option value="">Tous les clients</option></select>' : '')
+    +     (xtStaff() ? '<select id="xt-ch" onchange="xtDessiner()" style="' + sel + ';max-width:180px"><option value="">Tous les chauffeurs</option></select>' : '')
+    +     '<select id="xt-statut" onchange="xtDessiner()" style="' + sel + '"><option value="">Tous les statuts</option><option value="sansannules">Sans les annulés</option><option value="termines">Terminés</option><option value="avenir">À venir / en cours</option><option value="annules">Annulés</option><option value="noshow">No-show</option></select>'
+    +   '</div></div>'
+    + '<div id="xt-corps" style="padding:16px 18px;overflow:auto">Chargement des transferts…</div>'
+    + '<div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px"><button class="btn btn-p" id="xt-dl" onclick="xtTelecharger()" disabled><i class="fas fa-file-excel"></i> Télécharger le fichier Excel</button></div></div>';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  XT.L = await xtSource();
+  if (!document.getElementById('xt-ov')) return;
+  if (xtStaff()) {
+    const vus = {};
+    XT.L.forEach(function(c){ const n = (c.client || '').trim(); if (n && !vus[n.toUpperCase()]) vus[n.toUpperCase()] = n; });
+    document.getElementById('xt-cli').innerHTML = '<option value="">Tous les clients</option>' + Object.keys(vus).map(function(k){ return vus[k]; }).sort(function(a, b){ return a.localeCompare(b, 'fr'); }).map(function(n){ return '<option value="' + E(n) + '">' + E(n) + '</option>'; }).join('');
+    const chs = Array.from(new Set(XT.L.map(function(c){ return (c.chauffeur || '').trim(); }).filter(Boolean))).sort(function(a, b){ return a.localeCompare(b, 'fr'); });
+    document.getElementById('xt-ch').innerHTML = '<option value="">Tous les chauffeurs</option>' + chs.map(function(n){ return '<option value="' + E(n) + '">' + E(n) + '</option>'; }).join('');
+  }
+  xtDessiner();
 };
+window.xtTypeChange = function() {
+  const t = (document.getElementById('xt-type') || {}).value;
+  document.getElementById('xt-perso').style.display = t === 'perso' ? 'inline-flex' : 'none';
+  document.getElementById('xt-date').style.display = t === 'perso' ? 'none' : '';
+  xtDessiner();
+};
+function xtSynthese(L) {
+  const n = L.length, ns = L.filter(function(c){ return c.statut === 'noshow'; }).length, an = L.filter(function(c){ return c.statut === 'annulee'; }).length;
+  const ret = L.map(function(c){ const d = c.datetime ? new Date(c.datetime) : null; return d && !isNaN(d) ? xtMin(d.toISOString(), c.heureSurPlace) : null; }).filter(function(x){ return x != null; });
+  const aLheure = ret.filter(function(x){ return x <= 5; }).length;
+  const km = L.reduce(function(s, c){ return s + (parseFloat(c.kmBord) || parseFloat(c.trajetKm) || 0); }, 0);
+  const pax = L.reduce(function(s, c){ const p = xtPassagers(c); return s + (p.length || parseInt(c.pax) || 0); }, 0);
+  const abs = L.reduce(function(s, c){ return s + xtPassagers(c).filter(function(p){ return !p.present; }).length; }, 0);
+  return { n: n, ns: ns, an: an, pax: pax, abs: abs, km: km, retMoy: ret.length ? Math.round(ret.reduce(function(s, x){ return s + Math.max(0, x); }, 0) / ret.length) : null, ponct: ret.length ? Math.round(aLheure / ret.length * 100) : null };
+}
+window.xtDessiner = function() {
+  const box = document.getElementById('xt-corps'); if (!box) return;
+  const L = xtFiltrer(), S = xtSynthese(L), P = XT.periode;
+  const kpi = function(t, v, s){ return '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--muted)">' + t + '</div><div style="font-size:18px;font-weight:800;margin-top:2px">' + v + '</div>' + (s ? '<div style="font-size:11px;color:var(--muted)">' + s + '</div>' : '') + '</div>'; };
+  const th = 'text-align:left;padding:7px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap';
+  const td = 'padding:7px;font-size:12px;border-bottom:1px solid var(--border);vertical-align:top';
+  box.innerHTML = '<div style="font-size:13px;color:var(--muted);margin-bottom:10px">' + E(P.label) + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px">'
+    + kpi('Transferts', S.n, S.an ? S.an + ' annulé(s)' : '') + kpi('Passagers', S.pax, S.abs ? '❌ ' + S.abs + ' absent(s)' : '') + kpi('No-show', S.ns)
+    + kpi('Ponctualité', S.ponct == null ? '—' : S.ponct + ' %', S.retMoy == null ? '' : 'retard moyen ' + S.retMoy + ' min') + kpi('Kilomètres', Math.round(S.km).toLocaleString('fr-FR'))
+    + '</div>'
+    + (L.length ? '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th + '">Date</th><th style="' + th + '">Heure</th><th style="' + th + '">Passagers</th><th style="' + th + '">Trajet</th><th style="' + th + '">Chauffeur</th><th style="' + th + '">Statut</th><th style="' + th + '">Retard</th></tr></thead><tbody>'
+      + L.slice(0, 60).map(function(c){ const o = xtLigne(c, false); return '<tr><td style="' + td + ';white-space:nowrap">' + E(o['Date']) + '</td><td style="' + td + '">' + E(o['Heure']) + '</td><td style="' + td + ';min-width:150px">' + E(o['Passagers (✅ présent / ❌ absent)'] || '—') + '</td><td style="' + td + ';min-width:180px">' + E(o['Départ']) + '<br><span style="color:var(--muted)">→ ' + E(o['Arrivée']) + '</span></td><td style="' + td + '">' + E(o['Chauffeur'] || '—') + '<br><span style="color:var(--muted)">' + E(o['Véhicule']) + '</span></td><td style="' + td + '">' + E(o['Statut']) + (c.statut === 'noshow' ? ' 👻' : '') + '</td><td style="' + td + ';white-space:nowrap">' + (o['Retard chauffeur (min)'] === '' ? '—' : o['Retard chauffeur (min)'] + ' min') + '</td></tr>'; }).join('')
+      + '</tbody></table></div>' + (L.length > 60 ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">Aperçu des 60 premiers — le fichier Excel contient les ' + L.length + ' transferts.</div>' : '')
+      : '<div style="padding:24px;text-align:center;color:var(--muted)">Aucun transfert sur cette période.</div>')
+    + '<div style="margin-top:10px;font-size:11px;color:var(--muted);line-height:1.5">Retard = arrivée du chauffeur sur place − heure prévue (« à l\'heure » jusqu\'à 5 min). Heure réelle = prise en charge du client. Distance : GPS client à bord, sinon estimation.' + (xtStaff() ? '' : ' Les transferts de plus d\'un mois sont inclus si votre compte y a accès.') + '</div>';
+  XT.vue = L;
+  const b = document.getElementById('xt-dl'); if (b) b.disabled = !L.length;
+};
+window.xtTelecharger = async function() {
+  const L = XT.vue || []; if (!L.length) return;
+  if (!(await gxXlsx())) return;
+  const staff = xtStaff(), X = window.XLSX, wb = X.utils.book_new();
+  const lignes = L.map(function(c){ return xtLigne(c, staff); });
+  const ws = X.utils.json_to_sheet(lignes);
+  ws['!cols'] = Object.keys(lignes[0]).map(function(k){ return { wch: Math.min(60, Math.max(k.length + 2, ...lignes.slice(0, 200).map(function(o){ return String(o[k] == null ? '' : o[k]).length + 1; }))) }; });
+  ws['!autofilter'] = { ref: ws['!ref'] };
+  X.utils.book_append_sheet(wb, ws, 'Transferts');
+  const pax = [];
+  L.forEach(function(c){ xtPassagers(c).forEach(function(p){ pax.push({ 'Date': c.datetime ? new Date(c.datetime).toLocaleDateString('fr-FR') : '', 'Heure': (c.datetime || '').slice(11, 16), 'Référence': c.ref || '', 'Client': c.client || '', 'Passager': p.nom, 'Présence': p.present ? '✅ Présent' : '❌ Absent', 'N° vol / train': p.vol || c.vol || '', 'Départ': c.depart || c.lieu || '', 'Arrivée': c.arrivee || '', 'Chauffeur': c.chauffeur || '', 'Statut du transfert': xtStatut(c) }); }); });
+  if (pax.length) { const wp = X.utils.json_to_sheet(pax); wp['!autofilter'] = { ref: wp['!ref'] }; X.utils.book_append_sheet(wb, wp, 'Passagers'); }
+  const S = xtSynthese(L), P = XT.periode;
+  const parCli = {};
+  L.forEach(function(c){ const k = (c.client || '—').trim(); const a = parCli[k] = parCli[k] || { n: 0, ns: 0, an: 0, km: 0, ca: 0 }; a.n++; if (c.statut === 'noshow') a.ns++; if (c.statut === 'annulee') a.an++; a.km += parseFloat(c.kmBord) || parseFloat(c.trajetKm) || 0; a.ca += parseFloat(c.prix) || 0; });
+  const syn = [['Extraction des transferts — MOBILEA'], ['Période', P.label], ['Édité le', new Date().toLocaleString('fr-FR')], [],
+    ['Transferts', S.n], ['Annulés', S.an], ['No-show', S.ns], ['Passagers', S.pax], ['Passagers absents', S.abs], ['Ponctualité (≤ 5 min)', S.ponct == null ? '' : S.ponct + ' %'], ['Retard moyen (min)', S.retMoy == null ? '' : S.retMoy], ['Kilomètres', Math.round(S.km)], [],
+    ['Par client', 'Transferts', 'Annulés', 'No-show', 'Km', 'Montant TTC (€)']];
+  Object.keys(parCli).sort().forEach(function(k){ const a = parCli[k]; syn.push([k, a.n, a.an, a.ns, Math.round(a.km), Math.round(a.ca * 100) / 100]); });
+  if (staff) {
+    const parCh = {};
+    L.forEach(function(c){ if (!c.chauffeur) return; const a = parCh[c.chauffeur] = parCh[c.chauffeur] || { n: 0, ret: [], km: 0 }; a.n++; const d = c.datetime ? new Date(c.datetime) : null; const r = d && !isNaN(d) ? xtMin(d.toISOString(), c.heureSurPlace) : null; if (r != null) a.ret.push(r); a.km += parseFloat(c.kmBord) || parseFloat(c.trajetKm) || 0; });
+    syn.push([], ['Par chauffeur', 'Transferts', 'Ponctualité', 'Retard moyen (min)', 'Km', 'Interne / externe']);
+    Object.keys(parCh).sort().forEach(function(k){ const a = parCh[k]; syn.push([k, a.n, a.ret.length ? Math.round(a.ret.filter(function(x){ return x <= 5; }).length / a.ret.length * 100) + ' %' : '', a.ret.length ? Math.round(a.ret.reduce(function(s, x){ return s + Math.max(0, x); }, 0) / a.ret.length) : '', Math.round(a.km), xtTypeChauffeur({ chauffeur: k })]); });
+  }
+  const wsS = X.utils.aoa_to_sheet(syn); wsS['!cols'] = [{ wch: 34 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 10 }, { wch: 26 }];
+  X.utils.book_append_sheet(wb, wsS, 'Synthèse');
+  const cli = (document.getElementById('xt-cli') || {}).value || (staff ? '' : (SESSION.societe || ''));
+  await gxEnregistrer(wb, 'Transferts_' + (cli ? cli.replace(/[^a-z0-9]+/gi, '_') + '_' : '') + P.du + (P.au !== P.du ? '_au_' + P.au : '') + '.xlsx');
+};
+// Bouton côté client (Mon espace / Historique)
+function xtBoutonClient() {
+  if (!SESSION || SESSION.role !== 'client') return;
+  [['#page-clienthistorique .sec-a', 'xt-btn-h'], ['#page-clientportal #cp-lang-select', 'xt-btn-p']].forEach(function(x){
+    const el = document.querySelector(x[0]); if (!el || document.getElementById(x[1])) return;
+    const b = document.createElement('button');
+    b.id = x[1]; b.type = 'button'; b.className = 'btn btn-s btn-sm';
+    b.innerHTML = '<i class="fas fa-file-excel" style="color:#16a34a"></i> Extraction Excel';
+    b.onclick = function(){ xtOuvrir(); };
+    if (x[1] === 'xt-btn-h') el.prepend(b); else el.parentNode.insertBefore(b, el);
+  });
+}
+window.xtBoutonClient = xtBoutonClient;
 
 
 function getSelectedIds() {
@@ -23590,6 +25883,7 @@ async function assignGroupe() {
   const drv = document.getElementById('groupe-drv').value;
   if(!drv) { showToast('Sélectionner un chauffeur', true); return; }
   if(!ids.length) { showToast('Sélectionner au moins une course', true); return; }
+  if(!(await docsGarde(drv))) return;
   showToast(`Assignation de ${ids.length} course(s)...`);
   for(const id of ids) {
     const _uidDrv = chauffeurUidByName(drv);
@@ -23893,7 +26187,7 @@ window.editCourse = function(id) {
       <div style="font-family:'Inter',sans-serif;font-size:16px;font-weight:700"><i class="fas fa-route" style="color:var(--gold)"></i> ${E(c.client)} <span style="font-size:12px;color:var(--muted);font-family:'Inter',sans-serif;font-weight:400">— ${fdt(c.datetime)}</span></div>
       <button onclick="document.getElementById('edit-course-ov').remove()" style="background:var(--card2);border:1px solid var(--border);border-radius:var(--r-xs);width:30px;height:30px;color:var(--muted2);cursor:pointer;font-size:12px">✕</button>
     </div>
-    <div style="padding:18px 22px;overflow-y:auto;flex:1">${html}</div>
+    <div style="padding:18px 22px;overflow-y:auto;flex:1">${co2BlocCourse(c)}${html}</div>
   </div>`;
   ov.addEventListener('click', function(e){if(e.target===this)this.remove();});
   document.body.appendChild(ov);
@@ -24246,10 +26540,51 @@ window.openAssignFromEdit = function(id) {
 
 
 
+// ── IMPORT EXCEL : choix du client AVANT l'import ──────────────────────────
+// Tous les transferts du fichier sont rattachés au client choisi (ex. DUEMEA,
+// Ki Space, Dream, Magic, MSP, TSF) : nom exact du compte client, prix calculés
+// avec SA grille, et transferts visibles dans SON espace client.
+function impClientsListe() {
+  const vus = {};
+  const add = function(n){ n = String(n || '').trim(); if (n && !vus[n.toUpperCase()]) vus[n.toUpperCase()] = n; };
+  (D.client_accounts || []).filter(function(a){ return a.type === 'partner'; }).forEach(function(a){ add(a.societe); });
+  (D.clients || []).forEach(function(c){ add(c.nom || c.societe || c.name); });
+  return Object.keys(vus).map(function(k){ return vus[k]; }).sort(function(a, b){ return a.localeCompare(b, 'fr'); });
+}
+window.impChoisirClient = function(nomFichier) {
+  return new Promise(function(fin){
+    const L = impClientsListe();
+    let dernier = ''; try { dernier = localStorage.getItem('mobilea_import_client') || ''; } catch (e) {}
+    const ov = document.createElement('div');
+    ov.id = 'imp-cli-ov';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:16px';
+    ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:460px;max-width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden">'
+      + '<div style="padding:16px 18px 8px"><div style="font-size:16px;font-weight:800">📥 Importer pour quel client ?</div>'
+      + '<div style="font-size:12px;color:var(--muted);margin-top:4px">' + E(nomFichier || '') + ' — tous les transferts du fichier seront rattachés à ce client (prix selon sa grille, visibles dans son espace).</div>'
+      + '<input id="imp-cli-q" placeholder="🔍 Rechercher un client…" autocomplete="off" style="width:100%;box-sizing:border-box;margin-top:10px;background:var(--dark);border:1px solid var(--border2);border-radius:10px;padding:10px 12px;color:var(--white);font-size:14px"></div>'
+      + '<div id="imp-cli-l" style="overflow:auto;padding:4px 18px;flex:1">'
+      + (L.length ? L.map(function(n){ return '<label class="imp-cli-it" data-t="' + E(n.toLowerCase()) + '" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border2);border-radius:10px;margin-bottom:6px;cursor:pointer"><input type="radio" name="imp-cli" value="' + E(n) + '"' + (n === dernier ? ' checked' : '') + ' style="width:18px;height:18px"><span style="font-size:14px;font-weight:700">' + E(n) + '</span></label>'; }).join('') : '<div style="padding:14px;color:var(--muted);font-size:13px">Aucun client enregistré.</div>')
+      + '</div><div style="padding:12px 18px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-ghost btn-sm" id="imp-cli-x">Annuler</button><button class="btn btn-p btn-sm" id="imp-cli-ok">Importer pour ce client</button></div></div>';
+    document.body.appendChild(ov);
+    const q = ov.querySelector('#imp-cli-q');
+    q.addEventListener('input', function(){ const t = q.value.trim().toLowerCase(); ov.querySelectorAll('.imp-cli-it').forEach(function(x){ x.style.display = !t || x.dataset.t.indexOf(t) >= 0 ? '' : 'none'; }); });
+    ov.querySelector('#imp-cli-x').onclick = function(){ ov.remove(); fin(null); };
+    ov.querySelector('#imp-cli-ok').onclick = function(){
+      const r = ov.querySelector('input[name="imp-cli"]:checked');
+      if (!r) { showToast('Choisissez le client', true); return; }
+      try { localStorage.setItem('mobilea_import_client', r.value); } catch (e) {}
+      ov.remove(); fin(r.value);
+    };
+  });
+};
+
 window.importExcel = async function(input) {
   const file = input.files[0];
   if(!file){return;}
   input.value = '';
+  // Choix du client : tous les transferts du fichier lui sont rattachés.
+  const clientChoisi = await impChoisirClient(file.name);
+  if(!clientChoisi) return;
   showToast('Lecture du fichier...');
 
   // Use SheetJS if available, otherwise fall back to CSV
@@ -24405,11 +26740,11 @@ window.importExcel = async function(input) {
 
         // Calcul automatique du prix (grille de zones + supplément terminal,
         // sinon tarif simple), pour ne pas dépendre du bouton "Analyser".
-        const prixAuto = await calculerPrixAutoImport('DUEMEA', from_, to_, veh, terminaux);
+        const prixAuto = await calculerPrixAutoImport(clientChoisi, from_, to_, veh, terminaux);
 
         await fbPush('courses', {
           type:'transfert',
-          client: 'DUEMEA',
+          client: clientChoisi,
           datetime, depart: from_, arrivee: to_,
           vehicule: veh, pax: passagers.length,
           passagers, ref, terminaux,
@@ -24426,7 +26761,7 @@ window.importExcel = async function(input) {
       } catch(e){ errors++; console.log('Erreur import arrivée:', e); }
     }
 
-    await addLog(`Import ARRIVÉES ${file.name} : ${count} transfert(s) créé(s)`);
+    await addLog(`Import ARRIVÉES ${file.name} (${clientChoisi}) : ${count} transfert(s) créé(s)`);
     await loadAll();
     showToast(`✓ ${count} transfert(s) importé(s)${errors>0?' • '+errors+' erreurs':''}`);
     return;
@@ -24512,11 +26847,11 @@ window.importExcel = async function(input) {
 
         // Calcul automatique du prix — inutile si la destination n'est pas
         // encore connue ("NO INFO"), le dispatch complètera manuellement.
-        const prixAuto = destInconnue ? null : await calculerPrixAutoImport('DUEMEA', from_, to_, veh, terminaux);
+        const prixAuto = destInconnue ? null : await calculerPrixAutoImport(clientChoisi, from_, to_, veh, terminaux);
 
         await fbPush('courses', {
           type:'transfert',
-          client: 'DUEMEA',
+          client: clientChoisi,
           datetime, depart: from_, arrivee: to_,
           vehicule: veh, pax: passagers.length,
           passagers, ref, terminaux,
@@ -24534,7 +26869,7 @@ window.importExcel = async function(input) {
       } catch(e){ errors++; console.log('Erreur import départ:', e); }
     }
 
-    await addLog(`Import DÉPARTS ${file.name} : ${count} transfert(s) créé(s)`);
+    await addLog(`Import DÉPARTS ${file.name} (${clientChoisi}) : ${count} transfert(s) créé(s)`);
     await loadAll();
     showToast(`✓ ${count} transfert(s) importé(s)${errors>0?' • '+errors+' erreurs':''}`);
     return;
@@ -24546,7 +26881,7 @@ window.importExcel = async function(input) {
       const cols = rows[i];
       if(cols.length < 3) continue;
       const [dateStr, heure, client, tel, depart, arrivee, chauffeur, vehicule, pax, prix, notes] = cols;
-      if(!client || !dateStr) continue;
+      if(!dateStr) continue;
       let datetime = '';
       try {
         let d;
@@ -24562,7 +26897,7 @@ window.importExcel = async function(input) {
       const vehLetter = {berline:'B',van:'V',sprinter:'SP',bus:'BU'}[vehCode]||'B';
       const ref = `IMP/${vehLetter}/D${count+1}`;
       await fbPush('courses',{
-        type:'transfert', client:client.trim(), tel:(tel||'').trim(),
+        type:'transfert', client:clientChoisi, tel:(tel||'').trim(),
         depart:(depart||'').trim(), arrivee:(arrivee||'').trim(),
         datetime, vehicule:vehCode, pax:parseInt(pax)||1,
         chauffeur:(chauffeur||'').trim(),
@@ -24576,9 +26911,9 @@ window.importExcel = async function(input) {
     }
   }
 
-  await addLog(`Import ${file.name} : ${count} transfert(s) créé(s)`);
+  await addLog(`Import ${file.name} (${clientChoisi}) : ${count} transfert(s) créé(s)`);
   await loadAll();
-  showToast(`✓ ${count} transfert(s) importé(s)${errors>0?' • '+errors+' erreurs':''}`);
+  showToast(`✓ ${count} transfert(s) importé(s) pour ${clientChoisi}${errors>0?' • '+errors+' erreurs':''}`);
 };
 
 // ── PWA SERVICE WORKER + MANIFEST DYNAMIQUE ──
@@ -25753,6 +28088,7 @@ window.gaDetail = function(id) {
     + ligne('Vol', E(c.vol || pass.vol || ''))
     + ligne('Chauffeur', c.chauffeur ? E(c.chauffeur) + (c.chauffeurTel ? ' · <a href="tel:' + E(String(c.chauffeurTel).replace(/\s/g,'')) + '" style="color:#1a73e8;text-decoration:none">' + E(c.chauffeurTel) + '</a>' : '') : '')
     + ligne('Paiement', estPaiementABord(c) ? '💵 À bord' : '🧾 En compte')
+    + ligne('🌱 CO₂', (function(){ try { const r = co2Course(c, (window._gerantCache || {}).mesVehicules); return (r && r.kg != null) ? co2Fmt(r.kg) + ' CO₂e · ' + String(r.km).replace('.', ',') + ' km à bord' + (r.source === 'estime' ? ' (estimé)' : '') : ''; } catch(e) { return ''; } })())
     + ligne('Notes', E(c.notes || ''))
     + '<div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:12px;padding:10px 12px;margin:12px 0">'
     +   '<div style="font-size:11px;font-weight:800;color:#7e22ce;margin-bottom:4px">🔒 PRIVÉ — visible par vous seul</div>'
@@ -25873,6 +28209,7 @@ window.gaAttribuerA = async function(chId) {
   const c = gaTrouver(ctx.id);
   if (!ch || !c) return;
   const nom = ((ch.prenom||'') + (ch.nom ? ' ' + ch.nom : '')).trim();
+  if (!(await docsGarde(ch))) return;
   if (c.chauffeur && c.chauffeur !== nom && !confirm('Remplacer ' + c.chauffeur + ' par ' + nom + ' ?')) return;
   try {
     await fbUpdate('courses', ctx.id, {
@@ -26611,8 +28948,11 @@ window.gvehEditer = function(id) {
     +   '<div>' + gChamp('Année', '<input type="number" id="gveh-annee" min="1990" max="2100" value="' + E(String(v.annee || '')) + '" style="' + G_IN + '">') + '</div>'
     + '</div>'
     + gChamp('Type', '<select id="gveh-type" style="' + G_IN + '">' + types.map(function(t){ return '<option value="' + t[0] + '"' + ((v.type || 'berline') === t[0] ? ' selected' : '') + '>' + t[1] + '</option>'; }).join('') + '</select>')
+    + gChamp('Kilométrage', '<input type="number" id="gveh-km" min="0" value="' + E(String(v.km || '')) + '" style="' + G_IN + '">')
+    + co2ChampsHtml('gveh', v, G_IN)
     + '<div style="margin-top:16px">' + gBtn('💾 Enregistrer', 'gvehEnregistrer(\'' + (id || '') + '\')', '#16a34a', true) + '</div>';
   gSheet('gveh-sheet', id ? 'Modifier le véhicule' : 'Ajouter un véhicule', h);
+  co2MajChamps('gveh');
 };
 window.gvehEnregistrer = async function(id) {
   if(!gOpt('vehicules')) { showToast('Option non activée par l\'administrateur', true); return; }
@@ -26622,6 +28962,7 @@ window.gvehEnregistrer = async function(id) {
   if(!marque) { showToast('Marque obligatoire', true); return; }
   const data = { marque: marque, modele: sanitize(gVal('gveh-modele'), 50), immat: sanitize(gVal('gveh-immat'), 20).toUpperCase(),
     annee: gVal('gveh-annee'), type: gVal('gveh-type') || 'berline', societe: g.socNom, updatedAt: new Date().toISOString() };
+  Object.assign(data, co2LireChamps('gveh'), { km: gVal('gveh-km') });
   try {
     if(id) await gRest('PATCH', 'vehicules/' + id, data);
     else { data.statut = 'actif'; data.createdAt = data.updatedAt; data.createdByUid = gUid(); data.createdByGerant = SESSION.name; await gRest('POST', 'vehicules', data); }
