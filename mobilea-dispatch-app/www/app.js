@@ -21501,27 +21501,37 @@ function htDur(min) { min = Math.max(0, Math.round(min)); return min >= 60 ? Mat
 
 // Nettoie la trace brute : points sans heure, GPS imprécis, sauts impossibles.
 function htNettoyer(data, dateStr) {
-  const brut = [];
+  const brut = []; let imprecis = 0, sauts = 0;
   Object.keys(data || {}).sort().forEach(function(k){
     const p = data[k]; if (!p || !p.lat || !p.lng) return;
     let t = p.at ? new Date(p.at).getTime() : NaN;
     if (isNaN(t) && /^\d{6}$/.test(k)) t = new Date(dateStr + 'T' + k.slice(0,2) + ':' + k.slice(2,4) + ':' + k.slice(4,6)).getTime();
     if (isNaN(t)) return;
-    if (p.a != null && p.a > 150) return;                       // GPS trop imprécis
+    if (p.a != null && p.a > 150) { imprecis++; return; }       // GPS trop imprécis
     brut.push({ lat:p.lat, lng:p.lng, t:t, a:p.a, s:p.s, c:p.c || '', st:p.st || '', i:p.i ? 1 : 0, h:p.h, v:p.v || '' });
   });
   brut.sort(function(a,b){ return a.t - b.t; });
+  const vitOk = function(a, b){ const h = (b.t - a.t) / 3600000; return h > 0 && distanceKm(a.lat, a.lng, b.lat, b.lng) / h <= 170; };
   const out = [];
   for (let k = 0; k < brut.length; k++) {
     const p = brut[k], prec = out[out.length - 1], suiv = brut[k + 1];
     if (prec) {
       const d = distanceKm(prec.lat, prec.lng, p.lat, p.lng), dh = (p.t - prec.t) / 3600000;
-      if (dh > 0 && d / dh > 170) continue;                     // saut impossible (> 170 km/h)
+      if (dh > 0 && d / dh > 170) {                             // saut impossible (> 170 km/h)
+        // C'était peut-être le point d'AVANT le mauvais (position périmée) : si ce
+        // point-ci est cohérent avec le suivant et avec l'avant-dernier gardé, on
+        // retire le point d'avant au lieu d'écarter toute la suite.
+        const avant = out[out.length - 2];
+        if (suiv && vitOk(p, suiv) && (!avant || vitOk(avant, p))) { out.pop(); sauts++; out.push(p); }
+        else sauts++;
+        continue;
+      }
       // Pic isolé : loin du point d'avant ET d'après alors que ceux-ci sont proches
-      if (suiv && d > 0.4 && distanceKm(p.lat, p.lng, suiv.lat, suiv.lng) > 0.4 && distanceKm(prec.lat, prec.lng, suiv.lat, suiv.lng) < 0.15) continue;
+      if (suiv && d > 0.4 && distanceKm(p.lat, p.lng, suiv.lat, suiv.lng) > 0.4 && distanceKm(prec.lat, prec.lng, suiv.lat, suiv.lng) < 0.15) { sauts++; continue; }
     }
     out.push(p);
   }
+  out.stats = { recus: brut.length + imprecis, imprecis: imprecis, sauts: sauts };
   return out;
 }
 // Arrêt = le véhicule reste dans un rayon de 100 m pendant au moins 3 minutes.
@@ -21953,6 +21963,151 @@ function vrBouton() {
   bar.appendChild(b);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  🚦 POINTS DE VITESSE SUR L'HISTORIQUE (toutes les 10 s)
+//  Un point coloré toutes les ~10 s quand le véhicule roule :
+//   🔴 rouge  = au-dessus de la limitation de la route + 5 km/h (marge GPS)
+//   🟢 vert   = normal (entre limitation − 20 et limitation + 5)
+//   🟡 jaune  = nettement en dessous (plus de 20 km/h sous la limitation)
+//   ⚪ gris   = limitation inconnue
+//  Limitations : OpenStreetMap (Overpass), routes à moins de 25 m du trajet,
+//  téléchargées une fois par journée affichée. Vitesse = GPS du téléphone.
+//  Accès : le même que l'historique (admin, dispatch, gérants pour leurs chauffeurs).
+// ═══════════════════════════════════════════════════════════════════════════
+const HV = { cache: {}, gen: 0, rendu: null, visible: true };
+const HV_TOL = 5, HV_SOUS = 20;
+function hvLegendeHtml() {
+  const pt = function(c){ return '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + c + ';border:1px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.25);vertical-align:-1px"></span>'; };
+  return '<div style="padding:8px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center">'
+    + '<label style="display:inline-flex;gap:5px;align-items:center;font-weight:700;color:var(--white);cursor:pointer"><input type="checkbox" id="hv-voir" ' + (HV.visible ? 'checked' : '') + ' onchange="hvBasculer(this.checked)"> 🚦 Vitesse (toutes les 10 s)</label>'
+    + '<span>' + pt('#dc2626') + ' au-dessus de la limitation (+' + HV_TOL + ' km/h)</span><span>' + pt('#16a34a') + ' normal</span><span>' + pt('#eab308') + ' en dessous (−' + HV_SOUS + ' km/h)</span><span>' + pt('#9ca3af') + ' limitation inconnue</span>'
+    + '<span id="hv-info" style="width:100%"></span></div>';
+}
+function hvLimiteVal(v) {
+  if (v == null) return null;
+  v = String(v).trim().toLowerCase();
+  if (/^\d+/.test(v)) { const n = parseInt(v, 10); return /mph/.test(v) ? Math.round(n * 1.609) : n; }
+  return { 'fr:urban': 50, 'fr:rural': 80, 'fr:motorway': 130, 'fr:zone30': 30, 'fr:zone_30': 30, 'fr:zone20': 20, 'fr:zone_20': 20, 'fr:living_street': 20, 'fr:walk': 6, 'walk': 6, 'fr:trunk': 110, 'fr:expressway': 110 }[v] || null;
+}
+function hvLimite(tags) {
+  tags = tags || {};
+  let L = hvLimiteVal(tags.maxspeed) || hvLimiteVal(tags['maxspeed:type']) || hvLimiteVal(tags['source:maxspeed']) || hvLimiteVal(tags['zone:maxspeed']);
+  if (!L) { const f = hvLimiteVal(tags['maxspeed:forward']), b = hvLimiteVal(tags['maxspeed:backward']); L = (f && b) ? Math.max(f, b) : (f || b); }
+  if (L) return L;
+  if (tags.highway === 'motorway') return 130;
+  if (tags.highway === 'living_street') return 20;
+  if (tags.highway === 'trunk' && tags.motorroad === 'yes') return 110;
+  return null;
+}
+function hvCouleur(v, L) {
+  if (!L) return '#9ca3af';
+  if (v > L + HV_TOL) return '#dc2626';
+  if (v < L - HV_SOUS) return '#eab308';
+  return '#16a34a';
+}
+// Vitesse d'un point : celle du GPS, sinon calculée avec le point précédent (≤ 30 s).
+function hvVitesse(pts, k) {
+  const p = pts[k];
+  if (p.s != null && !isNaN(p.s)) return Math.round(p.s);
+  const a = pts[k - 1];
+  if (a && p.t - a.t > 0 && p.t - a.t <= 30000) return Math.round(distanceKm(a.lat, a.lng, p.lat, p.lng) / ((p.t - a.t) / 3600000));
+  return null;
+}
+// Routes (avec limitation) à moins de 25 m du trajet, via OpenStreetMap.
+async function hvRoutes(pts, cle) {
+  if (HV.cache[cle]) return HV.cache[cle];
+  const c = []; let der = null;
+  pts.forEach(function(p){ if (!der || distanceKm(der.lat, der.lng, p.lat, p.lng) >= 0.15) { c.push(p); der = p; } });
+  const parId = {};
+  for (let i = 0; i < c.length; i += 250) {
+    const part = c.slice(i, i + 251);
+    const q = '[out:json][timeout:90];way[highway~"^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service|road)$"](around:25,'
+      + part.map(function(p){ return p.lat.toFixed(5) + ',' + p.lng.toFixed(5); }).join(',') + ');out tags geom;';
+    const r = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q) });
+    if (!r.ok) throw new Error('OSM ' + r.status);
+    const d = await r.json();
+    (d.elements || []).forEach(function(w){ if (w.type === 'way' && w.geometry && w.geometry.length > 1) parId[w.id] = w; });
+  }
+  // Index des segments par case (~200 m) pour retrouver vite la route d'un point.
+  const idx = {}, CASE = 0.002;
+  Object.keys(parId).forEach(function(id){
+    const w = parId[id], lim = hvLimite(w.tags), nom = (w.tags && (w.tags.name || w.tags.ref)) || '';
+    for (let k = 1; k < w.geometry.length; k++) {
+      const a = w.geometry[k - 1], b = w.geometry[k];
+      const seg = { a: a, b: b, lim: lim, nom: nom, sens: w.tags && (w.tags.oneway === 'yes' || w.tags.highway === 'motorway' || w.tags.junction === 'roundabout') };
+      for (let x = Math.floor(Math.min(a.lat, b.lat) / CASE); x <= Math.floor(Math.max(a.lat, b.lat) / CASE); x++)
+        for (let y = Math.floor(Math.min(a.lon, b.lon) / CASE); y <= Math.floor(Math.max(a.lon, b.lon) / CASE); y++)
+          (idx[x + ':' + y] = idx[x + ':' + y] || []).push(seg);
+    }
+  });
+  HV.cache[cle] = { idx: idx, CASE: CASE };
+  return HV.cache[cle];
+}
+function hvCap(a, b) {   // cap de a vers b (degrés)
+  const r = Math.PI / 180, y = Math.sin((b.lon - a.lon) * r) * Math.cos(b.lat * r), x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lon - a.lon) * r);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+// Route la plus proche du point (≤ 30 m), en privilégiant celle qui va dans le sens du véhicule.
+function hvRouteDe(R, p, cap) {
+  const x0 = Math.floor(p.lat / R.CASE), y0 = Math.floor(p.lng / R.CASE), kx = 111320, ky = 111320 * Math.cos(p.lat * Math.PI / 180);
+  let best = null, bestScore = Infinity;
+  for (let x = x0 - 1; x <= x0 + 1; x++) for (let y = y0 - 1; y <= y0 + 1; y++) (R.idx[x + ':' + y] || []).forEach(function(s){
+    const ax = (s.a.lat - p.lat) * kx, ay = (s.a.lon - p.lng) * ky, bx = (s.b.lat - p.lat) * kx, by = (s.b.lon - p.lng) * ky;
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    const t = l2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / l2)) : 0;
+    const d = Math.hypot(ax + t * dx, ay + t * dy);
+    if (d > 30) return;
+    let pen = 0;
+    if (cap != null) { let dc = Math.abs(hvCap(s.a, s.b) - cap) % 360; dc = Math.min(dc, 360 - dc); if (!s.sens) dc = Math.min(dc, 180 - dc); if (dc > 45) pen = 40; }
+    if (d + pen < bestScore) { bestScore = d + pen; best = s; }
+  });
+  return best;
+}
+window.hvBasculer = function(on) {
+  HV.visible = !!on;
+  try { (HV.calque || []).forEach(function(m){ if (on) m.addTo(ccMap); else ccMap.removeLayer(m); }); } catch (e) {}
+};
+async function hvDessiner(pts, id, date) {
+  if (!ccMap || !window.L || !pts || pts.length < 2) return;
+  const L = window.L, gen = ++HV.gen;
+  HV.rendu = HV.rendu || L.canvas({ padding: 0.5 });
+  // Un point toutes les ~10 s quand le véhicule roule (≥ 5 km/h).
+  const sel = []; let der = -Infinity;
+  for (let k = 0; k < pts.length; k++) {
+    const p = pts[k]; if (p.t - der < 9500) continue;
+    const v = hvVitesse(pts, k); if (v == null || v < 5 || v > 200) continue;
+    let cap = p.h != null ? p.h : null;
+    if (cap == null && k) { const a = pts[k - 1]; if (distanceKm(a.lat, a.lng, p.lat, p.lng) > 0.02) cap = hvCap({ lat: a.lat, lon: a.lng }, { lat: p.lat, lon: p.lng }); }
+    sel.push({ p: p, v: v, cap: cap }); der = p.t;
+  }
+  const info = function(t){ const el = document.getElementById('hv-info'); if (el) el.innerHTML = t; };
+  if (!sel.length) { info('Pas de point de vitesse (véhicule à l\'arrêt ou historique sans vitesse).'); return; }
+  HV.calque = [];
+  const marques = sel.map(function(o){
+    const m = L.circleMarker([o.p.lat, o.p.lng], { renderer: HV.rendu, radius: 5, color: '#fff', weight: 1, fillColor: '#9ca3af', fillOpacity: 0.95 });
+    if (HV.visible) m.addTo(ccMap);
+    HV.calque.push(m); HT.layers.push(m); o.m = m; return m;
+  });
+  const popup = function(o){ return '<b>' + new Date(o.p.t).toLocaleTimeString('fr-FR') + '</b> · <b>' + o.v + ' km/h</b>' + (o.lim ? '<br>Limitation : ' + o.lim + ' km/h' : '<br><span style="color:#6b7280">Limitation inconnue</span>') + (o.nom ? '<br><span style="font-size:11px;color:#555">' + E(o.nom) + '</span>' : ''); };
+  sel.forEach(function(o){ o.m.bindPopup(function(){ return popup(o); }); });
+  info('Chargement des limitations de vitesse (OpenStreetMap)…');
+  let R = null;
+  try { R = await hvRoutes(pts, id + '|' + date); } catch (e) { R = null; }
+  if (gen !== HV.gen) return;
+  if (!R) { info('⚠️ Limitations indisponibles pour le moment (OpenStreetMap ne répond pas) — points en gris.'); return; }
+  const n = { r: 0, v: 0, j: 0, g: 0 };
+  sel.forEach(function(o){
+    const s = hvRouteDe(R, o.p, o.cap);
+    o.lim = s ? s.lim : null; o.nom = s ? s.nom : '';
+    const c = hvCouleur(o.v, o.lim);
+    o.m.setStyle({ fillColor: c });
+    if (c === '#dc2626') n.r++; else if (c === '#16a34a') n.v++; else if (c === '#eab308') n.j++; else n.g++;
+  });
+  const conn = n.r + n.v + n.j, pc = function(x){ return conn ? Math.round(x / conn * 100) + ' %' : '—'; };
+  info(sel.length + ' points · <b style="color:#dc2626">' + n.r + ' au-dessus (' + pc(n.r) + ')</b> · <span style="color:#16a34a">' + n.v + ' normal</span> · <span style="color:#ca8a04">' + n.j + ' en dessous</span>' + (n.g ? ' · ' + n.g + ' limitation inconnue' : '') + '. Vitesse GPS du téléphone, limitations OpenStreetMap : indicatif.');
+}
+window.hvDessiner = hvDessiner;
+
 window.voirTraceChauffeur = async function(){
   const sel = document.getElementById('cc-hist-driver');
   const dt = document.getElementById('cc-hist-date');
@@ -22030,7 +22185,8 @@ window.voirTraceChauffeur = async function(){
   window._ccTrace = HT.layers;
   ccMap._userMoved = true;
   try { ccMap.fitBounds(bornes, { padding:[40,40] }); } catch(e){}
-  if (info) info.textContent = km.toFixed(1) + ' km · ' + htH(deb.t) + ' → ' + htH(fin.t) + ' · ' + HT.stops.length + ' arrêt(s)';
+  const _st = pts.stats || {}, _ec = (_st.imprecis || 0) + (_st.sauts || 0);
+  if (info) info.textContent = km.toFixed(1) + ' km · ' + htH(deb.t) + ' → ' + htH(fin.t) + ' · ' + HT.stops.length + ' arrêt(s) · ' + (_st.recus || pts.length) + ' points GPS' + (_ec ? ' (' + _ec + ' écartés)' : '');
 
   // ── Panneau sous la carte
   const cont = document.getElementById('cc-map-container');
@@ -22054,9 +22210,11 @@ window.voirTraceChauffeur = async function(){
       +     (HT.courses.length ? HT.courses.map(function(o, n){ const c = o.c; return '<div onclick="htVoirCourse(' + n + ')" style="padding:8px 0;border-top:1px solid var(--border2);cursor:pointer;font-size:12.5px;color:var(--white)"><b>' + E((c.datetime || '').slice(11,16)) + '</b> · ' + E(c.client || '') + '<br><span style="color:var(--muted);font-size:11.5px">' + E((c.depart || c.lieu || '?') + ' → ' + (c.arrivee || '?')) + '</span><br><span style="font-size:11.5px;color:' + (o.pec ? '#2563eb' : 'var(--muted)') + '">' + (o.pec ? '🧍 Pris en charge ' + htH(o.pec.t) + (o.depose && o.depose !== o.pec ? ' · 🏁 déposé ' + htH(o.depose.t) : '') : (o.approx ? '🕐 Position à l\'heure prévue (heures réelles non enregistrées)' : 'Hors de la période enregistrée')) + '</span></div>'; }).join('') : '<div style="font-size:12.5px;color:var(--muted)">Aucun transfert attribué ce jour-là.</div>')
       +   '</div>'
       + '</div>'
-      + '<div style="padding:8px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--border)"><span style="color:#c8a96e">━</span> trajet &nbsp; <span style="color:#2563eb">━</span> client à bord &nbsp; <span style="color:#9ca3af">┅</span> sans signal GPS</div>';
+      + '<div style="padding:8px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--border)"><span style="color:#c8a96e">━</span> trajet &nbsp; <span style="color:#2563eb">━</span> client à bord &nbsp; <span style="color:#9ca3af">┅</span> sans signal GPS</div>'
+      + hvLegendeHtml();
     cont.parentNode.insertBefore(pn, cont.nextSibling);
   }
+  try { hvDessiner(pts, id, date); } catch(e) {}
   // Adresses des arrêts (15 au maximum, l'une après l'autre)
   (async function(){
     const jeton = HT.jour + '|' + id;
@@ -23242,6 +23400,9 @@ window.gpsGardienDemarrer = gpsGardienDemarrer;
 function gpsTracer(pos) {
   try {
     const id = SESSION && SESSION.chauffeurId; if (!id || !pos || !pos.coords) return;
+    // Position ancienne gardée en mémoire par le téléphone (au réveil de l'app) :
+    // ne pas l'enregistrer avec l'heure actuelle, elle ferait un faux « saut ».
+    if (pos.timestamp && Date.now() - pos.timestamp > 30000) return;
     const c = pos.coords;
     const ch = (D.chauffeurs || []).find(function(x){ return x._id === id; }) || {};
     const h = (c.heading != null && !isNaN(c.heading) && c.heading >= 0) ? Math.round(c.heading) : null;
@@ -23255,6 +23416,7 @@ function gpsTracer(pos) {
 function gpsPrecisionVerifier(pos) {
   try {
     if (!SESSION || SESSION.role !== 'chauffeur' || !pos || !pos.coords) return;
+    if (pos.timestamp && Date.now() - pos.timestamp > 30000) return;   // position périmée
     const acc = pos.coords.accuracy || 0;
     if (acc && acc <= 65) window._gpsBonAt = Date.now();   // dernière position précise reçue
     if (acc >= 1000) window._gpsApproxN = (window._gpsApproxN || 0) + 1;
@@ -23280,6 +23442,8 @@ async function sendGPS(pos) {
           || (D.chauffeurs||[]).find(c=>(c.prenom+(c.nom?' '+c.nom:''))===name)
           || (_id ? { _id: _id } : null);
   if(!ch) { gpsDiag('sans_fiche'); return; }
+  // Position périmée (> 2 min, gardée en mémoire par le téléphone) : ignorée.
+  if (pos.timestamp && Date.now() - pos.timestamp > 120000) { _gpsLastSent = 0; return; }
   // heading = cap en degrés (0=Nord, 90=Est…) ; null si le tel est immobile ou
   // ne le fournit pas. speed en m/s. On les stocke pour afficher la direction.
   const h = (pos.coords.heading != null && !isNaN(pos.coords.heading) && pos.coords.heading >= 0) ? Math.round(pos.coords.heading) : null;
@@ -23367,11 +23531,11 @@ async function enregistrerTrace(driverId, lat, lng, extra){
     const dist = distanceKm(last.lat, last.lng, lat, lng);
     // Point GPS imprécis (> 100 m) : ignoré, sauf si rien n'a été enregistré depuis 2 min.
     if (extra.acc && extra.acc > 100 && ecoule < 120000) return;
-    // Tracé fin : un point toutes les 15 s dès 15 m parcourus, toutes les 8 s
+    // Tracé fin : un point toutes les 10 s dès 15 m parcourus, toutes les 8 s
     // dès 40 m, et dans les virages (cap qui change de plus de 30°) dès 4 s / 15 m.
     let vire = false;
     if (extra.cap != null && last.h != null && ecoule >= 4000 && dist >= 0.015) { const dc = Math.abs(extra.cap - last.h) % 360; vire = Math.min(dc, 360 - dc) >= 30; }
-    const bouge = (ecoule >= 15000 && dist >= 0.015) || (ecoule >= 8000 && dist >= 0.04) || vire;
+    const bouge = (ecoule >= 10000 && dist >= 0.015) || (ecoule >= 8000 && dist >= 0.04) || vire;
     // À l'arrêt : un point « témoin » toutes les 5 min, pour distinguer dans
     // l'historique un vrai arrêt d'une coupure de signal.
     immobile = !bouge && ecoule >= 300000;
