@@ -8479,10 +8479,18 @@ function vjChoisi(ch) {
 }
 window.vjChoisi = vjChoisi;
 function vjLibelle(v) { return ([v.marque, v.modele].filter(Boolean).join(' ') || 'Véhicule') + (v.immat ? ' · ' + v.immat : ''); }
-async function vjListe() {
+// Seulement les véhicules de SA société : véhicules dont la « Société » (fiche
+// véhicule) = société du chauffeur, ou véhicule qui lui est attribué.
+// Chauffeur MOBILEA (sans société) : véhicules MOBILEA (« aucune société »).
+function vjSocNorm(s) { s = String(s || '').trim().toUpperCase(); return s === 'MOBILEA' ? '' : s; }
+async function vjListe(ch) {
   let L = (D.vehicules || []);
   if (!L.length) { try { L = (await fbGet('vehicules')) || []; } catch (e) { L = []; } }
+  ch = ch || maFicheChauffeur() || {};
+  const soc = vjSocNorm(ch.soc_nom || (SESSION && SESSION.gerant && SESSION.socNom) || '');
+  const nom = ((ch.prenom || '') + (ch.nom ? ' ' + ch.nom : '')).trim();
   return L.filter(function(v){ return !v.archived && (!v.statut || v.statut === 'actif'); })
+    .filter(function(v){ return vjSocNorm(v.societe) === soc || (nom && (v.chauffeur || '').trim() === nom); })
     .sort(function(a, b){ return vjLibelle(a).localeCompare(vjLibelle(b), 'fr'); });
 }
 // Ouvre la fenêtre de choix. Renvoie une promesse : true si un véhicule est validé.
@@ -8492,7 +8500,7 @@ window.vjOuvrir = function(opts) {
   window._vjPromesse = new Promise(async function(fin){
     const ch = maFicheChauffeur();
     if (!ch || !SESSION || SESSION.role !== 'chauffeur') { window._vjPromesse = null; fin(false); return; }
-    const L = await vjListe();
+    const L = await vjListe(ch);
     const old = document.getElementById('vj-ov'); if (old) old.remove();
     const ov = document.createElement('div');
     ov.id = 'vj-ov';
@@ -8511,7 +8519,7 @@ window.vjOuvrir = function(opts) {
           return '<label class="vj-it" data-t="' + E(vjLibelle(v).toLowerCase()) + '" style="display:flex;align-items:center;gap:10px;padding:11px 12px;border:1px solid var(--border2);border-radius:10px;margin-bottom:8px;cursor:pointer">'
             + '<input type="radio" name="vj-v" value="' + E(val) + '"' + (val === pre ? ' checked' : '') + ' style="width:18px;height:18px;flex-shrink:0">'
             + '<div style="min-width:0"><div style="font-size:14px;font-weight:700">' + E([v.marque, v.modele].filter(Boolean).join(' ') || 'Véhicule') + '</div><div style="font-size:12px;color:var(--muted)">' + E(v.immat || '') + (v.societe ? ' · ' + E(v.societe) : '') + '</div></div></label>';
-        }).join('') : '<div style="padding:16px;text-align:center;color:var(--muted);font-size:13px">Aucun véhicule enregistré. Contactez votre dispatch.</div>')
+        }).join('') : '<div style="padding:16px;text-align:center;color:var(--muted);font-size:13px">Aucun véhicule enregistré pour votre société. Contactez votre dispatch.</div>')
       + '</div><div style="padding:12px 18px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">'
       + (opts.fermable || !L.length ? '<button class="btn btn-ghost btn-sm" id="vj-annuler">' + (opts.fermable ? 'Annuler' : 'Fermer') + '</button>' : '')
       + '<button class="btn btn-p" id="vj-ok" style="flex:1;min-width:160px"' + (L.length ? '' : ' disabled') + '>✓ Valider mon véhicule</button></div></div>';
@@ -30611,4 +30619,50 @@ setInterval(function(){
     let n = 0;
     const t = setInterval(function(){ if (installer() || ++n > 240) clearInterval(t); }, 500);
   }
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  📱 FENÊTRES SUR TÉLÉPHONE
+//  Sur iPhone, les grandes fenêtres (rapport environnemental, bilan carbone,
+//  rapport vitesse, extraction Excel, documents, agents sécurité) passent en
+//  plein écran SOUS la barre d'état, avec un gros bouton « ✕ Fermer », et les
+//  tableaux se resserrent pour tenir dans la largeur. Les petites fenêtres
+//  (choix du client à l'import, véhicule du jour, formulaires sécurité) restent
+//  centrées mais ne passent plus sous l'heure / l'encoche.
+//  Sur ordinateur : rien ne change.
+// ═══════════════════════════════════════════════════════════════════════════
+(function(){
+  const PLEIN = ['co2-ov', 'co2a-ov', 'vr-ov', 'xt-ov', 'secu-ov', 'docs-ov', 'docs-form-ov'];
+  const PETIT = ['secu-f-ov', 'imp-cli-ov', 'vj-ov'];
+  function css() {
+    if (document.getElementById('mf-css')) return;
+    const s = document.createElement('style');
+    s.id = 'mf-css';
+    s.textContent = '@media (max-width:760px){'
+      + '.mf-plein{padding:0!important;align-items:stretch!important;justify-content:stretch!important}'
+      + '.mf-plein>div{width:100%!important;max-width:100%!important;height:100%!important;max-height:100%!important;border-radius:0!important;border:0!important;box-sizing:border-box!important;padding-top:env(safe-area-inset-top,0px)!important;padding-bottom:env(safe-area-inset-bottom,0px)!important}'
+      + '.mf-plein>div>div{flex-shrink:0}'
+      + '.mf-plein>div>div[style*="overflow:auto"]{flex:1 1 auto!important;min-height:0!important;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding-left:12px!important;padding-right:12px!important}'
+      + '.mf-plein>div>div:first-child{padding-left:12px!important;padding-right:12px!important}'
+      + '.mf-ov table th,.mf-ov table td{padding:6px 4px!important;font-size:11.5px!important;letter-spacing:0!important}'
+      + '.mf-ov table th{white-space:normal!important}'
+      + '.mf-petit{padding:calc(env(safe-area-inset-top,0px) + 10px) 10px calc(env(safe-area-inset-bottom,0px) + 10px)!important}'
+      + '.mf-petit>div{max-height:100%!important}'
+      + '.mf-x{min-height:40px;padding:6px 12px!important;display:inline-flex!important;align-items:center;gap:6px;font-size:15px!important}'
+      + '.mf-x::after{content:"Fermer";font-size:14px;font-weight:700}'
+      + '}';
+    document.head.appendChild(s);
+  }
+  function adapter(el) {
+    if (!el || el.nodeType !== 1 || !el.id) return;
+    const plein = PLEIN.indexOf(el.id) >= 0;
+    if (!plein && PETIT.indexOf(el.id) < 0) return;
+    css();
+    el.classList.add('mf-ov', plein ? 'mf-plein' : 'mf-petit');
+    el.querySelectorAll('button[aria-label="Fermer"]').forEach(function(b){ b.classList.add('mf-x'); });
+  }
+  function demarrer() {
+    try { new MutationObserver(function(L){ L.forEach(function(m){ m.addedNodes.forEach(adapter); }); }).observe(document.body, { childList: true }); } catch (e) {}
+  }
+  if (document.body) demarrer(); else document.addEventListener('DOMContentLoaded', demarrer);
 })();
