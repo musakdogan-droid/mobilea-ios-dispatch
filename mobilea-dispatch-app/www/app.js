@@ -1541,6 +1541,7 @@ async function flushSyncQueue() {
           const args = Array.isArray(a.data) ? a.data : [];
           if(a.key === 'push') { try { await sendPushNotification.apply(null, args); } catch(e){} }
           else if(a.key === 'sms') { try { await sendTwilioSMS.apply(null, args); } catch(e){} }
+          else if(a.key === 'mailfrais') { try { await rgFraisMail.apply(null, args); } catch(e){} }
           envoyes++; continue;
         } else if(a.type === 'logipax') {
           // Synchro LogiPax différée : avec la version à jour du transfert.
@@ -31852,7 +31853,7 @@ function rgFraisFormHtml(x, vehs, courses, chs) {
     + '</div>'
     + rgChamp('Mission concernée (facultatif)', '<select id="rg-fr-course" style="' + RG_IN + ';width:100%">' + opt('', '—', '') + courses.map(function(c){ return opt(c._id, String(c.datetime || '').slice(0, 10).split('-').reverse().join('/') + ' ' + String(c.datetime || '').slice(11, 16) + ' · ' + (c.depart || c.lieu || '').slice(0, 30) + ' → ' + (c.arrivee || '').slice(0, 30), x.courseId || ''); }).join('') + '</select>')
     + rgChamp('Payé avec', '<select id="rg-fr-paye" style="' + RG_IN + ';width:100%">' + opt('societe', '💳 Carte de la société', x.payePar || 'societe') + opt('chauffeur', '👛 Avancé par le chauffeur (à rembourser)', x.payePar || 'societe') + '</select>')
-    + rgChamp('Justificatif (photo ou PDF de la facture)', '<input type="file" id="rg-fr-file" accept="image/*,application/pdf" capture="environment" style="font-size:13px">' + (x.justificatif ? '<div style="font-size:11px;color:#16a34a;margin-top:3px">📎 justificatif déjà joint (en choisir un autre pour le remplacer)</div>' : ''))
+    + rgChamp('Justificatif (photo ou PDF de la facture)', '<input type="file" id="rg-fr-file" accept="image/*,application/pdf" style="font-size:13px">' + (x.justificatif ? '<div style="font-size:11px;color:#16a34a;margin-top:3px">📎 justificatif déjà joint (en choisir un autre pour le remplacer)</div>' : ''))
     + rgChamp('Note', rgInp('rg-fr-note', x.note, 'text', 'maxlength="200"'));
 }
 window.rgFraisCat = function() { const c = (document.getElementById('rg-fr-cat') || {}).value; const w = document.getElementById('rg-fr-en-w'); if (w) w.style.display = (c === 'carburant' || c === 'recharge') ? '' : 'none'; const en = document.getElementById('rg-fr-en'); if (en && c === 'recharge') en.value = 'electricite'; };
@@ -31915,9 +31916,37 @@ function rgVueParam(R) {
         return rgTr(['<b>' + E(rgVehNom(v)) + '</b>', E(rgMotoNom(v.motorisation)), rgEur0(c.leasing), rgEur0(c.assurance), rgEur0(c.entretien), rgEur0(c.assistance), rgEur0(c.autresFixes), rgEur0(c.budgetEnergie), tot ? '<b>' + rgEur0(tot) + '</b>' : '<span style="color:#d97706">à renseigner</span>', '<button class="btn btn-ghost btn-xs" onclick="event.stopPropagation();rgEditVeh(\'' + v._id + '\')">✏️</button>'], 'rgEditVeh(\'' + v._id + '\')');
       }), 'Aucun véhicule.')
     + '<div style="font-size:11px;color:var(--muted);margin-top:8px">La motorisation (diesel, essence, hybride, électrique) se règle dans la fiche du véhicule (section 🌱). Ces montants sont confidentiels : visibles uniquement ' + (RG.ctx.mode === 'admin' ? 'par l\'administrateur' : 'par vous') + '.</div>';
+  h = '<div style="font-size:14px;font-weight:800;margin-bottom:6px">📧 Réception des frais par e-mail <button class="btn btn-ghost btn-xs" onclick="rgEditEmailFrais()">✏️ Modifier</button></div>'
+    + '<div style="font-size:12.5px;line-height:1.6;background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:14px">' + (rg.emailFrais ? 'Chaque dépense déclarée par un chauffeur est envoyée à <b>' + E(rg.emailFrais) + '</b>, avec la photo du justificatif en pièce jointe.' : '<span style="color:#d97706">Aucune adresse : les dépenses restent uniquement dans l\'app.</span> Renseignez une adresse pour les recevoir aussi par e-mail.') + '</div>' + h;
   if (RG.focus && RG.focus.ch) setTimeout(function(){ rgEditRemu(RG.focus.ch); RG.focus = null; }, 50);
   if (RG.focus && RG.focus.veh) setTimeout(function(){ rgEditVeh(RG.focus.veh); RG.focus = null; }, 50);
   return h;
+}
+window.rgEditEmailFrais = function() {
+  const ov = rgSous('📧 Réception des frais par e-mail', rgChamp('Adresse e-mail', rgInp('rg-em', RG.d.regles.emailFrais || '', 'email', 'autocomplete="email" placeholder="ex. compta@mobilea.fr"'))
+    + '<div style="font-size:11px;color:var(--muted)">Chaque dépense envoyée par un chauffeur ' + (RG.ctx.mode === 'gerant' ? 'de votre équipe ' : '') + 'arrive à cette adresse (montant, véhicule, date, photo du ticket en pièce jointe). Laisser vide pour arrêter les envois.</div>', 'Enregistrer');
+  ov.querySelector('#rg-f-ok').onclick = async function(){
+    const v = String((document.getElementById('rg-em') || {}).value || '').trim();
+    if (v && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) { document.getElementById('rg-f-err').textContent = 'Adresse e-mail invalide'; return; }
+    let ok = false;
+    try { const tok = await getAuthToken(); const r = await fetch(FB_URL + '/' + RG.ctx.base + 'paie_regles.json' + authParam(tok), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ emailFrais: v || null }) }); ok = r.ok; } catch (e) {}
+    if (!ok) { document.getElementById('rg-f-err').textContent = 'Enregistrement refusé (réseau ou règles Firebase à publier)'; return; }
+    RG.d.regles.emailFrais = v || ''; ov.remove(); showToast(v ? '📧 Les frais seront envoyés à ' + v : 'Envoi par e-mail désactivé'); rgDessiner();
+  };
+};
+// Envoi de la dépense par e-mail (worker Cloudflare : vérifie le compte du
+// chauffeur, lit l'adresse enregistrée dans Paramètres, joint la photo).
+// Hors connexion : envoyé automatiquement au retour du réseau.
+const RG_MAIL_URL = 'https://mobilea-rapport-quotidien.mus-akdogan.workers.dev/frais';
+async function rgFraisMail(base, id, essai) {
+  essai = essai || 0;
+  const differer = function(){ if (essai >= 30) return; try { queueAction({ id: fbIdLocal(), type: 'appel', path: '_appel', key: 'mailfrais', data: [base, id, essai + 1] }); } catch (e) {} };
+  if (navigator.onLine === false) { differer(); return; }
+  try {
+    const tok = await getAuthToken(); if (!tok) { differer(); return; }
+    const r = await fetch(RG_MAIL_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok }, body: JSON.stringify({ base: base || '', id: id }) });
+    if (r.status >= 500 || r.status === 429) differer();
+  } catch (e) { differer(); }
 }
 window.rgEditRegles = function() {
   const r = RG.d.regles;
@@ -32081,7 +32110,8 @@ window.rgFraisChauffeur = async function(cat) {
       const data = await rgFraisLireForm(null, { chauffeurId: SESSION.chauffeurId || '', chauffeurNom: SESSION.name || '', chauffeurUid: uid });
       const c = courses.find(function(x){ return x._id === data.courseId; }); if (c) data.courseRef = String(c.datetime || '').slice(0, 16).replace('T', ' ') + ' ' + (c.depart || '').slice(0, 40);
       Object.assign(data, { statut: 'a_valider', creeAt: new Date().toISOString(), societe: cible.soc });
-      await fbPush(cible.base + 'frais', data);
+      const cle = await fbPush(cible.base + 'frais', data);
+      if (cle) rgFraisMail(cible.base, cle);
       ov.remove(); showToast('Dépense envoyée ✓'); rgMesFrais();
     } catch (e) { this.disabled = false; err.style.color = '#dc2626'; err.textContent = e.message || 'Erreur'; }
   };
