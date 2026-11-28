@@ -239,6 +239,9 @@ async function getAuthToken(forceRefresh) {
       // conversations/listes seraient alors vides à tort).
       return await window.fbAuth.currentUser.getIdToken(!!forceRefresh);
     }
+    // Hors connexion (ou SDK Firebase pas encore chargé faute de réseau) :
+    // ce n'est PAS une session fantôme — on reste connecté, en mode hors ligne.
+    if(navigator.onLine === false || typeof firebase === 'undefined' || !window.fbAuth) return null;
     // 3) Aucune session Firebase : la session locale est "fantôme". On le
     // signale une seule fois et on renvoie l'utilisateur vers la connexion,
     // au lieu d'afficher une app vide avec des 401 en boucle.
@@ -302,7 +305,7 @@ function _majOfflineBanner(){
     if(!b){
       b = document.createElement('div'); b.id = 'offline-banner';
       b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147482000;background:#b45309;color:#fff;font-size:12px;font-weight:700;text-align:center;padding:8px 12px;padding-bottom:calc(8px + env(safe-area-inset-bottom));box-shadow:0 -2px 10px rgba(0,0,0,0.25)';
-      b.textContent = '📡 Hors connexion — affichage de la dernière synchro. Reconnexion automatique dès le retour du réseau.';
+      b.textContent = '📡 Hors connexion — vous pouvez continuer : vos actions sont enregistrées et envoyées dès le retour du réseau.';
       document.body.appendChild(b);
     }
   } else if(b){ b.remove(); }
@@ -311,7 +314,7 @@ if(typeof window !== 'undefined'){
   try {
     window.addEventListener('offline', function(){ _setOffline(true); });
     window.addEventListener('online', function(){ _setOffline(false); try { if(typeof loadAll==='function') loadAll(); } catch(e){} try { if(SESSION && SESSION.role==='chauffeur' && typeof renderMesCourses==='function') renderMesCourses(); } catch(e){} });
-    if(navigator && navigator.onLine === false) window._appOffline = true;
+    if(navigator && navigator.onLine === false) { window._appOffline = true; setTimeout(function(){ try { _majOfflineBanner(); } catch(e){} }, 1500); }
   } catch(e){}
 }
 // Requete FILTREE cote serveur : ne rapatrie que les courses d'UN chauffeur.
@@ -691,7 +694,13 @@ function startCoursesListener() {
         const val = fbNeutre(snap.val());
         _listenerBuckets[key] = val ? Object.entries(val).map(([k,v]) => ({_id:k, ...v})) : [];
         const now = Date.now();
-        if(now - _lastListenerRun < 800) return;
+        // Regroupe les rafales (< 800 ms) SANS perdre la dernière : avant, une
+        // modification arrivée juste après une autre n'était jamais affichée.
+        if(now - _lastListenerRun < 800) {
+          clearTimeout(window._listenerTrailing);
+          window._listenerTrailing = setTimeout(function(){ _lastListenerRun = Date.now(); _recomputeFilteredCourses(); }, 850);
+          return;
+        }
         _lastListenerRun = now;
         _recomputeFilteredCourses();
       }, (err) => {
@@ -746,7 +755,9 @@ function _recomputeFilteredCourses() {
   Object.values(_listenerBuckets || {}).forEach(arr => {
     (arr||[]).forEach(c => { if(c && c._id) vus.set(c._id, c); });
   });
-  const courses = Array.from(vus.values());
+  let courses = Array.from(vus.values());
+  // Actions faites hors connexion pas encore envoyées : elles restent visibles.
+  try { courses = fileAppliquer('courses', courses); } catch(e){}
   try { _fbCache.set('courses', { t: Date.now(), data: courses.map(o=>({...o})) }); } catch(e){}
   handleCoursesSnapshot(courses);
 }
@@ -993,6 +1004,79 @@ function stopChauffeursListener() {
 
 // Traite un instantané frais de la collection courses en réutilisant la
 // logique déjà écrite dans l'app (aucune règle métier dupliquée ici).
+// ═══════════════════════════════════════════════════════════════════════════
+//  ✏️ MODIFICATION D'UN TRANSFERT → APP DU CHAUFFEUR À JOUR TOUT DE SUITE
+//  Quand le dispatch modifie un transfert attribué (heure, adresse, vol,
+//  passagers, véhicule), l'annule ou le retire au chauffeur, l'app du
+//  chauffeur se met à jour aussitôt (écoute temps réel) et le prévient :
+//  son + bandeau « ✏️ Transfert modifié : Heure 10:30 → 11:00 », et le
+//  transfert est surligné pendant 15 min.
+// ═══════════════════════════════════════════════════════════════════════════
+const MC_CHAMPS = { datetime: 'Heure', depart: 'Départ', arrivee: 'Arrivée', vol: 'Vol / train', pax: 'Passagers', vehicule: 'Véhicule' };
+function mcEtat(c) {
+  const noms = Array.isArray(c.passagers) ? c.passagers.filter(Boolean).map(function(p){ return ((p.prenom || '') + ' ' + (p.nom || '')).trim(); }).filter(Boolean).join(', ') : (c.passager || '');
+  return { datetime: c.datetime || '', depart: c.depart || c.lieu || '', arrivee: c.arrivee || '', vol: c.vol || '', pax: noms + (c.pax ? ' (' + c.pax + ')' : ''), vehicule: c.vehicule || '', statut: c.statut || '', nom: (function(){ try { return nomPassagerChauffeur(c); } catch(e) { return c.client || ''; } })() };
+}
+function mcModifsMemoriser(mine) { window._mcEtats = {}; mine.forEach(function(c){ window._mcEtats[c._id] = mcEtat(c); }); }
+function mcFmt(k, v) {
+  if (k === 'datetime' && v) { const d = new Date(v); if (!isNaN(d)) return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) + ' ' + String(v).slice(11, 16); }
+  return v || '—';
+}
+function mcModifsDetecter(toutes, mine) {
+  const avant = window._mcEtats || {}, out = [];
+  const parId = {}; toutes.forEach(function(c){ parId[c._id] = c; });
+  mine.forEach(function(c){
+    const a = avant[c._id]; if (!a) return;
+    const e = mcEtat(c), diffs = [];
+    Object.keys(MC_CHAMPS).forEach(function(k){ if (a[k] !== e[k]) diffs.push(MC_CHAMPS[k] + ' : ' + mcFmt(k, a[k]) + ' → ' + mcFmt(k, e[k])); });
+    if (diffs.length) out.push({ id: c._id, nom: e.nom, diffs: diffs });
+  });
+  Object.keys(avant).forEach(function(id){
+    if (mine.some(function(c){ return c._id === id; })) return;
+    const c = parId[id];
+    if (c && ['terminee', 'noshow', 'payee', 'facturee', 'depose'].indexOf(c.statut) >= 0) return;   // terminé par le chauffeur
+    if (c && c.statut === 'annulee') out.push({ id: id, nom: avant[id].nom, annule: true, diffs: ['❌ Transfert annulé'] });
+    else out.push({ id: id, nom: avant[id].nom, retire: true, diffs: ['Transfert retiré de votre planning'] });
+  });
+  mcModifsMemoriser(mine);
+  return out;
+}
+function mcModifsAlerter(modifs) {
+  window._mcModif = window._mcModif || {};
+  modifs.forEach(function(m){ if (!m.retire && !m.annule) window._mcModif[m.id] = { t: Date.now(), txt: m.diffs.join(' · ') }; });
+  try { playNewCourseAlert(); } catch(e){}
+  const m = modifs[0];
+  const titre = m.annule ? '❌ Transfert annulé' : (m.retire ? '↩️ Transfert retiré' : '✏️ Transfert modifié');
+  const txt = (m.nom ? m.nom + ' — ' : '') + m.diffs.join(' · ') + (modifs.length > 1 ? ' (+' + (modifs.length - 1) + ' autre' + (modifs.length > 2 ? 's' : '') + ')' : '');
+  try { showLocalNotification(titre, txt); } catch(e){}
+  let b = document.getElementById('mc-modif-banniere');
+  if (!b) {
+    b = document.createElement('div'); b.id = 'mc-modif-banniere';
+    b.style.cssText = 'position:fixed;left:10px;right:10px;top:calc(env(safe-area-inset-top,0px) + 10px);z-index:2147482500;background:' + (m.annule || m.retire ? '#991b1b' : '#b45309') + ';color:#fff;border-radius:14px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.3);font:600 14px Inter,sans-serif;line-height:1.35;cursor:pointer';
+    document.body.appendChild(b);
+  }
+  b.style.background = (m.annule || m.retire) ? '#991b1b' : '#b45309';
+  b.innerHTML = '<div style="font-weight:800;font-size:15px;margin-bottom:3px">' + titre + '</div><div>' + E(txt) + '</div><div style="font-size:11px;opacity:.85;margin-top:4px">Toucher pour fermer</div>';
+  b.onclick = function(){ b.remove(); if (!m.annule && !m.retire) { try { openCourseFull(m.id); } catch(e){} } };
+  clearTimeout(window._mcModifTimer); window._mcModifTimer = setTimeout(function(){ const x = document.getElementById('mc-modif-banniere'); if (x) x.remove(); }, 15000);
+}
+// Transfert modifié : bandeau « ✏️ MODIFIÉ » sur sa carte pendant 15 min.
+function mcSurlignerModifs() {
+  const M = window._mcModif || {};
+  Object.keys(M).forEach(function(id){
+    if (Date.now() - M[id].t > 15 * 60000) { delete M[id]; return; }
+    const el = document.querySelector('[onclick="openCourseFull(\'' + id + '\')"]');
+    if (!el || (el.previousElementSibling && el.previousElementSibling.classList.contains('mc-modif-tag'))) return;
+    el.insertAdjacentHTML('beforebegin', '<div class="mc-modif-tag" style="background:#fef3c7;color:#92400e;padding:7px 14px;font:700 12px Inter,sans-serif;border-bottom:1px solid #fcd34d">✏️ MODIFIÉ PAR LE DISPATCH — ' + E(M[id].txt) + '</div>');
+  });
+}
+// Page plein écran ouverte sur un transfert modifié : rafraîchie sur place.
+function mcRafraichirPageCourse(modifs) {
+  const id = window._courseFullOpenId; if (!id) return;
+  const m = (modifs || []).find(function(x){ return x.id === id; }); if (!m) return;
+  if (m.annule || m.retire) { window._courseFullOpenId = null; const o = document.getElementById('coursefull-overlay'); if (o) o.remove(); return; }
+  try { openCourseFull(id); } catch(e){}
+}
 async function handleCoursesSnapshot(courses) {
   try { co2PlanifierCompletion(); } catch(e){}
   try {
@@ -1018,14 +1102,31 @@ async function handleCoursesSnapshot(courses) {
         !['terminee','annulee','noshow','payee'].includes(c.statut)
       );
       const currentIds = new Set(myCourses.map(c => c._id));
+      // ★ TOUJOURS la version la plus récente : avant, la liste du chauffeur
+      // n'était mise à jour qu'à l'arrivée d'un NOUVEAU transfert — une
+      // modification faite par le dispatch (heure, adresse, passagers,
+      // annulation) n'apparaissait pas sur son téléphone.
+      // Les anciens transferts attribués au NOM seulement (sans chauffeurUid) ne
+      // passent pas par l'écoute par UID : on garde ceux chargés au démarrage.
+      const _idsEcoute = new Set(courses.map(c => c._id));
+      const _anciennes = (D.courses||[]).filter(c => c && c._id && !_idsEcoute.has(c._id) && !c.chauffeurUid && courseEstAuChauffeur(c));
+      D.courses = courses.concat(_anciennes).sort((a,b)=> new Date(b.datetime||0) - new Date(a.datetime||0));
+      const _sigMc = (function(){ try { return JSON.stringify(courses.map(function(c){ return [c._id, c.statut, c.updatedAt || '', c.datetime || '', c.depart || c.lieu || '', c.arrivee || '', c.vol || '', c.chauffeur || '', JSON.stringify(c.passagers || c.passager || ''), c.pax || '', c.vehicule || '', c.notes || '']; }).sort(function(a, b){ return a[0] < b[0] ? -1 : 1; })); } catch(e) { return String(Math.random()); } })();
+      const _mcChange = _sigMc !== window._mcDerniereSig; window._mcDerniereSig = _sigMc;
       if(window._lastDriverCourseIds == null) {
         window._lastDriverCourseIds = currentIds;
-        D.courses = courses;
+        try { mcModifsMemoriser(myCourses); } catch(e){}
         if(typeof renderMesCourses === 'function') renderMesCourses();
       } else {
         const nouvelles = myCourses.filter(c => !window._lastDriverCourseIds.has(c._id));
+        let _modifs = [];
+        try { _modifs = mcModifsDetecter(courses, myCourses); } catch(e){}
+        if(_modifs.length) { try { mcModifsAlerter(_modifs); } catch(e){} }
+        if(nouvelles.length === 0 && _mcChange) {
+          if(typeof renderMesCourses === 'function') renderMesCourses();
+          try { mcRafraichirPageCourse(_modifs); } catch(e){}
+        }
         if(nouvelles.length > 0) {
-          D.courses = myCourses.sort((a,b)=> new Date(b.datetime||0) - new Date(a.datetime||0));
           try { playNewCourseAlert(); } catch(e){}
           try {
             showLocalNotification(
@@ -1195,8 +1296,9 @@ async function fbGet(path) {
     return s ? s.map(o => ({...o})) : [];
   }
   _setOffline(false); // lecture réussie → on est bien en ligne
-  if (!data) { _fbCache.set(path, {t: Date.now(), data: []}); _lsCacheSet(path, []); return []; }
-  const arr = Object.entries(data).map(([k,v]) => ({_id:k,...v}));
+  if (!data) { const v0 = fileAppliquer(path, []); _fbCache.set(path, {t: Date.now(), data: v0}); _lsCacheSet(path, v0); return v0.map(o => ({...o})); }
+  let arr = Object.entries(data).map(([k,v]) => ({_id:k,...v}));
+  try { arr = fileAppliquer(path, arr); } catch(e){}
   _fbCache.set(path, {t: Date.now(), data: arr});
   _lsCacheSet(path, arr);
   return arr.map(o => ({...o}));
@@ -1210,13 +1312,135 @@ async function fbPush(path, data) {
     data.orgId = (typeof currentOrgId === 'function') ? currentOrgId() : 'mobilea';
   }
   fbInvalidate(path);
-  const token = await getAuthToken();
-  const r = await fetch(`${FB_URL}/${path}.json${authParam(token)}`, {
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)
-  });
+  if(navigator.onLine === false) return fbPushHorsLigne(path, data);
+  let r;
+  try {
+    const token = await getAuthToken();
+    r = await fetch(`${FB_URL}/${path}.json${authParam(token)}`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)
+    });
+  } catch(e) { return fbPushHorsLigne(path, data); }   // coupure réseau
   const res = await r.json();
   return res.name;
 }
+// Création hors connexion : identifiant Firebase généré sur l'appareil (même
+// format, même ordre chronologique), donnée visible tout de suite, envoyée au
+// retour du réseau (PUT à ce même identifiant → jamais de doublon).
+function fbPushHorsLigne(path, data) {
+  const key = fbIdLocal();
+  fileMettre('set', path, key, data);
+  showToast('📴 Enregistré hors connexion — envoi automatique au retour du réseau', true);
+  return key;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  📴 MODE HORS CONNEXION COMPLET (chauffeurs, dispatch, admin, clients)
+//  • Toute l'app reste utilisable sans réseau : données du dernier chargement.
+//  • Chaque action (modifier, créer, supprimer, pointer) est enregistrée sur
+//    le téléphone, appliquée tout de suite à l'écran, puis envoyée dans l'ordre
+//    au retour du réseau (vérification toutes les 20 s, en plus de l'événement
+//    « online » peu fiable sur iPhone). Gardée 7 jours maximum.
+//  • Conflits (« le plus récent gagne », champ par champ) : si le dispatch a
+//    modifié le MÊME champ d'un transfert après l'action hors connexion, sa
+//    valeur est gardée ; les autres champs de l'action s'appliquent. Un
+//    transfert supprimé entre-temps n'est jamais recréé.
+//  • Pointages : envoyés au retour du réseau, sauf si l'admin les a supprimés
+//    ou modifiés entre-temps (protection contre les pointages « fantômes »).
+// ═══════════════════════════════════════════════════════════════════════════
+const SYNC_MAX_AGE = 7 * 24 * 3600 * 1000;
+// Identifiant au format Firebase (horodaté + aléatoire) créé sur l'appareil.
+function fbIdLocal() {
+  const C = '-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz';
+  let t = Date.now(), s = '';
+  for (let i = 0; i < 8; i++) { s = C.charAt(t % 64) + s; t = Math.floor(t / 64); }
+  const a = new Uint8Array(12);
+  try { crypto.getRandomValues(a); } catch (e) { for (let i = 0; i < 12; i++) a[i] = Math.floor(Math.random() * 64); }
+  for (let i = 0; i < 12; i++) s += C.charAt(a[i] % 64);
+  return s;
+}
+function syncIdAction(a) { return a.id || ((a.queuedAt || '') + '|' + a.type + '|' + a.path + '|' + (a.key || '')); }
+// Applique à une liste les actions encore en attente pour ce chemin.
+function fileAppliquer(path, arr) {
+  if (!Array.isArray(arr)) return arr;
+  const q = getSyncQueue().filter(function(a){ return a.path === path; });
+  if (!q.length) return arr;
+  const L = arr.slice();
+  q.forEach(function(a){
+    const i = L.findIndex(function(x){ return x && x._id === a.key; });
+    if (a.type === 'delete') { if (i >= 0) L.splice(i, 1); }
+    else if (a.type === 'set') { const o = Object.assign({ _id: a.key }, a.data); if (i >= 0) L[i] = o; else L.push(o); }
+    else if (a.type === 'update' && a.data && typeof a.data === 'object') {
+      if (i >= 0) L[i] = Object.assign({}, L[i], a.data);
+      else if (a.cree) L.push(Object.assign({ _id: a.key }, a.data));
+    }
+  });
+  return L;
+}
+// Enregistre une action hors connexion et l'applique tout de suite aux données locales.
+function fileMettre(type, path, key, data) {
+  let base = null, cree = false;
+  const memo = (_fbCache.get(path) || {}).data;
+  const src = (Array.isArray(D[path]) && D[path].length ? D[path] : null) || memo || _lsCacheGet(path) || [];
+  const ex = src.find(function(x){ return x && x._id === key; });
+  if (type === 'update') {
+    if (ex) { base = {}; Object.keys(data || {}).forEach(function(k){ base[k] = ex[k] === undefined ? null : ex[k]; }); }
+    else cree = true;
+  }
+  queueAction({ id: fbIdLocal(), type: type, path: path, key: key, data: data, base: base, cree: cree });
+  const appl = function(arr){ return fileAppliquer(path, (arr || []).filter(function(x){ return true; })); };
+  try { if (Array.isArray(D[path])) D[path] = appl(D[path]); } catch (e) {}
+  try { const h = _fbCache.get(path); if (h && h.data) _fbCache.set(path, { t: h.t, data: appl(h.data) }); } catch (e) {}
+  try { const ls = _lsCacheGet(path); if (ls) _lsCacheSet(path, appl(ls)); } catch (e) {}
+  try { if (path === 'courses' || path === 'pointages' || path === 'messages') sauverCacheOffline(); } catch (e) {}
+}
+// Résout un conflit au retour du réseau. Renvoie les champs à écrire, ou null.
+function syncResoudre(a, cur) {
+  const t = a.queuedAt || '';
+  if (!cur) return (a.cree && a.path !== 'courses') ? a.data : null;   // supprimé entre-temps : on ne recrée pas
+  if (a.path === 'pointages') {
+    const baseMaj = a.base ? a.base.majAt : null;
+    if (cur.majAt && cur.majAt !== baseMaj && cur.majAt !== (a.data || {}).majAt && cur.majAt > t) return null;   // modifié par l'admin après
+    return a.data;
+  }
+  const out = {}; let n = 0;
+  Object.keys(a.data || {}).forEach(function(k){
+    if (k === 'updatedAt') return;
+    const serveur = cur[k] === undefined ? null : cur[k];
+    const base = a.base ? (a.base[k] === undefined ? null : a.base[k]) : serveur;
+    const autre = JSON.stringify(serveur) !== JSON.stringify(base) && JSON.stringify(serveur) !== JSON.stringify(a.data[k]);
+    if (autre && cur.updatedAt && cur.updatedAt > t) return;     // champ modifié ailleurs plus récemment
+    out[k] = a.data[k]; n++;
+  });
+  if (!n) return null;
+  out.updatedAt = (a.data && a.data.updatedAt) || t;              // heure réelle de l'action
+  return out;
+}
+// Applique les actions en attente aux données affichées (après un rechargement).
+function fileAppliquerTout() {
+  const paths = {}; getSyncQueue().forEach(function(a){ paths[a.path] = 1; });
+  Object.keys(paths).forEach(function(p){ if (Array.isArray(D[p])) D[p] = fileAppliquer(p, D[p]); });
+}
+// SDK Firebase absent (app ouverte sans réseau) : rechargé dès que le réseau
+// revient, puis les écoutes temps réel redémarrent.
+function fbSdkAssurer() {
+  if (typeof firebase !== 'undefined' || window._fbSdkCharge || navigator.onLine === false || document.readyState !== 'complete') return;
+  window._fbSdkCharge = true;
+  const v = '10.12.2', base = 'https://www.gstatic.com/firebasejs/' + v + '/';
+  Promise.all(['firebase-app-compat.js', 'firebase-auth-compat.js', 'firebase-database-compat.js'].map(function(f){ return fetch(base + f).then(function(r){ if (!r.ok) throw new Error(r.status); return r.text(); }); }))
+    .then(function(txt){
+      const sc = document.createElement('script'); sc.textContent = txt.join('\n;\n'); document.head.appendChild(sc);
+      setTimeout(function(){
+        try { if (typeof startCoursesListener === 'function') { _listenerBootTries = 0; startCoursesListener(); } } catch (e) {}
+        try { if (typeof startPointagesListener === 'function') startPointagesListener(); } catch (e) {}
+        try { flushSyncQueue(); } catch (e) {}
+      }, 2500);
+    })
+    .catch(function(){ window._fbSdkCharge = false; });
+}
+setInterval(function(){
+  try { fbSdkAssurer(); } catch (e) {}
+  try { if (navigator.onLine !== false && getSyncQueue().length) flushSyncQueue(); } catch (e) {}
+}, 20000);
 
 // ── FILE D'ATTENTE DE SYNCHRONISATION HORS-LIGNE ──
 function getSyncQueue() {
@@ -1267,7 +1491,9 @@ function purgeSyncQueueFantome() {
       // On ne garde que les actions récentes (< 10 min). Les plus vieilles sont
       // considérées comme coincées et retirées pour casser la boucle.
       const t = a.queuedAt ? new Date(a.queuedAt).getTime() : 0;
-      return t && (maintenant - t) < 10*60*1000;
+      // 7 jours : un chauffeur peut rester longtemps sans réseau (parking,
+      // aéroport, étranger). Les pointages sont protégés au moment de l'envoi.
+      return t && (maintenant - t) < SYNC_MAX_AGE;
     });
     if(garde.length !== q.length) {
       saveSyncQueue(garde);
@@ -1277,44 +1503,85 @@ function purgeSyncQueueFantome() {
   } catch(e) {}
 }
 
+let _flushEnCours = false;
 async function flushSyncQueue() {
-  purgeSyncQueueFantome();          // casser la boucle des écritures coincées
+  if(_flushEnCours) return;
+  purgeSyncQueueFantome();          // actions de plus de 7 jours
   const q = getSyncQueue();
   if(!q.length) return;
-  fbInvalidate(); // vider tout le cache : les écritures rejouées changent les données
-  const token = await getAuthToken();
-  const remaining = [];
-  for(const action of q) {
-    try {
-      if(action.type === 'update') {
-        const r = await fetch(`${FB_URL}/${action.path}/${action.key}.json${authParam(token)}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(action.data)});
-        if(!r.ok) remaining.push(action);
-      } else if(action.type === 'push') {
-        const r = await fetch(`${FB_URL}/${action.path}.json${authParam(token)}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(action.data)});
-        if(!r.ok) remaining.push(action);
-      }
-    } catch(e) { remaining.push(action); }
-  }
-  saveSyncQueue(remaining);
-  if(remaining.length === 0 && q.length > 0) { showToast(`✓ ${q.length} action(s) synchronisée(s)`); majBandeauSync(); await loadAll(); }
-  else updateSyncBadge();
+  if(navigator.onLine === false) { updateSyncBadge(); return; }
+  _flushEnCours = true;
+  try {
+    fbInvalidate(); // vider tout le cache : les écritures rejouées changent les données
+    const token = await getAuthToken();
+    if(!token) { updateSyncBadge(); return; }      // session pas encore prête : on réessaiera
+    const H = {'Content-Type':'application/json'};
+    const url = function(p){ return `${FB_URL}/${p}.json${authParam(token)}`; };
+    const reste = []; let envoyes = 0, ignores = 0;
+    for(let i = 0; i < q.length; i++) {
+      const a = q[i];
+      try {
+        let r = null;
+        if(a.type === 'update') {
+          let data = a.data;
+          if(a.path === 'courses' || a.path === 'pointages') {
+            const rc = await fetch(url(a.path + '/' + a.key));
+            const cur = rc.ok ? await rc.json() : undefined;
+            if(cur !== undefined) { data = syncResoudre(a, cur); if(!data) { ignores++; continue; } }
+          }
+          r = await fetch(url(a.path + '/' + a.key), {method:'PATCH', headers:H, body:JSON.stringify(data)});
+        } else if(a.type === 'push') {
+          r = await fetch(url(a.path), {method:'POST', headers:H, body:JSON.stringify(a.data)});
+        } else if(a.type === 'set') {
+          r = await fetch(url(a.path + '/' + a.key), {method:'PUT', headers:H, body:JSON.stringify(a.data)});
+        } else if(a.type === 'delete') {
+          r = await fetch(url(a.path + '/' + a.key), {method:'DELETE'});
+        } else if(a.type === 'appel') {
+          // Notification push / SMS décidée hors connexion : envoyée maintenant.
+          const args = Array.isArray(a.data) ? a.data : [];
+          if(a.key === 'push') { try { await sendPushNotification.apply(null, args); } catch(e){} }
+          else if(a.key === 'sms') { try { await sendTwilioSMS.apply(null, args); } catch(e){} }
+          envoyes++; continue;
+        } else if(a.type === 'logipax') {
+          // Synchro LogiPax différée : avec la version à jour du transfert.
+          let c = null;
+          try { const rc = await fetch(url('courses/' + a.key)); if(rc.ok) { const v = await rc.json(); if(v) c = Object.assign({ _id: a.key }, v); } } catch(e) { throw e; }
+          if(c) { try { await syncToLogipax(c, c.logipaxNumBon ? 'update' : a.data); } catch(e){} }
+          envoyes++; continue;
+        } else { continue; }
+        if(r.ok) envoyes++;
+        else if(r.status === 401 || r.status === 429 || r.status >= 500) { for(let j = i; j < q.length; j++) reste.push(q[j]); break; }   // réessayer plus tard, dans l'ordre
+        else { ignores++; console.warn('[sync] action refusée par le serveur', r.status, a.path, a.key); }
+      } catch(e) { for(let j = i; j < q.length; j++) reste.push(q[j]); break; }  // réseau recoupé : on garde la suite, dans l'ordre
+    }
+    // Les actions ajoutées PENDANT l'envoi sont conservées.
+    const traites = new Set(q.map(syncIdAction));
+    const ajoutees = getSyncQueue().filter(function(x){ return !traites.has(syncIdAction(x)); });
+    saveSyncQueue(reste.concat(ajoutees));
+    if(envoyes || ignores) {
+      if(!reste.length) showToast('✓ ' + envoyes + ' action' + (envoyes > 1 ? 's' : '') + ' hors connexion envoyée' + (envoyes > 1 ? 's' : '') + (ignores ? ' · ' + ignores + ' ignorée' + (ignores > 1 ? 's' : '') + ' (modifiée' + (ignores > 1 ? 's' : '') + ' entre-temps)' : ''));
+      majBandeauSync();
+      try { await loadAll(); } catch(e){}
+    }
+    updateSyncBadge();
+  } finally { _flushEnCours = false; }
 }
-window.addEventListener('online', () => { showToast('🌐 Connexion rétablie — synchronisation...'); majBandeauSync(); flushSyncQueue(); });
+window.addEventListener('online', () => { showToast('🌐 Connexion rétablie — synchronisation...'); majBandeauSync(); try { fbSdkAssurer(); } catch(e){} flushSyncQueue(); });
 window.addEventListener('offline', () => { showToast('📴 Hors-ligne — vos actions seront synchronisées au retour', true); majBandeauSync(); });
 
 async function fbUpdate(path, key, data) {
   fbInvalidate(path);
-  // Les pointages ne sont JAMAIS mis en file d'attente hors-ligne : une écriture
-  // de pointage rejouée plus tard réinjecterait dans Firebase un pointage que
-  // l'admin a pu supprimer entre-temps (il "reviendrait" tout seul). On exige
-  // donc une écriture en direct, ou un échec visible.
-  const jamaisEnFile = (path === 'pointages');
+  // Heure de la modification d'un transfert : sert à départager, au retour du
+  // réseau, une action faite hors connexion et une modification du dispatch
+  // (« le plus récent gagne », champ par champ).
+  if(path === 'courses' && data && typeof data === 'object' && !Array.isArray(data) && !data.updatedAt) data = Object.assign({}, data, { updatedAt: new Date().toISOString() });
+  // Pointages : désormais mis en file hors connexion AVEC protection — au
+  // retour du réseau, un pointage supprimé ou modifié par l'admin entre-temps
+  // n'est pas réécrit (c'était la cause des pointages « fantômes »).
+  const jamaisEnFile = false;
   if(!navigator.onLine) {
-    if(jamaisEnFile) { showToast('Pas de réseau — réessayez dans un instant', true); return false; }
-    queueAction({type:'update', path, key, data});
-    const item = D[path]?.find(x => x._id === key);
-    if(item) Object.assign(item, data);
-    showToast('📴 Enregistré hors-ligne — sync au retour réseau', true);
+    fileMettre('update', path, key, data);
+    showToast('📴 Enregistré hors connexion — envoi automatique au retour du réseau', true);
     return false;
   }
   try {
@@ -1338,11 +1605,8 @@ async function fbUpdate(path, key, data) {
       return false;
     }
     // Vraie coupure réseau.
-    if(jamaisEnFile) { showToast('Enregistrement du pointage impossible — réessayez', true); return false; }
-    queueAction({type:'update', path, key, data});
-    const item = D[path]?.find(x => x._id === key);
-    if(item) Object.assign(item, data);
-    showToast('📴 Enregistré hors-ligne — sync au retour réseau', true);
+    fileMettre('update', path, key, data);
+    showToast('📴 Enregistré hors connexion — envoi automatique au retour du réseau', true);
     return false;
   }
 }
@@ -1445,12 +1709,16 @@ window.supprimerFicheChauffeur = async function(critere) {
 
 async function fbDelete(path, key) {
   fbInvalidate(path);
+  if(key && navigator.onLine === false) { fileMettre('delete', path, key, null); showToast('📴 Suppression enregistrée hors connexion — envoi au retour du réseau', true); return true; }
   try {
     const token = await getAuthToken();
     const url = key ? `${FB_URL}/${path}/${key}.json${authParam(token)}` : `${FB_URL}/${path}.json${authParam(token)}`;
     const r = await fetch(url, {method:'DELETE', headers:{'Content-Type':'application/json'}});
     return r.ok;
-  } catch(e) { console.error('fbDelete:', e); return false; }
+  } catch(e) {
+    if(key) { fileMettre('delete', path, key, null); showToast('📴 Suppression enregistrée hors connexion — envoi au retour du réseau', true); return true; }
+    console.error('fbDelete:', e); return false;
+  }
 }
 
 async function fbDel(path) {
@@ -2084,6 +2352,7 @@ function _splitGerantCourses(){
 }
 
 function renderAll() {
+  try { fileAppliquerTout(); } catch(e){}
   // Séparer les transferts gérant AVANT tout rendu/calcul (CA non faussé).
   _splitGerantCourses();
   // Priorité à l'écran actuellement affiché : on le rend d'abord pour que
@@ -3286,6 +3555,8 @@ const ONESIGNAL_PROXY = 'https://mobilea-push.mus-akdogan.workers.dev';
 const CHAUFFEUR_AUTH_URL = 'https://mobilea-chauffeur-auth.mus-akdogan.workers.dev';
 
 async function sendPushNotification(title, message, url, targetChauffeurIds, targetTag, opts) {
+  // Hors connexion : la notification part au retour du réseau.
+  if(navigator.onLine === false) { try { queueAction({ id: fbIdLocal(), type: 'appel', path: '_appel', key: 'push', data: [title, message, url, targetChauffeurIds, targetTag, opts] }); } catch(e){} return; }
   // On neutralise l'ancienne URL web qui traine dans de nombreux appels :
   // sur l'app native elle ouvrirait Safari au lieu de l'application.
   if(url && /musakdogan-droid\.github\.io/.test(url)) url = null;
@@ -13661,6 +13932,8 @@ window.ouvrirConvDispatchChauffeur = function() {
 
 function renderMesCourses() {
   if(SESSION.role!=='chauffeur') return;
+  try { if(Array.isArray(D.courses)) D.courses = fileAppliquer('courses', D.courses); } catch(e){}
+  setTimeout(function(){ try { mcSurlignerModifs(); } catch(e){} }, 0);
   const name = SESSION.name;
 
   // Masquer les prix/revenus si l'admin a désactivé "Voir les prix" pour ce chauffeur
@@ -24541,6 +24814,8 @@ function getSMSTemplate(clientName, chauffeurName, chauffeurTel, destination) {
 const TWILIO_PROXY = 'https://simplycab-sms.mus-akdogan.workers.dev';
 
 async function sendTwilioSMS(to, body, isAuto) {
+  // Hors connexion : le SMS part au retour du réseau.
+  if(navigator.onLine === false) { try { queueAction({ id: fbIdLocal(), type: 'appel', path: '_appel', key: 'sms', data: [to, body, isAuto] }); } catch(e){} return; }
   // Si l'envoi automatique de SMS est désactivé (période calme), on bloque les
   // SMS AUTOMATIQUES (alertes chauffeurs). Les SMS manuels (envoyés exprès par
   // le dispatch, ex: prévenir un passager) passent toujours.
@@ -25122,6 +25397,8 @@ window.relancerSyncLogipax = async function() {
 async function syncToLogipax(course, action) {
   if(!shouldSyncToLogipax(course, action)) return;
   if(!LOGIPAX_SYNC_URL || LOGIPAX_SYNC_URL.includes('XXXX')) return; // non configuré
+  // Hors connexion : envoi à LogiPax au retour du réseau (après les écritures en attente).
+  if(navigator.onLine === false && course && course._id) { try { queueAction({ id: fbIdLocal(), type: 'logipax', path: '_logipax', key: course._id, data: action || 'update' }); } catch(e){} return; }
   // Les erreurs LogiPax ne concernent que le staff : un chauffeur n'y peut
   // rien et ne doit pas être alarmé en pleine course.
   const estStaff = SESSION && (SESSION.role === 'admin' || SESSION.role === 'dispatch');
@@ -30869,8 +31146,8 @@ setInterval(function(){
 //  Sur ordinateur : rien ne change.
 // ═══════════════════════════════════════════════════════════════════════════
 (function(){
-  const PLEIN = ['co2-ov', 'co2a-ov', 'vr-ov', 'xt-ov', 'secu-ov', 'docs-ov', 'docs-form-ov'];
-  const PETIT = ['secu-f-ov', 'imp-cli-ov', 'vj-ov'];
+  const PLEIN = ['co2-ov', 'co2a-ov', 'vr-ov', 'xt-ov', 'secu-ov', 'docs-ov', 'docs-form-ov', 'rg-ov', 'rc-ov'];
+  const PETIT = ['secu-f-ov', 'imp-cli-ov', 'vj-ov', 'rg-f-ov'];
   function css() {
     if (document.getElementById('mf-css')) return;
     const s = document.createElement('style');
@@ -30903,3 +31180,1891 @@ setInterval(function(){
   }
   if (document.body) demarrer(); else document.addEventListener('DOMContentLoaded', demarrer);
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  💼 GESTION, PAIE ET RENTABILITÉ (Rapports → « Gestion & rentabilité »)
+//  Société → Chauffeur → Heures → Salaire → Frais → Véhicule → Coût réel → Marge
+//
+//  Réutilise l'existant (aucun doublon) :
+//   • heures      = pointeuse (/pointages : date, heureDebut, heureFin, pause,
+//                   véhicule du jour) — pour un gérant, ses pointages privés
+//                   remplacent ceux du chauffeur, comme dans « Pointage ».
+//   • CA          = transferts (prix facturé → HT avec la TVA de l'app),
+//                   y compris l'archive.
+//   • société     = champ « Société » des chauffeurs / véhicules.
+//   • motorisation= champ du module CO₂ (diesel, essence, hybride, électrique…).
+//  Nouvelles données (confidentielles, jamais sur les fiches lisibles par tous) :
+//   MOBILEA (admin)           gérant (privé, gerant_data/{uid}/…)
+//   paie_remu/{chauffeurId}    → taux et type de rémunération
+//   paie_regles                → règles de paie de la société + % de charges
+//   veh_couts/{vehiculeId}     → coûts mensuels du véhicule
+//   frais/{id}                 → dépenses déclarées (chauffeur, admin, gérant)
+//   paie/{AAAAMM}/{chauffeurId}→ récap mensuel (brouillon → validé), historique
+//  Chauffeurs payés à l'heure : salariés MOBILEA et chauffeurs des gérants.
+//  Sous-traitants payés à la course : coût = « prix chauffeur » (inchangé).
+//  Rentabilité calculée sur le CA HORS TAXES. Coût salarié = brut × (1 + % de
+//  charges patronales de la société). Le chauffeur ne voit pas son récap.
+//  Montants calculés = aide à la paie, pas un bulletin de salaire officiel.
+// ═══════════════════════════════════════════════════════════════════════════
+const RG = { ctx: null, onglet: 'bord', mois: '', annee: '', filtres: { soc: '', ch: '', veh: '', moto: '', type: '' }, d: null, focus: null };
+const RG_FRAIS_CAT = { carburant: '⛽ Carburant', recharge: '🔌 Recharge électrique', peage: '🛣️ Péage', parking: '🅿️ Parking', lavage: '🧽 Lavage', autre: '📎 Autre frais pro' };
+const RG_REGLES_DEF = { seuilHebdo: 35, seuilSup2: 43, majSup1: 25, majSup2: 50, majDim: 0, majFerie: 0, nuitDebut: '21:00', nuitFin: '06:00', majNuit: 0, chargesPct: '', jourMax: 12, semaineMax: 48, carbuMax: 150 };
+function rgP2(n) { return String(n).padStart(2, '0'); }
+function rgIso(d) { return d.getFullYear() + '-' + rgP2(d.getMonth() + 1) + '-' + rgP2(d.getDate()); }
+function rgEur(v) { return (Math.round((parseFloat(v) || 0) * 100) / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; }
+function rgEur0(v) { return Math.round(parseFloat(v) || 0).toLocaleString('fr-FR') + ' €'; }
+function rgH(h) { h = Math.round((parseFloat(h) || 0) * 100) / 100; return String(h).replace('.', ',') + ' h'; }
+function rgNum(v) { const n = parseFloat(String(v == null ? '' : v).replace(',', '.')); return isNaN(n) ? 0 : n; }
+function rgSocCle(nom) { return String(nom || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'MOBILEA'; }
+function rgNomCh(c) { return ((c.prenom || '') + (c.nom ? ' ' + c.nom : '')).trim(); }
+function rgMoisLabel(m) { const d = new Date(m + '-15T12:00:00'); const s = d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }); return s.charAt(0).toUpperCase() + s.slice(1); }
+function rgEstElec(v) { return v && v.motorisation === 'electrique'; }
+
+// ── Jours fériés (France métropolitaine) ────────────────────────────────────
+function rgPaques(y) {
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const mo = Math.floor((h + l - 7 * m + 114) / 31), da = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(y, mo - 1, da, 12);
+}
+const _rgFer = {};
+function rgFeries(y) {
+  if (_rgFer[y]) return _rgFer[y];
+  const P = rgPaques(y), plus = function(n){ const d = new Date(P); d.setDate(d.getDate() + n); return rgIso(d); };
+  const o = {};
+  o[y + '-01-01'] = 'Jour de l\'an'; o[plus(1)] = 'Lundi de Pâques'; o[y + '-05-01'] = 'Fête du travail'; o[y + '-05-08'] = 'Victoire 1945';
+  o[plus(39)] = 'Ascension'; o[plus(50)] = 'Lundi de Pentecôte'; o[y + '-07-14'] = 'Fête nationale'; o[y + '-08-15'] = 'Assomption';
+  o[y + '-11-01'] = 'Toussaint'; o[y + '-11-11'] = 'Armistice'; o[y + '-12-25'] = 'Noël';
+  return (_rgFer[y] = o);
+}
+function rgFerie(jour) { return rgFeries(parseInt(jour.slice(0, 4), 10))[jour] || ''; }
+
+// ── Calcul des heures et de la paie à partir de la pointeuse ────────────────
+// Chaque minute pointée est classée : jour férié > dimanche > normale ; les
+// heures de nuit (plage réglable) donnent un supplément en plus. Heures sup :
+// au-delà du seuil HEBDOMADAIRE (semaine du lundi au dimanche, en comptant les
+// jours du mois précédent de la même semaine), les heures normales passent en
+// sup 1 (ex. +25 %) puis en sup 2 au-delà du 2e seuil (ex. +50 %). Les heures
+// de dimanche / férié gardent leur taux (pas de cumul) mais comptent dans la
+// semaine. La pause est retirée proportionnellement.
+function rgMin(hhmm) { const m = /^(\d{1,2}):(\d{2})/.exec(String(hhmm || '')); return m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : null; }
+function rgLundi(jour) { const d = new Date(jour + 'T12:00:00'); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return rgIso(d); }
+function rgCalculerHeures(pts, mois, regles) {
+  regles = Object.assign({}, RG_REGLES_DEF, regles || {});
+  const H = { normal: 0, sup1: 0, sup2: 0, dim: 0, ferie: 0, nuit: 0 }, jours = {}, sansFin = [], longs = [], feriesTrav = {};
+  const nD = rgMin(regles.nuitDebut), nF = rgMin(regles.nuitFin);
+  const estNuit = function(m){ if (nD == null || nF == null || nD === nF) return false; return nD > nF ? (m >= nD || m < nF) : (m >= nD && m < nF); };
+  const seuil1 = rgNum(regles.seuilHebdo) * 60, seuil2 = Math.max(seuil1, rgNum(regles.seuilSup2) * 60);
+  const semaines = {};
+  const L = pts.filter(function(p){ return p && p.date; }).slice().sort(function(a, b){ return (a.date + (a.heureDebut || '')).localeCompare(b.date + (b.heureDebut || '')); });
+  const finMois = mois + '-31', debutMois = mois + '-01', lundi0 = rgLundi(debutMois);
+  L.forEach(function(p){
+    if (p.date < lundi0 || p.date > finMois) return;
+    const d0 = rgMin(p.heureDebut), f0 = rgMin(p.heureFin);
+    if (d0 == null) return;
+    if (f0 == null) { if (p.date.slice(0, 7) === mois && p.date < rgIso(new Date())) sansFin.push(p); return; }
+    let duree = f0 - d0; if (duree <= 0) duree += 1440;
+    const pause = Math.max(0, rgNum(p.pauseMinutes)), net = Math.max(0, duree - pause), poids = duree ? net / duree : 0;
+    const dansMois = p.date.slice(0, 7) === mois;
+    if (dansMois && net / 60 > rgNum(regles.jourMax)) longs.push({ date: p.date, h: net / 60 });
+    for (let k = 0; k < duree; k++) {
+      const abs = d0 + k, jourDecal = Math.floor(abs / 1440), m = abs % 1440;
+      let jour = p.date;
+      if (jourDecal) { const dd = new Date(p.date + 'T12:00:00'); dd.setDate(dd.getDate() + jourDecal); jour = rgIso(dd); }
+      const wk = rgLundi(jour);
+      const avant = semaines[wk] || 0; semaines[wk] = avant + poids;
+      if (jour.slice(0, 7) !== mois) continue;
+      const fer = rgFerie(jour), dimanche = new Date(jour + 'T12:00:00').getDay() === 0;
+      const cat = fer ? 'ferie' : (dimanche ? 'dim' : 'normal');
+      if (cat === 'normal' && seuil1 > 0) {
+        // Une minute peut chevaucher le seuil : on la partage exactement.
+        let w = poids, a = avant;
+        const n1 = Math.max(0, Math.min(w, seuil1 - a)); H.normal += n1 / 60; w -= n1; a += n1;
+        const n2 = Math.max(0, Math.min(w, seuil2 - a)); H.sup1 += n2 / 60; w -= n2;
+        if (w > 1e-9) H.sup2 += w / 60;
+      } else H[cat] += poids / 60;
+      if (estNuit(m)) H.nuit += poids / 60;
+      if (fer) feriesTrav[jour] = fer;
+      jours[jour] = 1;
+    }
+  });
+  const semLongues = Object.keys(semaines).filter(function(w){ return semaines[w] / 60 > rgNum(regles.semaineMax) && (w.slice(0, 7) === mois || rgIso(new Date(new Date(w + 'T12:00:00').getTime() + 6 * 864e5)).slice(0, 7) === mois); }).map(function(w){ return { semaine: w, h: semaines[w] / 60 }; });
+  Object.keys(H).forEach(function(k){ H[k] = Math.round(H[k] * 100) / 100; });
+  return { h: H, jours: Object.keys(jours).length, sansFin: sansFin, longs: longs, semLongues: semLongues, feriesTrav: feriesTrav };
+}
+function rgTaux(remu, regles) {
+  regles = Object.assign({}, RG_REGLES_DEF, regles || {}); remu = remu || {};
+  const t = rgNum(remu.taux);
+  return {
+    normal: t,
+    sup1: rgNum(remu.tauxSup) || t * (1 + rgNum(regles.majSup1) / 100),
+    sup2: rgNum(remu.tauxSup) || t * (1 + rgNum(regles.majSup2) / 100),
+    dim: rgNum(remu.tauxDim) || t * (1 + rgNum(regles.majDim) / 100),
+    ferie: rgNum(remu.tauxFerie) || t * (1 + rgNum(regles.majFerie) / 100),
+    nuit: rgNum(remu.tauxNuit) || t * rgNum(regles.majNuit) / 100   // supplément par heure de nuit
+  };
+}
+function rgMontants(h, taux, primes, ajust) {
+  const M = {}; let brut = 0;
+  ['normal', 'sup1', 'sup2', 'dim', 'ferie', 'nuit'].forEach(function(k){ M[k] = Math.round((h[k] || 0) * (taux[k] || 0) * 100) / 100; brut += M[k]; });
+  brut += rgNum(primes) + rgNum(ajust);
+  return { m: M, brut: Math.round(brut * 100) / 100 };
+}
+
+// ── Contexte (admin MOBILEA ou gérant, données privées) ─────────────────────
+function rgContexte() {
+  if (SESSION && SESSION.role === 'admin') return { mode: 'admin', base: '', soc: '' };
+  if (SESSION && SESSION.role === 'chauffeur' && SESSION.gerant === true && typeof gOpt === 'function' && gOpt('rapports')) return { mode: 'gerant', base: 'gerant_data/' + gUid() + '/', soc: (SESSION.socNom || '').trim() };
+  return null;
+}
+async function rgGet(chemin) {
+  const tok = await getAuthToken();
+  try {
+    const r = await fetch(FB_URL + '/' + RG.ctx.base + chemin + '.json' + authParam(tok));
+    if (!r.ok) { if (r.status === 401 || r.status === 403) RG.refus = true; return null; }
+    const v = await r.json(); try { localStorage.setItem('rg_' + RG.ctx.base + chemin, JSON.stringify(v)); } catch (e) {}
+    return v;
+  } catch (e) { try { return JSON.parse(localStorage.getItem('rg_' + RG.ctx.base + chemin) || 'null'); } catch (_) { return null; } }
+}
+async function rgPatch(chemin, cle, data) { return fbUpdate(RG.ctx.base + chemin, cle, data); }
+
+// ── Chargement des données d'une période ────────────────────────────────────
+function rgPeriodeMois() {
+  if (RG._moisL) return RG._moisL;   // liste imposée (Rapport CA)
+  if (RG.annee) { const L = []; for (let m = 1; m <= 12; m++) L.push(RG.annee + '-' + rgP2(m)); return L.filter(function(x){ return x <= rgIso(new Date()).slice(0, 7); }); }
+  return [RG.mois];
+}
+async function rgCharger() {
+  const ctx = RG.ctx;
+  const d = { ch: [], veh: [], pts: [], courses: [], remu: {}, regles: {}, couts: {}, frais: [], paie: {} };
+  if (ctx.mode === 'admin') {
+    d.ch = (D.chauffeurs || []).filter(function(c){ return !c.archived; });
+    d.veh = (D.vehicules || []).filter(function(v){ return !v.archived; });
+    try { d.pts = await fbGet('pointages') || []; } catch (e) {}
+    try { ensureArchiveLoaded(); } catch (e) {}
+    const vus = new Set((D.courses || []).map(function(c){ return c._id; }));
+    d.courses = (D.courses || []).concat((window._archiveCache || []).filter(function(c){ return !vus.has(c._id); }));
+  } else {
+    try { d.ch = await gEquipe(); } catch (e) {}
+    try { const v = await fbGet('vehicules') || []; d.veh = v.filter(function(x){ return (x.societe || '').trim() === ctx.soc && !x.archived; }); } catch (e) {}
+    let pub = []; try { pub = await fbGet('pointages') || []; } catch (e) {}
+    try { await gpCharger(true); } catch (e) {}
+    const priv = (typeof GP !== 'undefined' && GP.pointages) || {};
+    const ids = new Set(d.ch.map(function(c){ return c._id; }));
+    const parCle = {};
+    pub.forEach(function(p){ if (ids.has(p.chauffeurId)) parCle[p._id] = p; });
+    Object.keys(priv).forEach(function(k){ parCle[k] = Object.assign({ _id: k }, priv[k]); });
+    d.pts = Object.keys(parCle).map(function(k){ return parCle[k]; });
+    try { d.courses = await gMesTransferts(); } catch (e) {}
+  }
+  RG.refus = false;
+  const [remu, regles, couts, frais] = await Promise.all([rgGet('paie_remu'), rgGet('paie_regles'), rgGet('veh_couts'), rgGet('frais')]);
+  d.remu = remu || {}; d.regles = Object.assign({}, RG_REGLES_DEF, regles || {}); d.couts = couts || {};
+  d.frais = Object.keys(frais || {}).map(function(k){ return Object.assign({ _id: k }, frais[k]); });
+  try { d.frais = fileAppliquer(RG.ctx.base + 'frais', d.frais); } catch (e) {}
+  const moisL = rgPeriodeMois();
+  const P = await Promise.all(moisL.map(function(m){ return rgGet('paie/' + m.replace('-', '')); }));
+  moisL.forEach(function(m, i){ d.paie[m] = P[i] || {}; });
+  RG.d = d;
+  return d;
+}
+
+// ── Société d'un chauffeur / véhicule ───────────────────────────────────────
+function rgSocDe(x, champ) { const s = String((x && x[champ]) || '').trim(); return s && rgSocCle(s) !== 'MOBILEA' ? s : 'MOBILEA'; }
+function rgChSoc(c) { return RG.ctx.mode === 'gerant' ? RG.ctx.soc : rgSocDe(c, 'soc_nom'); }
+function rgVehSoc(v) { return RG.ctx.mode === 'gerant' ? RG.ctx.soc : rgSocDe(v, 'societe'); }
+function rgVehDeCourse(c, d, ptsJour) {
+  const imm = String(c.vehImmat || c.immat || '').trim().toUpperCase();
+  if (imm) { const v = d.veh.find(function(x){ return String(x.immat || '').trim().toUpperCase() === imm; }); if (v) return v; }
+  const p = ptsJour; if (p && p.vehiculeId) return d.veh.find(function(x){ return x._id === p.vehiculeId; }) || null;
+  return null;
+}
+function rgVehDePointage(p, d) {
+  if (p.vehiculeId) { const v = d.veh.find(function(x){ return x._id === p.vehiculeId; }); if (v) return v; }
+  const lab = String(p.vehiculeLabel || '').toUpperCase();
+  if (lab) return d.veh.find(function(x){ return x.immat && lab.indexOf(String(x.immat).toUpperCase()) >= 0; }) || null;
+  return null;
+}
+
+// ── Calcul complet d'une période ────────────────────────────────────────────
+function rgCalculer() {
+  const d = RG.d, f = RG.filtres, moisL = rgPeriodeMois(), regles = d.regles;
+  const charges = rgNum(regles.chargesPct) / 100;
+  const dansP = function(j){ return j && moisL.indexOf(j.slice(0, 7)) >= 0; };
+  // Chauffeurs du périmètre
+  let chs = d.ch.filter(function(c){ return !f.soc || rgChSoc(c) === f.soc; });
+  const chParId = {}, chParNom = {}; d.ch.forEach(function(c){ chParId[c._id] = c; chParNom[rgNomCh(c)] = c; });
+  // Véhicules du périmètre
+  let vehs = d.veh.filter(function(v){ return (!f.soc || rgVehSoc(v) === f.soc) && (!f.moto || (v.motorisation || '') === f.moto) && (!f.type || (v.type || '') === f.type); });
+  if (f.veh) vehs = vehs.filter(function(v){ return v._id === f.veh; });
+  const R = { ch: {}, veh: {}, alertes: [], soc: null, moisL: moisL };
+  const ligneCh = function(c){ return R.ch[c._id] || (R.ch[c._id] = { c: c, nom: rgNomCh(c), soc: rgChSoc(c), remu: d.remu[c._id] || null, missions: 0, ca: 0, caTtc: 0, prixCh: 0, h: { normal: 0, sup1: 0, sup2: 0, dim: 0, ferie: 0, nuit: 0 }, heures: 0, jours: 0, paie: null, brut: 0, coutSal: 0, vehCout: 0, energie: 0, peage: 0, autres: 0, fraisRemb: 0, vehs: {}, hVeh: {}, missVeh: {}, fdE: 0, fdP: 0, fdA: 0 }); };
+  const ligneVeh = function(v){ return R.veh[v._id] || (R.veh[v._id] = { v: v, soc: rgVehSoc(v), couts: d.couts[v._id] || null, missions: 0, ca: 0, heures: 0, km: 0, fixe: 0, energie: 0, peage: 0, autres: 0, chSal: 0, hCh: {}, kmReleves: [] }); };
+  chs.forEach(ligneCh); vehs.forEach(ligneVeh);
+  // Pointages : heures par chauffeur et par véhicule
+  const ptsParCh = {}, ptsJour = {};
+  d.pts.forEach(function(p){ if (!p.chauffeurId) return; (ptsParCh[p.chauffeurId] = ptsParCh[p.chauffeurId] || []).push(p); ptsJour[p.chauffeurId + '|' + p.date] = p; });
+  // Transferts : CA HT, missions, prix chauffeur
+  d.courses.forEach(function(c){
+    if (!STATUTS_CA.includes(c.statut)) return;
+    const j = String(c.datetime || '').slice(0, 10); if (!dansP(j)) return;
+    const ch = (c.chauffeurId && chParId[c.chauffeurId]) || chParNom[String(c.chauffeur || '').trim()];
+    const pj = ch ? ptsJour[ch._id + '|' + j] : null;
+    const v = rgVehDeCourse(c, d, pj);
+    const caTtc = prixFacture(c), caHt = ht(caTtc);
+    if (ch && R.ch[ch._id]) { const L = R.ch[ch._id]; L.missions++; L.ca += caHt; L.caTtc += caTtc; L.prixCh += rgNum(c.prixChauffeur); if (v) { L.vehs[v._id] = 1; L.missVeh[v._id] = (L.missVeh[v._id] || 0) + 1; } }
+    if (v && R.veh[v._id]) { const W = R.veh[v._id]; W.missions++; W.ca += caHt; W.km += rgNum(c.kmBord) || rgNum(c.trajetKm); }
+  });
+  // Heures / paie par chauffeur
+  moisL.forEach(function(m){
+    Object.keys(R.ch).forEach(function(id){
+      const L = R.ch[id], remu = L.remu, pts = ptsParCh[id] || [];
+      const calc = rgCalculerHeures(pts, m, regles);
+      ['normal', 'sup1', 'sup2', 'dim', 'ferie', 'nuit'].forEach(function(k){ L.h[k] += calc.h[k]; });
+      L.jours += calc.jours;
+      calc.sansFin.forEach(function(p){ R.alertes.push({ niv: 'rouge', type: 'pointage', txt: 'Pointage sans heure de fin — ' + L.nom + ' le ' + new Date(p.date + 'T12:00:00').toLocaleDateString('fr-FR') }); });
+      calc.longs.forEach(function(x){ R.alertes.push({ niv: 'orange', type: 'heures', txt: 'Journée de ' + rgH(x.h) + ' — ' + L.nom + ' le ' + new Date(x.date + 'T12:00:00').toLocaleDateString('fr-FR') }); });
+      calc.semLongues.forEach(function(x){ R.alertes.push({ niv: 'orange', type: 'heures', txt: 'Semaine de ' + rgH(x.h) + ' — ' + L.nom + ' (semaine du ' + new Date(x.semaine + 'T12:00:00').toLocaleDateString('fr-FR') + ')' }); });
+      if (remu && remu.type === 'horaire') {
+        const rec = (d.paie[m] || {})[id];
+        let brut;
+        if (rec && rec.statut === 'valide') brut = rgNum(rec.brut);
+        else {
+          const h = rec && rec.heures ? rec.heures : calc.h;
+          const taux = rec && rec.taux ? rec.taux : rgTaux(remu, regles);
+          brut = rgMontants(h, taux, rec ? rec.primes : 0, rec ? rec.ajust : 0).brut;
+        }
+        L.brut += brut;
+        if (Object.keys(calc.feriesTrav).length && !rgNum(remu.tauxFerie) && !rgNum(regles.majFerie)) R.alertes.push({ niv: 'orange', type: 'ferie', txt: 'Jour férié travaillé sans majoration réglée — ' + L.nom + ' (' + Object.keys(calc.feriesTrav).map(function(j){ return calc.feriesTrav[j] + ' ' + j.slice(8) + '/' + j.slice(5, 7); }).join(', ') + ')' });
+      }
+      // Heures par véhicule (pointeuse) — sert à répartir les coûts véhicule
+      pts.forEach(function(p){
+        if (String(p.date || '').slice(0, 7) !== m) return;
+        const hh = p.heures != null ? rgNum(p.heures) : (heuresEntre(p.heureDebut, p.heureFin, p.pauseMinutes) || 0); if (!hh) return;
+        const v = rgVehDePointage(p, d);
+        if (v) { L.hVeh[v._id] = (L.hVeh[v._id] || 0) + hh; L.vehs[v._id] = 1; if (R.veh[v._id]) { R.veh[v._id].heures += hh; R.veh[v._id].hCh[id] = (R.veh[v._id].hCh[id] || 0) + hh; } }
+      });
+    });
+  });
+  Object.keys(R.ch).forEach(function(id){
+    const L = R.ch[id];
+    L.heures = L.h.normal + L.h.sup1 + L.h.sup2 + L.h.dim + L.h.ferie;
+    if (L.remu && L.remu.type === 'horaire') L.coutSal = L.brut * (1 + charges);
+    else L.coutSal = L.prixCh;                            // sous-traitant / à la course
+    if (!L.remu && L.soc === (RG.ctx.mode === 'gerant' ? RG.ctx.soc : 'MOBILEA')) R.alertes.push({ niv: 'orange', type: 'taux', txt: 'Rémunération non renseignée — ' + L.nom });
+    else if (L.remu && L.remu.type === 'horaire' && !rgNum(L.remu.taux)) R.alertes.push({ niv: 'rouge', type: 'taux', txt: 'Chauffeur sans taux horaire — ' + L.nom });
+    if (!Object.keys(L.vehs).length && !d.veh.some(function(v){ return (v.chauffeur || '').trim() === L.nom; }) && (L.missions || L.heures)) R.alertes.push({ niv: 'gris', type: 'vehicule', txt: 'Chauffeur sans véhicule attribué — ' + L.nom });
+  });
+  // Frais de la période
+  const fraisP = d.frais.filter(function(x){ return dansP(x.date) && x.statut !== 'refuse'; });
+  R.frais = fraisP;
+  fraisP.forEach(function(x){
+    const mt = rgNum(x.montant), cat = x.categorie || 'autre';
+    const W = x.vehiculeId && R.veh[x.vehiculeId], L = x.chauffeurId && R.ch[x.chauffeurId];
+    const champ = (cat === 'carburant' || cat === 'recharge') ? 'energie' : ((cat === 'peage' || cat === 'parking') ? 'peage' : 'autres');
+    if (W) { W[champ] += mt; if (rgNum(x.km)) W.kmReleves.push(rgNum(x.km)); }
+    else if (L) { L[champ] += mt; if (champ === 'energie') L.fdE += mt; else if (champ === 'peage') L.fdP += mt; else L.fdA += mt; }   // frais sans véhicule : coût du chauffeur
+    if (L && x.payePar === 'chauffeur' && x.statut === 'valide') L.fraisRemb += mt;
+    if (!x.justificatif) R.alertes.push({ niv: 'gris', type: 'frais', txt: 'Frais sans justificatif — ' + (x.chauffeurNom || '') + ' · ' + (RG_FRAIS_CAT[cat] || cat) + ' ' + rgEur(mt) + ' le ' + new Date(x.date + 'T12:00:00').toLocaleDateString('fr-FR') });
+    if ((cat === 'carburant' || cat === 'recharge') && mt > rgNum(d.regles.carbuMax)) R.alertes.push({ niv: 'orange', type: 'carburant', txt: 'Dépense ' + (cat === 'recharge' ? 'recharge' : 'carburant') + ' élevée : ' + rgEur(mt) + ' — ' + (x.chauffeurNom || '') + ' le ' + new Date(x.date + 'T12:00:00').toLocaleDateString('fr-FR') });
+    if (x.statut !== 'valide') R.fraisAValider = (R.fraisAValider || 0) + 1;
+  });
+  // Coûts fixes véhicules × nb de mois + répartition chauffeurs
+  Object.keys(R.veh).forEach(function(id){
+    const W = R.veh[id], c = W.couts || {};
+    const fixeMois = rgNum(c.leasing) + rgNum(c.assurance) + rgNum(c.entretien) + rgNum(c.assistance) + rgNum(c.autresFixes);
+    W.fixe = fixeMois * moisL.length;
+    W.detail = { leasing: rgNum(c.leasing) * moisL.length, assurance: rgNum(c.assurance) * moisL.length, entretien: rgNum(c.entretien) * moisL.length, assistance: rgNum(c.assistance) * moisL.length, autresFixes: rgNum(c.autresFixes) * moisL.length };
+    if (W.kmReleves.length > 1) W.km = Math.max(W.km, Math.max.apply(null, W.kmReleves) - Math.min.apply(null, W.kmReleves));
+    const budget = rgNum(c.budgetEnergie) * moisL.length;
+    if (!fixeMois && (W.missions || W.heures)) R.alertes.push({ niv: 'orange', type: 'vehicule', txt: 'Véhicule sans coût renseigné — ' + rgVehNom(W.v) });
+    if (budget && W.energie > budget * 1.3) R.alertes.push({ niv: 'orange', type: 'carburant', txt: (rgEstElec(W.v) ? 'Recharge' : 'Carburant') + ' au-dessus du budget — ' + rgVehNom(W.v) + ' : ' + rgEur0(W.energie) + ' pour ' + rgEur0(budget) + ' prévus' });
+    W.coutVeh = W.fixe + W.energie + W.peage + W.autres;
+    // Répartition aux chauffeurs selon les heures pointées avec ce véhicule
+    const tot = Object.keys(W.hCh).reduce(function(s, k){ return s + W.hCh[k]; }, 0);
+    W.reparti = 0;
+    Object.keys(W.hCh).forEach(function(chId){
+      const part = tot ? W.hCh[chId] / tot : 0, L = R.ch[chId];
+      if (L) { L.vehCout += W.fixe * part; L.energie += W.energie * part; L.peage += W.peage * part; L.autres += W.autres * part; W.reparti += W.coutVeh * part; }
+    });
+    W.nonReparti = W.coutVeh - W.reparti;
+  });
+  // Salaire chauffeur imputé aux véhicules : selon les heures pointées avec
+  // chaque véhicule, sinon selon le nombre de missions faites avec.
+  Object.keys(R.ch).forEach(function(id){
+    const L = R.ch[id], sH = Object.keys(L.hVeh).reduce(function(s, k){ return s + L.hVeh[k]; }, 0), sM = Object.keys(L.missVeh).reduce(function(s, k){ return s + L.missVeh[k]; }, 0);
+    if (sH) Object.keys(L.hVeh).forEach(function(v){ if (R.veh[v]) R.veh[v].chSal += L.coutSal * L.hVeh[v] / sH; });
+    else if (sM) Object.keys(L.missVeh).forEach(function(v){ if (R.veh[v]) R.veh[v].chSal += L.coutSal * L.missVeh[v] / sM; });
+  });
+  Object.keys(R.ch).forEach(function(id){ const L = R.ch[id]; L.coutTotal = L.coutSal + L.vehCout + L.energie + L.peage + L.autres; L.marge = L.ca - L.coutTotal; L.pct = L.ca ? L.marge / L.ca * 100 : null; });
+  Object.keys(R.veh).forEach(function(id){ const W = R.veh[id]; W.coutTotal = W.coutVeh + W.chSal; W.marge = W.ca - W.coutTotal; W.pct = W.ca ? W.marge / W.ca * 100 : null; });
+  // Filtres chauffeur / véhicule appliqués à l'affichage
+  let lc = Object.keys(R.ch).map(function(k){ return R.ch[k]; });
+  if (f.ch) lc = lc.filter(function(L){ return L.c._id === f.ch; });
+  if (f.veh) lc = lc.filter(function(L){ return L.vehs[f.veh]; });
+  if (f.moto || f.type) lc = lc.filter(function(L){ return Object.keys(L.vehs).some(function(v){ return R.veh[v]; }); });
+  R.lc = lc.filter(function(L){ return L.missions || L.heures || L.coutTotal || (L.remu && L.remu.type === 'horaire'); }).sort(function(a, b){ return b.ca - a.ca; });
+  R.lv = Object.keys(R.veh).map(function(k){ return R.veh[k]; }).filter(function(W){ return !f.ch || W.hCh[f.ch]; }).sort(function(a, b){ return b.ca - a.ca; });
+  // Totaux société
+  const S = { ca: 0, caTtc: 0, sal: 0, salBrut: 0, vehFixe: 0, energie: 0, peage: 0, autres: 0, heures: 0, missions: 0, nbCh: R.lc.length, nbVeh: R.lv.length };
+  R.lc.forEach(function(L){ S.ca += L.ca; S.caTtc += L.caTtc; S.sal += L.coutSal; S.salBrut += L.brut; S.heures += L.heures; S.missions += L.missions; });
+  R.lv.forEach(function(W){ S.vehFixe += W.fixe; S.energie += W.energie; S.peage += W.peage; S.autres += W.autres; });
+  R.lc.forEach(function(L){ S.energie += L.fdE; S.peage += L.fdP; S.autres += L.fdA; });
+  S.frais = S.energie + S.peage + S.autres; S.coutVeh = S.vehFixe + S.energie;
+  S.cout = S.sal + S.vehFixe + S.frais; S.marge = S.ca - S.cout; S.pct = S.ca ? S.marge / S.ca * 100 : null;
+  R.soc = S;
+  R.alertes.sort(function(a, b){ const o = { rouge: 0, orange: 1, gris: 2 }; return o[a.niv] - o[b.niv]; });
+  RG.R = R;
+  return R;
+}
+function rgVehNom(v) { return ([v.marque, v.modele].filter(Boolean).join(' ') || 'Véhicule') + (v.immat ? ' — ' + v.immat : ''); }
+function rgMotoNom(m) { const x = (typeof CO2_MOTOS !== 'undefined' ? CO2_MOTOS : []).find(function(a){ return a[0] === m; }); return x ? x[1] : (m ? m : 'Motorisation non renseignée'); }
+
+// ── Interface ───────────────────────────────────────────────────────────────
+const RG_IN = 'background:var(--dark);border:1px solid var(--border2);border-radius:8px;padding:7px 9px;color:var(--white);font-size:13px;max-width:100%;box-sizing:border-box';
+window.rgOuvrir = async function(onglet, focus) {
+  const ctx = rgContexte();
+  if (!ctx) { showToast('Accès réservé à l\'administrateur ou au gérant (option Rapports)', true); return; }
+  RG.ctx = ctx; RG.onglet = onglet || RG.onglet || 'bord'; RG.focus = focus || null;
+  if (!RG.mois) { const n = new Date(); n.setDate(1); RG.mois = rgIso(n).slice(0, 7); }
+  if (ctx.mode === 'gerant') RG.filtres.soc = '';
+  const old = document.getElementById('rg-ov'); if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = 'rg-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:330;display:flex;align-items:center;justify-content:center;padding:16px';
+  const ong = [['bord', '📊 Tableau de bord'], ['chauffeurs', '👤 Chauffeurs'], ['vehicules', '🚐 Véhicules'], ['paie', '💶 Paie'], ['frais', '🧾 Frais'], ['param', '⚙️ Paramètres']];
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:1100px;max-width:100%;max-height:94vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div style="font-size:16px;font-weight:800">💼 Gestion, paie & rentabilité' + (ctx.mode === 'gerant' ? ' — ' + E(ctx.soc) : '') + '</div><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'rg-ov\').remove()" aria-label="Fermer"><i class="fas fa-times"></i></button></div>'
+    +   '<div id="rg-onglets" style="display:flex;gap:6px;overflow-x:auto;padding-bottom:2px">' + ong.map(function(o){ return '<button class="btn btn-' + (o[0] === RG.onglet ? 's' : 'ghost') + ' btn-sm" data-o="' + o[0] + '" onclick="rgOnglet(\'' + o[0] + '\')" style="white-space:nowrap">' + o[1] + '</button>'; }).join('') + '</div>'
+    +   '<div id="rg-filtres" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>'
+    + '</div>'
+    + '<div id="rg-corps" style="padding:14px 16px;overflow:auto">Chargement…</div>'
+    + '<div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" onclick="rgExporter(\'csv\')"><i class="fas fa-file-csv"></i> CSV</button><button class="btn btn-ghost btn-sm" onclick="rgExporter(\'pdf\')"><i class="fas fa-file-pdf"></i> PDF</button><button class="btn btn-p btn-sm" onclick="rgExporter(\'xlsx\')"><i class="fas fa-file-excel"></i> Excel</button></div></div>';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  await rgRecharger();
+};
+window.rgOnglet = function(o) {
+  RG.onglet = o; RG.focus = null;
+  document.querySelectorAll('#rg-onglets button').forEach(function(b){ b.className = 'btn btn-' + (b.dataset.o === o ? 's' : 'ghost') + ' btn-sm'; });
+  rgDessiner();
+};
+async function rgRecharger() {
+  const box = document.getElementById('rg-corps'); if (box) box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">Chargement…</div>';
+  await rgCharger();
+  await rgAutoBrouillons();
+  rgFiltresHtml();
+  rgDessiner();
+}
+function rgFiltresHtml() {
+  const el = document.getElementById('rg-filtres'); if (!el) return;
+  const d = RG.d, f = RG.filtres, an = new Date().getFullYear();
+  const socs = RG.ctx.mode === 'admin' ? ['MOBILEA'].concat(getSocietesList().map(function(s){ return s.nom; }).filter(function(n){ return rgSocCle(n) !== 'MOBILEA'; })) : [];
+  const opt = function(v, l, sel){ return '<option value="' + E(v) + '"' + (v === sel ? ' selected' : '') + '>' + E(l) + '</option>'; };
+  const motos = Array.from(new Set(d.veh.map(function(v){ return v.motorisation || ''; }).filter(Boolean)));
+  const types = Array.from(new Set(d.veh.map(function(v){ return v.type || ''; }).filter(Boolean)));
+  el.innerHTML = '<input type="month" value="' + RG.mois + '" onchange="rgFiltre(\'mois\',this.value)" style="' + RG_IN + (RG.annee ? ';opacity:.45' : '') + '">'
+    + '<select onchange="rgFiltre(\'annee\',this.value)" style="' + RG_IN + '"><option value="">Mois choisi</option>' + [an, an - 1, an - 2].map(function(y){ return opt(String(y), 'Année ' + y, RG.annee); }).join('') + '</select>'
+    + (socs.length ? '<select onchange="rgFiltre(\'soc\',this.value)" style="' + RG_IN + ';max-width:180px">' + opt('', 'Toutes les sociétés', f.soc) + socs.map(function(s){ return opt(s, s, f.soc); }).join('') + '</select>' : '')
+    + '<select onchange="rgFiltre(\'ch\',this.value)" style="' + RG_IN + ';max-width:170px">' + opt('', 'Tous les chauffeurs', f.ch) + d.ch.filter(function(c){ return !f.soc || rgChSoc(c) === f.soc; }).sort(function(a, b){ return rgNomCh(a).localeCompare(rgNomCh(b), 'fr'); }).map(function(c){ return opt(c._id, rgNomCh(c), f.ch); }).join('') + '</select>'
+    + '<select onchange="rgFiltre(\'veh\',this.value)" style="' + RG_IN + ';max-width:170px">' + opt('', 'Tous les véhicules', f.veh) + d.veh.filter(function(v){ return !f.soc || rgVehSoc(v) === f.soc; }).map(function(v){ return opt(v._id, rgVehNom(v), f.veh); }).join('') + '</select>'
+    + '<select onchange="rgFiltre(\'moto\',this.value)" style="' + RG_IN + '">' + opt('', 'Toutes motorisations', f.moto) + motos.map(function(m){ return opt(m, rgMotoNom(m), f.moto); }).join('') + '</select>'
+    + '<select onchange="rgFiltre(\'type\',this.value)" style="' + RG_IN + '">' + opt('', 'Tous types', f.type) + types.map(function(t){ return opt(t, (typeof gVehNom === 'function' ? gVehNom(t) : t), f.type); }).join('') + '</select>';
+}
+window.rgFiltre = async function(k, v) {
+  if (k === 'mois') { RG.mois = v || RG.mois; RG.annee = ''; await rgRecharger(); return; }
+  if (k === 'annee') { RG.annee = v; await rgRecharger(); return; }
+  RG.filtres[k] = v; rgFiltresHtml(); rgDessiner();
+};
+function rgLibPeriode() { return RG.annee ? 'Année ' + RG.annee : rgMoisLabel(RG.mois); }
+function rgKpi(t, v, s, col) { return '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:10px;min-width:0"><div style="font-size:11px;color:var(--muted)">' + t + '</div><div style="font-size:17px;font-weight:800;margin-top:2px;color:' + (col || 'var(--white)') + '">' + v + '</div>' + (s ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + s + '</div>' : '') + '</div>'; }
+function rgGrille(L) { return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px">' + L.join('') + '</div>'; }
+function rgPct(p) { return p == null ? '—' : (Math.round(p * 10) / 10).toString().replace('.', ',') + ' %'; }
+function rgColMarge(v) { return v >= 0 ? '#16a34a' : '#dc2626'; }
+const RG_TH = 'text-align:left;padding:7px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap';
+const RG_TD = 'padding:7px;font-size:12.5px;border-bottom:1px solid var(--border);white-space:nowrap';
+function rgTable(cols, lignes, vide) {
+  if (!lignes.length) return '<div style="padding:18px;text-align:center;color:var(--muted)">' + (vide || 'Aucune donnée sur la période.') + '</div>';
+  return '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>' + cols.map(function(c, i){ return '<th style="' + RG_TH + (i ? ';text-align:right' : '') + '">' + c + '</th>'; }).join('') + '</tr></thead><tbody>' + lignes.join('') + '</tbody></table></div>';
+}
+function rgTr(cells, onclick) { return '<tr' + (onclick ? ' style="cursor:pointer" onclick="' + onclick + '"' : '') + '>' + cells.map(function(c, i){ return '<td style="' + RG_TD + (i ? ';text-align:right' : '') + '">' + c + '</td>'; }).join('') + '</tr>'; }
+function rgDessiner() {
+  const box = document.getElementById('rg-corps'); if (!box || !RG.d) return;
+  const R = rgCalculer();
+  let h = RG.refus ? '<div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);border-radius:10px;padding:10px;margin-bottom:10px;font-size:12px">⚠️ Lecture des données de paie refusée par le serveur : publiez les nouvelles règles Firebase (fichier fourni).</div>' : '';
+  if (RG.onglet === 'bord') h += rgVueBord(R);
+  else if (RG.onglet === 'chauffeurs') h += RG.focus && RG.focus.ch ? rgVueChauffeur(R, RG.focus.ch) : rgVueChauffeurs(R);
+  else if (RG.onglet === 'vehicules') h += RG.focus && RG.focus.veh ? rgVueVehicule(R, RG.focus.veh) : rgVueVehicules(R);
+  else if (RG.onglet === 'paie') h += rgVuePaie(R);
+  else if (RG.onglet === 'frais') h += rgVueFrais(R);
+  else if (RG.onglet === 'param') h += rgVueParam(R);
+  box.innerHTML = h;
+}
+function rgBarres(L) {
+  const max = Math.max.apply(null, L.map(function(x){ return Math.max(x.ca, x.coutTotal); }).concat([1]));
+  return L.slice(0, 12).map(function(x){ return '<div style="display:grid;grid-template-columns:110px minmax(0,1fr);gap:8px;align-items:center;margin:5px 0"><div style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + E(x.nom) + '</div><div>'
+    + '<div style="height:8px;border-radius:4px;background:#3b82f6;width:' + Math.max(1, x.ca / max * 100) + '%" title="CA HT ' + rgEur0(x.ca) + '"></div>'
+    + '<div style="height:8px;border-radius:4px;background:#f59e0b;margin-top:2px;width:' + Math.max(1, x.coutTotal / max * 100) + '%" title="Coût ' + rgEur0(x.coutTotal) + '"></div></div></div>'; }).join('')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:4px"><span style="color:#3b82f6">■</span> CA HT &nbsp; <span style="color:#f59e0b">■</span> coût total</div>';
+}
+function rgAlertesHtml(R) {
+  if (!R.alertes.length) return '<div style="font-size:12px;color:#16a34a">✅ Aucune alerte sur la période.</div>';
+  const c = { rouge: '#dc2626', orange: '#d97706', gris: 'var(--muted)' };
+  return R.alertes.slice(0, 60).map(function(a){ return '<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border);color:' + c[a.niv] + '">' + (a.niv === 'rouge' ? '🔴' : a.niv === 'orange' ? '🟠' : '⚪') + ' ' + E(a.txt) + '</div>'; }).join('') + (R.alertes.length > 60 ? '<div style="font-size:11px;color:var(--muted)">+ ' + (R.alertes.length - 60) + ' autres</div>' : '');
+}
+function rgVueBord(R) {
+  const S = R.soc, n = Math.max(1, S.nbCh), nv = Math.max(1, S.nbVeh);
+  const vehCa = R.lv.reduce(function(s, W){ return s + W.ca; }, 0), vehMarge = R.lv.reduce(function(s, W){ return s + W.marge; }, 0), vehCout = R.lv.reduce(function(s, W){ return s + W.coutVeh; }, 0);
+  return '<div style="font-size:13px;color:var(--muted);margin-bottom:8px">' + E(rgLibPeriode()) + (RG.filtres.soc ? ' · ' + E(RG.filtres.soc) : '') + ' · CA hors taxes</div>'
+    + '<div style="font-size:14px;font-weight:800;margin:4px 0 6px">🏢 Société</div>'
+    + rgGrille([rgKpi('CA HT', rgEur0(S.ca), 'TTC ' + rgEur0(S.caTtc), '#3b82f6'), rgKpi('Coût total', rgEur0(S.cout)), rgKpi('Salaires et chauffeurs', rgEur0(S.sal), rgNum(RG.d.regles.chargesPct) ? 'charges ' + RG.d.regles.chargesPct + ' % incluses' : 'brut / prix chauffeur'), rgKpi('Coût véhicules', rgEur0(S.vehFixe + S.energie), 'fixe ' + rgEur0(S.vehFixe) + ' + énergie ' + rgEur0(S.energie)), rgKpi('Frais', rgEur0(S.frais), 'péages/parking ' + rgEur0(S.peage)), rgKpi('Marge', rgEur0(S.marge), rgPct(S.pct), rgColMarge(S.marge))])
+    + '<div style="font-size:14px;font-weight:800;margin:10px 0 6px">👤 Chauffeurs</div>'
+    + rgGrille([rgKpi('Chauffeurs', String(S.nbCh)), rgKpi('Heures travaillées', rgH(S.heures), S.missions + ' missions'), rgKpi('Salaire total', rgEur0(S.salBrut), 'brut des salariés'), rgKpi('CA moyen / chauffeur', rgEur0(S.ca / n)), rgKpi('Coût moyen / chauffeur', rgEur0(R.lc.reduce(function(s, L){ return s + L.coutTotal; }, 0) / n)), rgKpi('Marge moyenne', rgEur0(R.lc.reduce(function(s, L){ return s + L.marge; }, 0) / n), '', rgColMarge(S.marge))])
+    + '<div style="font-size:14px;font-weight:800;margin:10px 0 6px">🚐 Véhicules</div>'
+    + rgGrille([rgKpi('Véhicules', String(S.nbVeh)), rgKpi('Véhicules + leurs frais', rgEur0(vehCout), 'fixe, énergie, péages, autres'), rgKpi('CA / véhicule', rgEur0(vehCa / nv)), rgKpi('Coût moyen / véhicule', rgEur0(vehCout / nv)), rgKpi('Marge / véhicule', rgEur0(vehMarge / nv), 'salaire chauffeur inclus', rgColMarge(vehMarge))])
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;margin-top:6px">'
+    +   '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:12px;min-width:0"><div style="font-size:13px;font-weight:800;margin-bottom:6px">CA et coût par chauffeur</div>' + (R.lc.length ? rgBarres(R.lc) : '<div style="color:var(--muted);font-size:12px">Aucune donnée.</div>') + '</div>'
+    +   '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:12px;min-width:0"><div style="font-size:13px;font-weight:800;margin-bottom:6px">⚠️ Alertes et contrôles (' + R.alertes.length + ')</div>' + rgAlertesHtml(R) + '</div>'
+    + '</div>';
+}
+function rgVueChauffeurs(R) {
+  return '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + E(rgLibPeriode()) + ' · touchez un chauffeur pour son compte de résultat</div>'
+    + rgTable(['Chauffeur', 'Missions', 'Heures', 'CA HT', 'Salaire / prix chauffeur', 'Véhicule', 'Énergie', 'Péages / parking', 'Autres', 'Coût total', 'Marge', 'Marge %'],
+      R.lc.map(function(L){ return rgTr(['<b>' + E(L.nom) + '</b>' + (L.remu && L.remu.type === 'horaire' ? ' <span style="font-size:10px;color:var(--muted)">salarié</span>' : ''), L.missions, L.heures ? rgH(L.heures) : '—', rgEur0(L.ca), rgEur0(L.coutSal), rgEur0(L.vehCout), rgEur0(L.energie), rgEur0(L.peage), rgEur0(L.autres), rgEur0(L.coutTotal), '<b style="color:' + rgColMarge(L.marge) + '">' + rgEur0(L.marge) + '</b>', rgPct(L.pct)], 'rgFocus(\'ch\',\'' + L.c._id + '\')'); }));
+}
+window.rgFocus = function(k, id) { RG.focus = {}; RG.focus[k] = id; if (k === 'ch') RG.onglet = 'chauffeurs'; if (k === 'veh') RG.onglet = 'vehicules'; document.querySelectorAll('#rg-onglets button').forEach(function(b){ b.className = 'btn btn-' + (b.dataset.o === RG.onglet ? 's' : 'ghost') + ' btn-sm'; }); rgDessiner(); };
+function rgLigneRes(l, v, gras) { return '<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--border);font-size:13px' + (gras ? ';font-weight:800' : '') + '"><span>' + l + '</span><span>' + v + '</span></div>'; }
+function rgVueChauffeur(R, id) {
+  const L = R.ch[id]; if (!L) return '<div>Chauffeur introuvable. <button class="btn btn-ghost btn-xs" onclick="rgOnglet(\'chauffeurs\')">‹ Retour</button></div>';
+  const d = RG.d, moisL = R.moisL;
+  const missions = d.courses.filter(function(c){ return STATUTS_CA.includes(c.statut) && moisL.indexOf(String(c.datetime || '').slice(0, 7)) >= 0 && ((c.chauffeurId && c.chauffeurId === id) || String(c.chauffeur || '').trim() === L.nom); }).sort(function(a, b){ return String(a.datetime).localeCompare(String(b.datetime)); });
+  const frais = R.frais.filter(function(x){ return x.chauffeurId === id; });
+  const salarie = L.remu && L.remu.type === 'horaire';
+  return '<button class="btn btn-ghost btn-xs" onclick="rgOnglet(\'chauffeurs\')">‹ Tous les chauffeurs</button>'
+    + '<div style="font-size:17px;font-weight:800;margin:8px 0 2px">👤 ' + E(L.nom) + '</div><div style="font-size:12px;color:var(--muted);margin-bottom:10px">' + E(L.soc) + ' · ' + E(rgLibPeriode()) + ' · ' + (salarie ? 'salarié, ' + rgEur(L.remu.taux) + ' / h' : 'payé à la course') + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:12px">'
+    + '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:12px"><div style="font-weight:800;margin-bottom:6px">Compte de résultat</div>'
+    +   rgLigneRes('CA généré (HT)', '<b style="color:#3b82f6">' + rgEur(L.ca) + '</b>') + '<div style="font-size:11px;color:var(--muted);margin:8px 0 2px">Coûts</div>'
+    +   rgLigneRes(salarie ? 'Salaire' + (rgNum(d.regles.chargesPct) ? ' + charges ' + d.regles.chargesPct + ' %' : ' (brut)') : 'Prix chauffeur (à la course)', rgEur(L.coutSal))
+    +   rgLigneRes('Véhicule (leasing, assurance, entretien…)', rgEur(L.vehCout)) + rgLigneRes('Carburant / recharge', rgEur(L.energie)) + rgLigneRes('Péages / parking', rgEur(L.peage)) + rgLigneRes('Autres frais', rgEur(L.autres))
+    +   rgLigneRes('Coût total', rgEur(L.coutTotal), true) + rgLigneRes('Marge', '<span style="color:' + rgColMarge(L.marge) + '">' + rgEur(L.marge) + '</span>', true) + rgLigneRes('Marge %', rgPct(L.pct), true) + '</div>'
+    + '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:12px"><div style="font-weight:800;margin-bottom:6px">Heures (pointeuse)</div>'
+    +   rgLigneRes('Normales', rgH(L.h.normal)) + rgLigneRes('Supplémentaires (1)', rgH(L.h.sup1)) + rgLigneRes('Supplémentaires (2)', rgH(L.h.sup2)) + rgLigneRes('Dimanche', rgH(L.h.dim)) + rgLigneRes('Jours fériés', rgH(L.h.ferie)) + rgLigneRes('dont de nuit', rgH(L.h.nuit)) + rgLigneRes('Total', rgH(L.heures) + ' · ' + L.jours + ' jour(s)', true)
+    +   '<div style="font-size:11px;color:var(--muted);margin-top:6px">Véhicules : ' + E(Object.keys(L.hVeh).map(function(v){ const W = d.veh.find(function(x){ return x._id === v; }); return (W ? rgVehNom(W) : v) + ' (' + rgH(L.hVeh[v]) + ')'; }).join(', ') || '—') + '</div></div></div>'
+    + '<div style="font-size:14px;font-weight:800;margin:14px 0 6px">Missions (' + missions.length + ')</div>'
+    + rgTable(['Date', 'Client', 'Trajet', 'CA HT', 'Prix chauffeur'], missions.slice(0, 300).map(function(c){ return rgTr([new Date(c.datetime).toLocaleDateString('fr-FR') + ' ' + String(c.datetime || '').slice(11, 16), E((c._priv && c._priv.clientNom) || c.client || ''), E((c.depart || c.lieu || '') + ' → ' + (c.arrivee || '')).slice(0, 80), rgEur(ht(prixFacture(c))), c.prixChauffeur ? rgEur(c.prixChauffeur) : '—']); }))
+    + '<div style="font-size:14px;font-weight:800;margin:14px 0 6px">Frais (' + frais.length + ')</div>' + rgTableFrais(frais);
+}
+function rgVueVehicules(R) {
+  return '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + E(rgLibPeriode()) + ' · coûts fixes = coûts mensuels × nombre de mois · touchez un véhicule pour son détail</div>'
+    + rgTable(['Véhicule', 'Motorisation', 'Missions', 'Heures', 'Km', 'CA HT', 'Fixe', 'Carburant / recharge', 'Péages', 'Autres', 'Salaire chauffeur', 'Coût total', 'Marge', 'Marge %'],
+      R.lv.map(function(W){ return rgTr(['<b>' + E(rgVehNom(W.v)) + '</b>', E(rgMotoNom(W.v.motorisation)), W.missions, W.heures ? rgH(W.heures) : '—', W.km ? Math.round(W.km).toLocaleString('fr-FR') : '—', rgEur0(W.ca), W.couts ? rgEur0(W.fixe) : '<span style="color:#d97706">à renseigner</span>', rgEur0(W.energie), rgEur0(W.peage), rgEur0(W.autres), rgEur0(W.chSal), rgEur0(W.coutTotal), '<b style="color:' + rgColMarge(W.marge) + '">' + rgEur0(W.marge) + '</b>', rgPct(W.pct)], 'rgFocus(\'veh\',\'' + W.v._id + '\')'); }), 'Aucun véhicule sur ce périmètre.');
+}
+function rgVueVehicule(R, id) {
+  const W = R.veh[id]; if (!W) return '<button class="btn btn-ghost btn-xs" onclick="rgOnglet(\'vehicules\')">‹ Retour</button>';
+  const elec = rgEstElec(W.v), c = W.couts || {};
+  const frais = R.frais.filter(function(x){ return x.vehiculeId === id; });
+  return '<button class="btn btn-ghost btn-xs" onclick="rgOnglet(\'vehicules\')">‹ Tous les véhicules</button>'
+    + '<div style="font-size:17px;font-weight:800;margin:8px 0 2px">🚐 ' + E(rgVehNom(W.v)) + '</div><div style="font-size:12px;color:var(--muted);margin-bottom:10px">' + E(rgMotoNom(W.v.motorisation)) + ' · ' + E(W.soc) + ' · ' + E(rgLibPeriode()) + ' <button class="btn btn-ghost btn-xs" onclick="rgEditVeh(\'' + id + '\')">✏️ Coûts mensuels</button></div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:12px">'
+    + '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:12px"><div style="font-weight:800;margin-bottom:6px">Compte de résultat</div>'
+    +   rgLigneRes('CA généré (HT)', '<b style="color:#3b82f6">' + rgEur(W.ca) + '</b>') + rgLigneRes('Missions', String(W.missions)) + rgLigneRes('Heures', rgH(W.heures)) + rgLigneRes('Kilomètres', W.km ? Math.round(W.km).toLocaleString('fr-FR') + ' km' : '—')
+    +   '<div style="font-size:11px;color:var(--muted);margin:8px 0 2px">Coûts</div>'
+    +   rgLigneRes('Salaire chauffeur (part des heures)', rgEur(W.chSal)) + rgLigneRes('Leasing / crédit', rgEur(W.detail.leasing)) + rgLigneRes('Assurance', rgEur(W.detail.assurance)) + rgLigneRes('Entretien', rgEur(W.detail.entretien))
+    +   (W.detail.assistance ? rgLigneRes('Assistance', rgEur(W.detail.assistance)) : '') + (W.detail.autresFixes ? rgLigneRes('Autres coûts fixes', rgEur(W.detail.autresFixes)) : '')
+    +   rgLigneRes(elec ? '🔌 Recharge électrique' : '⛽ Carburant', rgEur(W.energie) + (rgNum(c.budgetEnergie) ? ' <span style="font-size:11px;color:var(--muted)">(budget ' + rgEur0(rgNum(c.budgetEnergie) * R.moisL.length) + ')</span>' : ''))
+    +   rgLigneRes('Péages / parking', rgEur(W.peage)) + rgLigneRes('Autres frais', rgEur(W.autres))
+    +   rgLigneRes('Coût total', rgEur(W.coutTotal), true) + rgLigneRes('Marge', '<span style="color:' + rgColMarge(W.marge) + '">' + rgEur(W.marge) + '</span>', true) + rgLigneRes('Marge %', rgPct(W.pct), true)
+    +   (elec && W.km ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">Coût énergie : ' + rgEur(W.energie / W.km * 100) + ' / 100 km</div>' : (!elec && W.km ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">Coût carburant : ' + rgEur(W.energie / W.km * 100) + ' / 100 km</div>' : ''))
+    + '</div><div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:12px"><div style="font-weight:800;margin-bottom:6px">Chauffeurs (heures pointées)</div>'
+    +   (Object.keys(W.hCh).length ? Object.keys(W.hCh).map(function(k){ const L = R.ch[k]; return rgLigneRes(E(L ? L.nom : k), rgH(W.hCh[k])); }).join('') : '<div style="font-size:12px;color:var(--muted)">Aucun pointage avec ce véhicule.</div>')
+    + '</div></div><div style="font-size:14px;font-weight:800;margin:14px 0 6px">Frais (' + frais.length + ')</div>' + rgTableFrais(frais);
+}
+
+// ── Paie mensuelle ──────────────────────────────────────────────────────────
+// Le récap d'un mois TERMINÉ est créé automatiquement (brouillon) à
+// l'ouverture ; l'admin / le gérant peut corriger avant de valider. Un récap
+// validé est figé et conservé (historique).
+async function rgAutoBrouillons() {
+  const d = RG.d, moisCour = rgIso(new Date()).slice(0, 7);
+  for (const m of rgPeriodeMois()) {
+    if (m >= moisCour) continue;
+    for (const c of d.ch) {
+      const remu = d.remu[c._id]; if (!remu || remu.type !== 'horaire') continue;
+      if (d.paie[m] && d.paie[m][c._id]) continue;
+      const rec = rgRecap(c, m, null);
+      if (!rec.heuresTot) continue;
+      rec.statut = 'brouillon'; rec.auto = true;
+      try { await rgPatch('paie/' + m.replace('-', ''), c._id, rec); d.paie[m] = d.paie[m] || {}; d.paie[m][c._id] = rec; } catch (e) {}
+    }
+  }
+}
+function rgRecap(c, m, ancien) {
+  const d = RG.d, remu = d.remu[c._id] || {}, regles = d.regles;
+  const pts = d.pts.filter(function(p){ return p.chauffeurId === c._id; });
+  const calc = rgCalculerHeures(pts, m, regles);
+  const h = ancien && ancien.heures ? ancien.heures : calc.h;
+  const taux = ancien && ancien.taux ? ancien.taux : rgTaux(remu, regles);
+  const primes = ancien ? rgNum(ancien.primes) : 0, ajust = ancien ? rgNum(ancien.ajust) : 0;
+  const mt = rgMontants(h, taux, primes, ajust);
+  const fraisRemb = d.frais.filter(function(x){ return x.chauffeurId === c._id && String(x.date || '').slice(0, 7) === m && x.payePar === 'chauffeur' && x.statut === 'valide'; }).reduce(function(s, x){ return s + rgNum(x.montant); }, 0);
+  return { chauffeurId: c._id, nom: rgNomCh(c), societe: rgChSoc(c), mois: m, heures: h, heuresPointeuse: calc.h, heuresTot: Math.round((h.normal + h.sup1 + h.sup2 + h.dim + h.ferie) * 100) / 100, jours: calc.jours, taux: taux, montants: mt.m, primes: primes, ajust: ajust, motif: ancien ? (ancien.motif || '') : '', fraisRemb: Math.round(fraisRemb * 100) / 100, brut: mt.brut, total: Math.round((mt.brut + fraisRemb) * 100) / 100, corrections: ancien ? (ancien.corrections || null) : null, calculeAt: new Date().toISOString() };
+}
+function rgVuePaie(R) {
+  if (RG.annee) return '<div style="padding:14px;color:var(--muted)">Choisissez un mois (pas l\'année entière) pour la paie. L\'historique des mois est conservé.</div>' + rgHistoPaie();
+  const d = RG.d, m = RG.mois, cour = rgIso(new Date()).slice(0, 7);
+  const sal = d.ch.filter(function(c){ const r = d.remu[c._id]; return r && r.type === 'horaire' && (!RG.filtres.soc || rgChSoc(c) === RG.filtres.soc) && (!RG.filtres.ch || c._id === RG.filtres.ch); });
+  const lignes = sal.map(function(c){
+    const rec = (d.paie[m] || {})[c._id];
+    const r = rec && rec.statut === 'valide' ? rec : rgRecap(c, m, rec);
+    const st = rec ? (rec.statut === 'valide' ? '<span style="color:#16a34a;font-weight:800">✔ Validé</span>' : '<span style="color:#d97706">Brouillon' + (rec.corrections ? ' · corrigé' : '') + '</span>') : (m >= cour ? '<span style="color:var(--muted)">En cours (provisoire)</span>' : '<span style="color:var(--muted)">—</span>');
+    return rgTr(['<b>' + E(rgNomCh(c)) + '</b>', rgH(r.heures.normal), rgH(r.heures.sup1 + r.heures.sup2), rgH(r.heures.dim), rgH(r.heures.ferie), rgH(r.heures.nuit), rgEur(r.brut), rgEur(r.fraisRemb), '<b>' + rgEur(r.total) + '</b>', st], 'rgPaieDetail(\'' + c._id + '\')');
+  });
+  return '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + E(rgMoisLabel(m)) + ' · chauffeurs payés à l\'heure (taux renseigné dans Paramètres) · touchez une ligne pour le récapitulatif, corriger et valider</div>'
+    + rgTable(['Chauffeur', 'Normales', 'Sup.', 'Dimanche', 'Férié', 'Nuit', 'Brut calculé', 'Frais remb.', 'Total', 'Statut'], lignes, 'Aucun chauffeur payé à l\'heure : renseignez la rémunération dans ⚙️ Paramètres.')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5">Montants calculés à partir de la pointeuse et des règles de la société — aide à la préparation de la paie, pas un bulletin de salaire (cotisations non calculées).</div>' + rgHistoPaie();
+}
+function rgHistoPaie() { return '<div style="margin-top:12px"><button class="btn btn-ghost btn-sm" onclick="rgHisto()">🗂️ Historique des paies</button><div id="rg-histo"></div></div>'; }
+window.rgHisto = async function() {
+  const el = document.getElementById('rg-histo'); if (!el) return;
+  el.innerHTML = 'Chargement…';
+  const tout = await rgGet('paie') || {};
+  const mois = Object.keys(tout).sort().reverse();
+  el.innerHTML = mois.length ? rgTable(['Mois', 'Chauffeurs', 'Validés', 'Total brut', 'Total à verser'], mois.map(function(k){ const L = Object.keys(tout[k]).map(function(x){ return tout[k][x]; }); return rgTr([E(rgMoisLabel(k.slice(0, 4) + '-' + k.slice(4))), L.length, L.filter(function(x){ return x.statut === 'valide'; }).length, rgEur(L.reduce(function(s, x){ return s + rgNum(x.brut); }, 0)), rgEur(L.reduce(function(s, x){ return s + rgNum(x.total); }, 0))], 'rgFiltre(\'mois\',\'' + k.slice(0, 4) + '-' + k.slice(4) + '\')'); })) : '<div style="color:var(--muted);font-size:12px;padding:8px">Aucune paie enregistrée.</div>';
+};
+function rgSous(titre, html, okLabel) {
+  const old = document.getElementById('rg-f-ov'); if (old) old.remove();
+  const ov = document.createElement('div'); ov.id = 'rg-f-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:345;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:560px;max-width:100%;min-width:0;max-height:92vh;display:flex;flex-direction:column;overflow:hidden"><div style="padding:14px 16px;font-size:15px;font-weight:800;border-bottom:1px solid var(--border)">' + titre + '</div><div style="padding:14px 16px;overflow:auto;min-width:0;flex:1 1 auto">' + html + '<div id="rg-f-err" style="color:#dc2626;font-size:12px;min-height:16px;margin-top:6px"></div></div>'
+    + '<div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap" id="rg-f-btns"><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'rg-f-ov\').remove()">Fermer</button>' + (okLabel ? '<button class="btn btn-p btn-sm" id="rg-f-ok">' + okLabel + '</button>' : '') + '</div></div>';
+  document.body.appendChild(ov);
+  return ov;
+}
+function rgChamp(lab, inner) { return '<div style="margin-bottom:9px"><label style="display:block;font-size:12px;font-weight:700;margin-bottom:3px">' + lab + '</label>' + inner + '</div>'; }
+// Nombres en champ texte « décimal » : la virgule française est acceptée partout (iPhone compris).
+function rgInp(id, val, type, extra) { const num = !type || type === 'number'; return '<input id="' + id + '" type="' + (num ? 'text' : type) + '"' + (num ? ' inputmode="decimal" autocomplete="off"' : '') + ' value="' + E(val == null ? '' : String(val).replace(num ? '.' : '\u0000', num ? ',' : '')) + '" style="' + RG_IN + ';width:100%" ' + (extra || '') + '>'; }
+window.rgPaieDetail = function(chId) {
+  const d = RG.d, m = RG.mois, c = d.ch.find(function(x){ return x._id === chId; }); if (!c) return;
+  const rec = (d.paie[m] || {})[chId];
+  const r = rec && rec.statut === 'valide' ? rec : rgRecap(c, m, rec);
+  const fige = rec && rec.statut === 'valide';
+  const lab = { normal: 'Heures normales', sup1: 'Heures supplémentaires (1)', sup2: 'Heures supplémentaires (2)', dim: 'Heures dimanche', ferie: 'Heures jour férié', nuit: 'Heures de nuit (supplément)' };
+  let h = '<div style="font-size:12px;color:#555;margin-bottom:8px">' + E(r.nom) + ' · ' + E(r.societe) + ' · ' + E(rgMoisLabel(m)) + ' · ' + r.jours + ' jour(s) pointé(s)</div>'
+    + '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th style="' + RG_TH + '">Catégorie</th><th style="' + RG_TH + ';text-align:right">Heures</th><th style="' + RG_TH + ';text-align:right">Taux</th><th style="' + RG_TH + ';text-align:right">Montant</th></tr></thead><tbody>'
+    + ['normal', 'sup1', 'sup2', 'dim', 'ferie', 'nuit'].map(function(k){
+        return '<tr><td style="' + RG_TD + '">' + lab[k] + (r.heuresPointeuse && rec && rec.heures && rec.heures[k] !== r.heuresPointeuse[k] ? ' <span style="font-size:10px;color:#d97706">(pointeuse : ' + rgH(r.heuresPointeuse[k]) + ')</span>' : '') + '</td>'
+          + '<td style="' + RG_TD + ';text-align:right">' + (fige ? rgH(r.heures[k]) : '<input id="rg-p-h-' + k + '" type="text" inputmode="decimal" value="' + String(r.heures[k]).replace('.', ',') + '" style="' + RG_IN + ';width:72px;text-align:right">') + '</td>'
+          + '<td style="' + RG_TD + ';text-align:right">' + (fige ? rgEur(r.taux[k]) : '<input id="rg-p-t-' + k + '" type="text" inputmode="decimal" value="' + String(Math.round(r.taux[k] * 100) / 100).replace('.', ',') + '" style="' + RG_IN + ';width:72px;text-align:right">') + '</td>'
+          + '<td style="' + RG_TD + ';text-align:right">' + rgEur(r.montants[k]) + '</td></tr>';
+      }).join('') + '</tbody></table></div>'
+    + (fige ? rgLigneRes('Primes', rgEur(r.primes)) + rgLigneRes('Ajustement', rgEur(r.ajust) + (r.motif ? ' — ' + E(r.motif) : ''))
+           : '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-top:10px">' + rgChamp('Primes éventuelles (€)', rgInp('rg-p-primes', r.primes)) + rgChamp('Ajustement exceptionnel (€)', rgInp('rg-p-ajust', r.ajust)) + '</div>' + rgChamp('Motif de la correction', rgInp('rg-p-motif', r.motif, 'text', 'maxlength="200" placeholder="ex. oubli de pointage le 12"')))
+    + rgLigneRes('Total brut calculé', rgEur(r.brut), true) + rgLigneRes('Frais remboursables (validés, avancés par le chauffeur)', rgEur(r.fraisRemb)) + rgLigneRes('Total à verser (brut + frais)', rgEur(r.total), true)
+    + (r.corrections ? '<div style="font-size:11px;color:#d97706;margin-top:8px">Corrigé par ' + E(r.corrections.par || '') + ' le ' + new Date(r.corrections.at).toLocaleString('fr-FR') + (r.corrections.motif ? ' — ' + E(r.corrections.motif) : '') + '</div>' : '')
+    + (fige ? '<div style="font-size:11px;color:#16a34a;margin-top:6px">✔ Validé par ' + E(r.validePar || '') + ' le ' + new Date(r.valideAt).toLocaleString('fr-FR') + '</div>' : '');
+  const ov = rgSous('💶 Récapitulatif de paie', h, fige ? null : '✔ Valider la paie');
+  const btns = ov.querySelector('#rg-f-btns');
+  btns.insertAdjacentHTML('afterbegin', '<button class="btn btn-ghost btn-sm" id="rg-p-pdf">🖨️ PDF</button>' + (fige ? '<button class="btn btn-ghost btn-sm" id="rg-p-rouvrir">↩️ Rouvrir</button>' : '<button class="btn btn-ghost btn-sm" id="rg-p-save">💾 Enregistrer le brouillon</button><button class="btn btn-ghost btn-sm" id="rg-p-reset">↺ Recalculer depuis la pointeuse</button>'));
+  ov.querySelector('#rg-p-pdf').onclick = function(){ rgPdfPaie([fige ? r : rgPaieLire(c, m, rec)]); };
+  const enregistrer = async function(valider) {
+    const n = rgPaieLire(c, m, rec);
+    if (valider) { n.statut = 'valide'; n.valideAt = new Date().toISOString(); n.validePar = SESSION.name || ''; } else n.statut = 'brouillon';
+    await rgPatch('paie/' + m.replace('-', ''), chId, n);
+    RG.d.paie[m] = RG.d.paie[m] || {}; RG.d.paie[m][chId] = n;
+    try { addLog('💶 Paie ' + m + ' ' + (valider ? 'validée' : 'enregistrée') + ' : ' + n.nom + ' — ' + rgEur(n.total)); } catch (e) {}
+    ov.remove(); showToast(valider ? '✔ Paie validée' : 'Brouillon enregistré'); rgDessiner();
+  };
+  if (!fige) {
+    ov.querySelector('#rg-f-ok').onclick = function(){ enregistrer(true); };
+    ov.querySelector('#rg-p-save').onclick = function(){ enregistrer(false); };
+    ov.querySelector('#rg-p-reset').onclick = async function(){ const n = rgRecap(c, m, null); n.statut = 'brouillon'; await rgPatch('paie/' + m.replace('-', ''), chId, Object.assign(n, { primes: 0, ajust: 0, motif: '', corrections: null })); RG.d.paie[m] = RG.d.paie[m] || {}; RG.d.paie[m][chId] = n; ov.remove(); rgPaieDetail(chId); };
+  } else {
+    ov.querySelector('#rg-p-rouvrir').onclick = async function(){ await rgPatch('paie/' + m.replace('-', ''), chId, { statut: 'brouillon', valideAt: null, validePar: null }); RG.d.paie[m][chId].statut = 'brouillon'; ov.remove(); rgPaieDetail(chId); };
+  }
+};
+// Lit le formulaire de paie et note les corrections manuelles.
+function rgPaieLire(c, m, rec) {
+  const base = rgRecap(c, m, null);
+  const v = function(id, def){ const el = document.getElementById(id); return el ? rgNum(el.value) : def; };
+  const h = {}, t = {};
+  ['normal', 'sup1', 'sup2', 'dim', 'ferie', 'nuit'].forEach(function(k){ h[k] = Math.round(v('rg-p-h-' + k, base.heures[k]) * 100) / 100; t[k] = Math.round(v('rg-p-t-' + k, base.taux[k]) * 100) / 100; });
+  const primes = v('rg-p-primes', 0), ajust = v('rg-p-ajust', 0), motif = ((document.getElementById('rg-p-motif') || {}).value || '').trim();
+  const corrige = ['normal', 'sup1', 'sup2', 'dim', 'ferie', 'nuit'].some(function(k){ return Math.abs(h[k] - base.heures[k]) > 0.009 || Math.abs(t[k] - Math.round(base.taux[k] * 100) / 100) > 0.009; }) || primes || ajust;
+  const mt = rgMontants(h, t, primes, ajust);
+  return Object.assign(base, { heures: h, taux: t, montants: mt.m, primes: primes, ajust: ajust, motif: motif, brut: mt.brut, total: Math.round((mt.brut + base.fraisRemb) * 100) / 100, heuresTot: Math.round((h.normal + h.sup1 + h.sup2 + h.dim + h.ferie) * 100) / 100,
+    corrections: corrige ? { par: SESSION.name || '', at: new Date().toISOString(), motif: motif } : ((rec && rec.corrections) || null) });
+}
+function rgPdfPaie(L) {
+  const soc = RG.ctx.mode === 'gerant' ? RG.ctx.soc : 'MOBILEA SARL';
+  const lab = { normal: 'Heures normales', sup1: 'Heures supplémentaires (1)', sup2: 'Heures supplémentaires (2)', dim: 'Dimanches', ferie: 'Jours fériés', nuit: 'Supplément nuit' };
+  openPrintableDoc('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Récapitulatif de paie</title><style>body{font-family:Helvetica,Arial,sans-serif;color:#111;padding:28px;max-width:760px;margin:auto;font-size:12.5px}h1{font-size:18px;margin:0 0 4px}.s{color:#555;margin-bottom:14px}table{width:100%;border-collapse:collapse;margin:8px 0}th{background:#1f2937;color:#fff;text-align:left;padding:6px 8px;font-size:11px}td{padding:6px 8px;border-bottom:1px solid #e5e7eb}.r{text-align:right}.t td{font-weight:800}.p{page-break-after:always;margin-bottom:24px}.m{font-size:10.5px;color:#555;margin-top:10px}</style></head><body>'
+    + L.map(function(r){ return '<div class="p"><h1>Récapitulatif mensuel — ' + E(r.nom) + '</h1><div class="s">Société : ' + E(r.societe === 'MOBILEA' ? soc : r.societe) + ' · Mois : ' + E(rgMoisLabel(r.mois)) + ' · ' + r.jours + ' jour(s) travaillé(s)' + (r.statut === 'valide' ? ' · validé le ' + new Date(r.valideAt).toLocaleDateString('fr-FR') : ' · brouillon') + '</div>'
+      + '<table><thead><tr><th>Catégorie</th><th class="r">Heures</th><th class="r">Taux</th><th class="r">Montant</th></tr></thead><tbody>'
+      + ['normal', 'sup1', 'sup2', 'dim', 'ferie', 'nuit'].filter(function(k){ return r.heures[k] || r.montants[k]; }).map(function(k){ return '<tr><td>' + lab[k] + '</td><td class="r">' + rgH(r.heures[k]) + '</td><td class="r">' + rgEur(r.taux[k]) + '</td><td class="r">' + rgEur(r.montants[k]) + '</td></tr>'; }).join('')
+      + (r.primes ? '<tr><td>Primes</td><td></td><td></td><td class="r">' + rgEur(r.primes) + '</td></tr>' : '') + (r.ajust ? '<tr><td>Ajustement' + (r.motif ? ' (' + E(r.motif) + ')' : '') + '</td><td></td><td></td><td class="r">' + rgEur(r.ajust) + '</td></tr>' : '')
+      + '<tr class="t"><td>Total brut calculé</td><td class="r">' + rgH(r.heuresTot) + '</td><td></td><td class="r">' + rgEur(r.brut) + '</td></tr><tr><td>Frais remboursables</td><td></td><td></td><td class="r">' + rgEur(r.fraisRemb) + '</td></tr><tr class="t"><td>Montant total calculé</td><td></td><td></td><td class="r">' + rgEur(r.total) + '</td></tr></tbody></table>'
+      + '<div class="m">Calcul établi à partir de la pointeuse et des règles de rémunération de la société. Document de préparation de paie — ne remplace pas le bulletin de salaire.</div></div>'; }).join('') + '</body></html>');
+}
+
+// ── Frais ───────────────────────────────────────────────────────────────────
+function rgTableFrais(L, actions) {
+  return rgTable(['Date', 'Chauffeur', 'Catégorie', 'Véhicule', 'Montant', 'Payé par', 'Justificatif', 'Statut'].concat(actions ? [''] : []), L.slice().sort(function(a, b){ return String(b.date).localeCompare(String(a.date)); }).map(function(x){
+    const v = RG.d.veh.find(function(w){ return w._id === x.vehiculeId; });
+    const st = x.statut === 'valide' ? '<span style="color:#16a34a">✔ validé</span>' : x.statut === 'refuse' ? '<span style="color:#dc2626">refusé</span>' : '<span style="color:#d97706">à valider</span>';
+    return rgTr([new Date(x.date + 'T12:00:00').toLocaleDateString('fr-FR'), E(x.chauffeurNom || '—'), (RG_FRAIS_CAT[x.categorie] || E(x.categorie || '')) + (x.energie ? ' <span style="font-size:10px;color:var(--muted)">' + E(x.energie) + '</span>' : ''), v ? E(v.immat || rgVehNom(v)) : '—', '<b>' + rgEur(x.montant) + '</b>', x.payePar === 'chauffeur' ? 'avancé par le chauffeur' : 'carte société', x.justificatif ? '<a href="' + E(x.justificatif) + '" target="_blank" rel="noopener" style="color:var(--gold)" onclick="event.stopPropagation()">📎 voir</a>' : '<span style="color:#d97706">manquant</span>', st].concat(actions ? ['<button class="btn btn-ghost btn-xs" onclick="event.stopPropagation();rgFraisVoir(\'' + x._id + '\')">Ouvrir</button>'] : []), actions ? 'rgFraisVoir(\'' + x._id + '\')' : '');
+  }), 'Aucun frais.');
+}
+function rgVueFrais(R) {
+  const L = R.frais.filter(function(x){ return (!RG.filtres.ch || x.chauffeurId === RG.filtres.ch) && (!RG.filtres.veh || x.vehiculeId === RG.filtres.veh); });
+  const tot = function(f){ return L.filter(f).reduce(function(s, x){ return s + rgNum(x.montant); }, 0); };
+  return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="font-size:12px;color:var(--muted)">' + E(rgLibPeriode()) + ' · ' + L.length + ' dépense(s) · ' + (R.fraisAValider || 0) + ' à valider</div><button class="btn btn-s btn-sm" onclick="rgFraisForm(null)">＋ Ajouter une dépense</button></div>'
+    + rgGrille([rgKpi('Carburant / recharge', rgEur0(tot(function(x){ return x.categorie === 'carburant' || x.categorie === 'recharge'; }))), rgKpi('Péages / parking', rgEur0(tot(function(x){ return x.categorie === 'peage' || x.categorie === 'parking'; }))), rgKpi('Lavage / autres', rgEur0(tot(function(x){ return x.categorie === 'lavage' || x.categorie === 'autre'; }))), rgKpi('À rembourser aux chauffeurs', rgEur0(tot(function(x){ return x.payePar === 'chauffeur' && x.statut === 'valide'; })))])
+    + rgTableFrais(L, true);
+}
+window.rgFraisVoir = function(id) {
+  const x = RG.d.frais.find(function(f){ return f._id === id; }); if (!x) return;
+  const v = RG.d.veh.find(function(w){ return w._id === x.vehiculeId; });
+  const ov = rgSous('🧾 ' + (RG_FRAIS_CAT[x.categorie] || 'Frais') + ' — ' + rgEur(x.montant),
+    rgLigneRes('Date', new Date(x.date + 'T12:00:00').toLocaleDateString('fr-FR')) + rgLigneRes('Chauffeur', E(x.chauffeurNom || '—')) + rgLigneRes('Véhicule', v ? E(rgVehNom(v)) : '—') + (x.energie ? rgLigneRes('Énergie', E(x.energie)) : '') + (x.km ? rgLigneRes('Kilométrage', rgNum(x.km).toLocaleString('fr-FR') + ' km') : '') + (x.courseRef ? rgLigneRes('Mission', E(x.courseRef)) : '') + rgLigneRes('Payé par', x.payePar === 'chauffeur' ? 'avancé par le chauffeur (à rembourser)' : 'carte de la société') + (x.note ? rgLigneRes('Note', E(x.note)) : '')
+    + (x.justificatif ? (/\.pdf|application%2Fpdf/i.test(x.justificatif) ? '<a href="' + E(x.justificatif) + '" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="margin-top:8px">📎 Ouvrir le justificatif (PDF)</a>' : '<a href="' + E(x.justificatif) + '" target="_blank" rel="noopener"><img src="' + E(x.justificatif) + '" alt="Justificatif" style="max-width:100%;max-height:340px;border-radius:8px;margin-top:8px;display:block"></a>') : '<div style="color:#d97706;font-size:12px;margin-top:8px">⚠️ Pas de justificatif.</div>')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:8px">Statut : ' + (x.statut === 'valide' ? 'validé' : x.statut === 'refuse' ? 'refusé' : 'à valider') + (x.validePar ? ' par ' + E(x.validePar) : '') + '</div>', x.statut !== 'valide' ? '✔ Valider' : null);
+  const btns = ov.querySelector('#rg-f-btns');
+  btns.insertAdjacentHTML('afterbegin', '<button class="btn btn-ghost btn-sm" id="rg-fr-edit">✏️ Modifier</button>' + (x.statut !== 'refuse' ? '<button class="btn btn-ghost btn-sm" id="rg-fr-ref" style="color:#dc2626">Refuser</button>' : ''));
+  const maj = async function(data, msg){ await rgPatch('frais', id, data); Object.assign(x, data); ov.remove(); showToast(msg); rgDessiner(); };
+  if (x.statut !== 'valide') ov.querySelector('#rg-f-ok').onclick = function(){ maj({ statut: 'valide', validePar: SESSION.name || '', valideAt: new Date().toISOString() }, '✔ Frais validé'); };
+  const ref = ov.querySelector('#rg-fr-ref'); if (ref) ref.onclick = function(){ maj({ statut: 'refuse', validePar: SESSION.name || '', valideAt: new Date().toISOString() }, 'Frais refusé'); };
+  ov.querySelector('#rg-fr-edit').onclick = function(){ ov.remove(); rgFraisForm(x); };
+};
+// Formulaire de dépense (chauffeur, admin ou gérant).
+function rgFraisFormHtml(x, vehs, courses, chs) {
+  x = x || {};
+  const opt = function(v, l, s){ return '<option value="' + E(v) + '"' + (v === s ? ' selected' : '') + '>' + E(l) + '</option>'; };
+  return (chs ? rgChamp('Chauffeur', '<select id="rg-fr-ch" style="' + RG_IN + ';width:100%">' + opt('', '—', x.chauffeurId || '') + chs.map(function(c){ return opt(c._id, rgNomCh(c), x.chauffeurId || ''); }).join('') + '</select>') : '')
+    + '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">'
+    + rgChamp('Catégorie', '<select id="rg-fr-cat" onchange="rgFraisCat()" style="' + RG_IN + ';width:100%">' + Object.keys(RG_FRAIS_CAT).map(function(k){ return opt(k, RG_FRAIS_CAT[k], x.categorie || 'carburant'); }).join('') + '</select>')
+    + '<div id="rg-fr-en-w">' + rgChamp('Énergie', '<select id="rg-fr-en" style="' + RG_IN + ';width:100%">' + [['diesel', 'Diesel'], ['essence', 'Essence'], ['electricite', 'Électricité']].map(function(a){ return opt(a[0], a[1], x.energie || ''); }).join('') + '</select>') + '</div>'
+    + rgChamp('Date', rgInp('rg-fr-date', x.date || rgIso(new Date()), 'date'))
+    + rgChamp('Montant payé (€ TTC) *', rgInp('rg-fr-mt', x.montant, 'number', 'min="0" inputmode="decimal"'))
+    + rgChamp('Véhicule', '<select id="rg-fr-veh" style="' + RG_IN + ';width:100%">' + opt('', '—', '') + vehs.map(function(v){ return opt(v._id, rgVehNom(v), x.vehiculeId || ''); }).join('') + '</select>')
+    + rgChamp('Kilométrage', rgInp('rg-fr-km', x.km, 'number', 'min="0" inputmode="numeric"'))
+    + '</div>'
+    + rgChamp('Mission concernée (facultatif)', '<select id="rg-fr-course" style="' + RG_IN + ';width:100%">' + opt('', '—', '') + courses.map(function(c){ return opt(c._id, String(c.datetime || '').slice(0, 10).split('-').reverse().join('/') + ' ' + String(c.datetime || '').slice(11, 16) + ' · ' + (c.depart || c.lieu || '').slice(0, 30) + ' → ' + (c.arrivee || '').slice(0, 30), x.courseId || ''); }).join('') + '</select>')
+    + rgChamp('Payé avec', '<select id="rg-fr-paye" style="' + RG_IN + ';width:100%">' + opt('societe', '💳 Carte de la société', x.payePar || 'societe') + opt('chauffeur', '👛 Avancé par le chauffeur (à rembourser)', x.payePar || 'societe') + '</select>')
+    + rgChamp('Justificatif (photo ou PDF de la facture)', '<input type="file" id="rg-fr-file" accept="image/*,application/pdf" capture="environment" style="font-size:13px">' + (x.justificatif ? '<div style="font-size:11px;color:#16a34a;margin-top:3px">📎 justificatif déjà joint (en choisir un autre pour le remplacer)</div>' : ''))
+    + rgChamp('Note', rgInp('rg-fr-note', x.note, 'text', 'maxlength="200"'));
+}
+window.rgFraisCat = function() { const c = (document.getElementById('rg-fr-cat') || {}).value; const w = document.getElementById('rg-fr-en-w'); if (w) w.style.display = (c === 'carburant' || c === 'recharge') ? '' : 'none'; const en = document.getElementById('rg-fr-en'); if (en && c === 'recharge') en.value = 'electricite'; };
+async function rgFraisLireForm(x, chOverride) {
+  const g = function(id){ return (document.getElementById(id) || {}).value || ''; };
+  const cat = g('rg-fr-cat'), mt = rgNum(g('rg-fr-mt'));
+  if (!(mt > 0)) throw new Error('Indiquez le montant payé');
+  const data = { categorie: cat, energie: (cat === 'carburant' || cat === 'recharge') ? g('rg-fr-en') : '', date: g('rg-fr-date') || rgIso(new Date()), montant: Math.round(mt * 100) / 100, vehiculeId: g('rg-fr-veh'), km: rgNum(g('rg-fr-km')) || '', courseId: g('rg-fr-course'), payePar: g('rg-fr-paye') || 'societe', note: g('rg-fr-note').trim().slice(0, 200) };
+  Object.assign(data, chOverride || {});
+  const file = (document.getElementById('rg-fr-file') || {}).files; const fi = file && file[0];
+  if (fi) {
+    if (navigator.onLine === false) throw new Error('Pas de réseau : enregistrez la dépense sans photo et ajoutez le justificatif plus tard');
+    if (fi.size > 10 * 1024 * 1024) throw new Error('Fichier trop lourd (10 Mo max)');
+    const p = await docsPreparer(fi);
+    const uid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || 'x';
+    const nom = 'frais/' + uid + '/' + Date.now() + '.' + p.ext;
+    const tok = await getAuthToken(), b = docsBucket();
+    const r = await fetch('https://firebasestorage.googleapis.com/v0/b/' + b + '/o?uploadType=media&name=' + encodeURIComponent(nom), { method: 'POST', headers: { 'Authorization': 'Firebase ' + tok, 'Content-Type': p.mime }, body: p.blob });
+    if (!r.ok) throw new Error(r.status === 403 ? 'Envoi du justificatif refusé (règles Firebase Storage à publier)' : 'Envoi du justificatif impossible (' + r.status + ')');
+    const j = await r.json(), t = String(j.downloadTokens || '').split(',')[0];
+    data.justificatif = 'https://firebasestorage.googleapis.com/v0/b/' + b + '/o/' + encodeURIComponent(j.name || nom) + '?alt=media' + (t ? '&token=' + t : '');
+  } else if (x && x.justificatif) data.justificatif = x.justificatif;
+  return data;
+}
+window.rgFraisForm = function(x) {
+  const d = RG.d;
+  const courses = d.courses.filter(function(c){ return STATUTS_CA.concat(['acceptee', 'en_route', 'sur_place', 'onboard', 'depose']).includes(c.statut); }).sort(function(a, b){ return String(b.datetime).localeCompare(String(a.datetime)); }).slice(0, 80);
+  const ov = rgSous(x ? '✏️ Modifier la dépense' : '＋ Nouvelle dépense', rgFraisFormHtml(x, d.veh, courses, d.ch), 'Enregistrer');
+  rgFraisCat();
+  ov.querySelector('#rg-f-ok').onclick = async function(){
+    const err = document.getElementById('rg-f-err'); this.disabled = true; err.style.color = 'var(--muted)'; err.textContent = 'Enregistrement…';
+    try {
+      const chId = (document.getElementById('rg-fr-ch') || {}).value || '';
+      const ch = d.ch.find(function(c){ return c._id === chId; });
+      const data = await rgFraisLireForm(x, { chauffeurId: chId, chauffeurNom: ch ? rgNomCh(ch) : '' });
+      if (x) await rgPatch('frais', x._id, data);
+      else { Object.assign(data, { statut: 'valide', validePar: SESSION.name || '', valideAt: new Date().toISOString(), creePar: SESSION.name || '', creeAt: new Date().toISOString(), chauffeurUid: ch && ch.uid || '' }); const k = await fbPush(RG.ctx.base + 'frais', data); d.frais.push(Object.assign({ _id: k }, data)); }
+      if (x) Object.assign(x, data);
+      ov.remove(); showToast('Dépense enregistrée ✓'); rgDessiner();
+    } catch (e) { this.disabled = false; err.style.color = '#dc2626'; err.textContent = e.message || 'Erreur'; }
+  };
+};
+
+// ── Paramètres : règles, rémunérations, coûts véhicules ─────────────────────
+function rgVueParam(R) {
+  const d = RG.d, rg = d.regles;
+  const chs = d.ch.filter(function(c){ return (!RG.filtres.soc || rgChSoc(c) === RG.filtres.soc); }).sort(function(a, b){ return rgNomCh(a).localeCompare(rgNomCh(b), 'fr'); });
+  const vehs = d.veh.filter(function(v){ return !RG.filtres.soc || rgVehSoc(v) === RG.filtres.soc; });
+  let h = '<div style="font-size:14px;font-weight:800;margin-bottom:6px">📐 Règles de paie de la société' + (RG.ctx.mode === 'admin' ? ' (salariés MOBILEA)' : '') + ' <button class="btn btn-ghost btn-xs" onclick="rgEditRegles()">✏️ Modifier</button></div>'
+    + '<div style="font-size:12.5px;line-height:1.7;background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:14px">Heures sup au-delà de <b>' + rg.seuilHebdo + ' h / semaine</b> : +' + rg.majSup1 + ' % jusqu\'à ' + rg.seuilSup2 + ' h, puis +' + rg.majSup2 + ' %<br>Dimanche : +' + (rg.majDim || 0) + ' % · Jour férié : +' + (rg.majFerie || 0) + ' % · Nuit (' + rg.nuitDebut + '–' + rg.nuitFin + ') : +' + (rg.majNuit || 0) + ' %'
+    + ' <span style="color:var(--muted)">(sauf taux propre au chauffeur)</span><br>Charges patronales : <b>' + (rgNum(rg.chargesPct) ? rg.chargesPct + ' %' : 'non renseignées') + '</b> · Alertes : journée > ' + rg.jourMax + ' h, semaine > ' + rg.semaineMax + ' h, plein > ' + rg.carbuMax + ' €</div>'
+    + '<div style="font-size:14px;font-weight:800;margin-bottom:6px">👤 Rémunération des chauffeurs</div>'
+    + rgTable(['Chauffeur', 'Société', 'Type', 'Taux normal', 'Dimanche', 'Férié', 'Heures sup', 'Nuit', 'Début contrat', ''], chs.map(function(c){
+        const r = d.remu[c._id], ta = r ? rgTaux(r, rg) : null;
+        return rgTr(['<b>' + E(rgNomCh(c)) + '</b>', E(rgChSoc(c)), r ? (r.type === 'horaire' ? 'À l\'heure' : 'À la course') : '<span style="color:#d97706">à renseigner</span>', r && r.type === 'horaire' ? rgEur(r.taux) : '—', ta && r.type === 'horaire' ? rgEur(ta.dim) : '—', ta && r.type === 'horaire' ? rgEur(ta.ferie) : '—', ta && r.type === 'horaire' ? rgEur(ta.sup1) : '—', ta && r.type === 'horaire' && ta.nuit ? '+' + rgEur(ta.nuit) : '—', r && r.debutContrat ? new Date(r.debutContrat + 'T12:00:00').toLocaleDateString('fr-FR') : '—', '<button class="btn btn-ghost btn-xs" onclick="event.stopPropagation();rgEditRemu(\'' + c._id + '\')">✏️</button>'], 'rgEditRemu(\'' + c._id + '\')');
+      }), 'Aucun chauffeur.')
+    + '<div style="font-size:14px;font-weight:800;margin:14px 0 6px">🚐 Coûts mensuels des véhicules</div>'
+    + rgTable(['Véhicule', 'Motorisation', 'Leasing / crédit', 'Assurance', 'Entretien', 'Assistance', 'Autres fixes', 'Budget énergie', 'Total fixe / mois', ''], vehs.map(function(v){
+        const c = d.couts[v._id] || {}, tot = rgNum(c.leasing) + rgNum(c.assurance) + rgNum(c.entretien) + rgNum(c.assistance) + rgNum(c.autresFixes);
+        return rgTr(['<b>' + E(rgVehNom(v)) + '</b>', E(rgMotoNom(v.motorisation)), rgEur0(c.leasing), rgEur0(c.assurance), rgEur0(c.entretien), rgEur0(c.assistance), rgEur0(c.autresFixes), rgEur0(c.budgetEnergie), tot ? '<b>' + rgEur0(tot) + '</b>' : '<span style="color:#d97706">à renseigner</span>', '<button class="btn btn-ghost btn-xs" onclick="event.stopPropagation();rgEditVeh(\'' + v._id + '\')">✏️</button>'], 'rgEditVeh(\'' + v._id + '\')');
+      }), 'Aucun véhicule.')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:8px">La motorisation (diesel, essence, hybride, électrique) se règle dans la fiche du véhicule (section 🌱). Ces montants sont confidentiels : visibles uniquement ' + (RG.ctx.mode === 'admin' ? 'par l\'administrateur' : 'par vous') + '.</div>';
+  if (RG.focus && RG.focus.ch) setTimeout(function(){ rgEditRemu(RG.focus.ch); RG.focus = null; }, 50);
+  if (RG.focus && RG.focus.veh) setTimeout(function(){ rgEditVeh(RG.focus.veh); RG.focus = null; }, 50);
+  return h;
+}
+window.rgEditRegles = function() {
+  const r = RG.d.regles;
+  const ov = rgSous('📐 Règles de paie de la société', '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">'
+    + rgChamp('Heures sup au-delà de (h / semaine)', rgInp('rg-r-s1', r.seuilHebdo)) + rgChamp('2e palier à partir de (h / semaine)', rgInp('rg-r-s2', r.seuilSup2))
+    + rgChamp('Majoration heures sup 1 (%)', rgInp('rg-r-m1', r.majSup1)) + rgChamp('Majoration heures sup 2 (%)', rgInp('rg-r-m2', r.majSup2))
+    + rgChamp('Majoration dimanche (%)', rgInp('rg-r-md', r.majDim)) + rgChamp('Majoration jour férié (%)', rgInp('rg-r-mf', r.majFerie))
+    + rgChamp('Nuit de', rgInp('rg-r-nd', r.nuitDebut, 'time')) + rgChamp('à', rgInp('rg-r-nf', r.nuitFin, 'time'))
+    + rgChamp('Majoration nuit (%)', rgInp('rg-r-mn', r.majNuit)) + rgChamp('Charges patronales (% du brut)', rgInp('rg-r-ch', r.chargesPct, 'number', 'placeholder="ex. 42"'))
+    + rgChamp('Alerte journée au-delà de (h)', rgInp('rg-r-jm', r.jourMax)) + rgChamp('Alerte semaine au-delà de (h)', rgInp('rg-r-sm', r.semaineMax))
+    + rgChamp('Alerte plein / recharge au-delà de (€)', rgInp('rg-r-cm', r.carbuMax)) + '</div>'
+    + '<div style="font-size:11px;color:var(--muted)">Un taux propre saisi dans la fiche d\'un chauffeur remplace la majoration de la société. Vérifiez ces règles avec votre convention collective ou votre comptable.</div>', 'Enregistrer');
+  ov.querySelector('#rg-f-ok').onclick = async function(){
+    const g = function(id){ return (document.getElementById(id) || {}).value; };
+    const n = { seuilHebdo: rgNum(g('rg-r-s1')), seuilSup2: rgNum(g('rg-r-s2')), majSup1: rgNum(g('rg-r-m1')), majSup2: rgNum(g('rg-r-m2')), majDim: rgNum(g('rg-r-md')), majFerie: rgNum(g('rg-r-mf')), nuitDebut: g('rg-r-nd') || '21:00', nuitFin: g('rg-r-nf') || '06:00', majNuit: rgNum(g('rg-r-mn')), chargesPct: g('rg-r-ch') === '' ? '' : rgNum(g('rg-r-ch')), jourMax: rgNum(g('rg-r-jm')) || 12, semaineMax: rgNum(g('rg-r-sm')) || 48, carbuMax: rgNum(g('rg-r-cm')) || 150, majAt: new Date().toISOString(), majPar: SESSION.name || '' };
+    if (n.seuilSup2 < n.seuilHebdo) n.seuilSup2 = n.seuilHebdo;
+    const tok = await getAuthToken();
+    let ok = false;
+    try { const r2 = await fetch(FB_URL + '/' + RG.ctx.base + 'paie_regles.json' + authParam(tok), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(n) }); ok = r2.ok; } catch (e) { ok = false; }
+    if (!ok) { document.getElementById('rg-f-err').textContent = 'Enregistrement refusé (réseau ou règles Firebase à publier)'; return; }
+    RG.d.regles = Object.assign({}, RG_REGLES_DEF, RG.d.regles, n); ov.remove(); showToast('Règles enregistrées ✓'); rgDessiner();
+  };
+};
+window.rgEditRemu = function(chId) {
+  const c = RG.d.ch.find(function(x){ return x._id === chId; }); if (!c) { showToast('Chauffeur introuvable', true); return; }
+  const r = RG.d.remu[chId] || { type: 'horaire' };
+  const opt = function(v, l){ return '<option value="' + v + '"' + ((r.type || 'horaire') === v ? ' selected' : '') + '>' + l + '</option>'; };
+  const ov = rgSous('💶 Rémunération — ' + E(rgNomCh(c)), rgChamp('Type de rémunération', '<select id="rg-m-type" style="' + RG_IN + ';width:100%">' + opt('horaire', 'Salarié payé à l\'heure (pointeuse × taux)') + opt('course', 'À la course (sous-traitant : prix chauffeur)') + '</select>')
+    + '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">' + rgChamp('Taux horaire normal (€ brut)', rgInp('rg-m-t', r.taux)) + rgChamp('Taux dimanche (€) <span style="font-weight:400;color:var(--muted)">vide = règle société</span>', rgInp('rg-m-td', r.tauxDim))
+    + rgChamp('Taux jour férié (€) <span style="font-weight:400;color:var(--muted)">vide = règle</span>', rgInp('rg-m-tf', r.tauxFerie)) + rgChamp('Taux heures sup (€) <span style="font-weight:400;color:var(--muted)">vide = +25/50 %</span>', rgInp('rg-m-ts', r.tauxSup))
+    + rgChamp('Supplément nuit (€ / h) <span style="font-weight:400;color:var(--muted)">vide = règle</span>', rgInp('rg-m-tn', r.tauxNuit)) + rgChamp('Date de début du contrat', rgInp('rg-m-dc', r.debutContrat, 'date')) + '</div>'
+    + '<div style="font-size:11px;color:var(--muted)">Société de rattachement : <b>' + E(rgChSoc(c)) + '</b> (champ « Société » de la fiche chauffeur). Ces informations sont confidentielles : le chauffeur ne les voit pas.</div>', 'Enregistrer');
+  ov.querySelector('#rg-f-ok').onclick = async function(){
+    const g = function(id){ return (document.getElementById(id) || {}).value; };
+    const n = { type: g('rg-m-type'), taux: rgNum(g('rg-m-t')) || '', tauxDim: rgNum(g('rg-m-td')) || '', tauxFerie: rgNum(g('rg-m-tf')) || '', tauxSup: rgNum(g('rg-m-ts')) || '', tauxNuit: rgNum(g('rg-m-tn')) || '', debutContrat: g('rg-m-dc') || '', nom: rgNomCh(c), majAt: new Date().toISOString(), majPar: SESSION.name || '' };
+    if (n.type === 'horaire' && !n.taux) { document.getElementById('rg-f-err').textContent = 'Indiquez le taux horaire normal'; return; }
+    await rgPatch('paie_remu', chId, n); RG.d.remu[chId] = n; ov.remove(); showToast('Rémunération enregistrée ✓'); rgDessiner();
+  };
+};
+window.rgEditVeh = function(vId) {
+  const v = RG.d.veh.find(function(x){ return x._id === vId; }); if (!v) { showToast('Véhicule introuvable', true); return; }
+  const c = RG.d.couts[vId] || {}, elec = rgEstElec(v);
+  const ov = rgSous('🚐 Coûts mensuels — ' + E(rgVehNom(v)), '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + E(rgMotoNom(v.motorisation)) + (v.motorisation ? '' : ' — à régler dans la fiche du véhicule (🌱)') + '</div><div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">'
+    + rgChamp('Leasing / crédit (€ / mois)', rgInp('rg-v-l', c.leasing)) + rgChamp('Assurance (€ / mois)', rgInp('rg-v-a', c.assurance))
+    + rgChamp('Entretien (€ / mois)', rgInp('rg-v-e', c.entretien)) + rgChamp('Assistance (€ / mois)', rgInp('rg-v-as', c.assistance))
+    + rgChamp('Autres coûts fixes (€ / mois)', rgInp('rg-v-o', c.autresFixes)) + rgChamp((elec ? 'Budget recharge' : 'Budget carburant') + ' (€ / mois)', rgInp('rg-v-b', c.budgetEnergie)) + '</div>'
+    + '<div style="font-size:11px;color:var(--muted)">Le carburant / la recharge réellement payés viennent des dépenses déclarées (🧾 Frais) ; le budget sert à repérer les dépassements.</div>', 'Enregistrer');
+  ov.querySelector('#rg-f-ok').onclick = async function(){
+    const g = function(id){ return rgNum((document.getElementById(id) || {}).value); };
+    const n = { leasing: g('rg-v-l'), assurance: g('rg-v-a'), entretien: g('rg-v-e'), assistance: g('rg-v-as'), autresFixes: g('rg-v-o'), budgetEnergie: g('rg-v-b'), immat: v.immat || '', majAt: new Date().toISOString(), majPar: SESSION.name || '' };
+    await rgPatch('veh_couts', vId, n); RG.d.couts[vId] = n; ov.remove(); showToast('Coûts enregistrés ✓'); rgDessiner();
+  };
+};
+
+// ── Exports (Excel / CSV / PDF) ─────────────────────────────────────────────
+function rgFeuilles() {
+  const R = RG.R || rgCalculer(), S = R.soc, r2 = function(x){ return Math.round((parseFloat(x) || 0) * 100) / 100; };
+  const soc = [{ 'Période': rgLibPeriode(), 'Société': RG.filtres.soc || (RG.ctx.mode === 'gerant' ? RG.ctx.soc : 'Toutes'), 'CA HT (€)': r2(S.ca), 'CA TTC (€)': r2(S.caTtc), 'Salaires / chauffeurs (€)': r2(S.sal), 'Coûts fixes véhicules (€)': r2(S.vehFixe), 'Carburant / recharge (€)': r2(S.energie), 'Péages / parking (€)': r2(S.peage), 'Autres frais (€)': r2(S.autres), 'Coût total (€)': r2(S.cout), 'Marge (€)': r2(S.marge), 'Marge %': S.pct == null ? '' : r2(S.pct), 'Chauffeurs': S.nbCh, 'Véhicules': S.nbVeh, 'Heures': r2(S.heures), 'Missions': S.missions }];
+  const ch = R.lc.map(function(L){ return { 'Chauffeur': L.nom, 'Société': L.soc, 'Type': L.remu ? (L.remu.type === 'horaire' ? 'à l\'heure' : 'à la course') : '', 'Missions': L.missions, 'Heures': r2(L.heures), 'H normales': r2(L.h.normal), 'H sup': r2(L.h.sup1 + L.h.sup2), 'H dimanche': r2(L.h.dim), 'H férié': r2(L.h.ferie), 'H nuit': r2(L.h.nuit), 'CA HT (€)': r2(L.ca), 'Salaire / prix chauffeur (€)': r2(L.coutSal), 'Véhicule (€)': r2(L.vehCout), 'Énergie (€)': r2(L.energie), 'Péages / parking (€)': r2(L.peage), 'Autres (€)': r2(L.autres), 'Coût total (€)': r2(L.coutTotal), 'Marge (€)': r2(L.marge), 'Marge %': L.pct == null ? '' : r2(L.pct) }; });
+  const veh = R.lv.map(function(W){ return { 'Véhicule': rgVehNom(W.v), 'Motorisation': rgMotoNom(W.v.motorisation), 'Type': W.v.type || '', 'Société': W.soc, 'Missions': W.missions, 'Heures': r2(W.heures), 'Km': Math.round(W.km), 'CA HT (€)': r2(W.ca), 'Leasing (€)': r2(W.detail.leasing), 'Assurance (€)': r2(W.detail.assurance), 'Entretien (€)': r2(W.detail.entretien), 'Autres fixes (€)': r2(W.detail.assistance + W.detail.autresFixes), 'Carburant / recharge (€)': r2(W.energie), 'Péages / parking (€)': r2(W.peage), 'Autres frais (€)': r2(W.autres), 'Salaire chauffeur (€)': r2(W.chSal), 'Coût total (€)': r2(W.coutTotal), 'Marge (€)': r2(W.marge), 'Marge %': W.pct == null ? '' : r2(W.pct) }; });
+  const fr = R.frais.map(function(x){ const v = RG.d.veh.find(function(w){ return w._id === x.vehiculeId; }); return { 'Date': x.date, 'Chauffeur': x.chauffeurNom || '', 'Catégorie': (RG_FRAIS_CAT[x.categorie] || x.categorie || '').replace(/^[^\wÀ-ÿ]+/, ''), 'Énergie': x.energie || '', 'Montant TTC (€)': r2(x.montant), 'Véhicule': v ? rgVehNom(v) : '', 'Km': x.km || '', 'Payé par': x.payePar === 'chauffeur' ? 'chauffeur (à rembourser)' : 'carte société', 'Justificatif': x.justificatif ? 'oui' : 'NON', 'Statut': x.statut || 'à valider' }; });
+  const paie = [];
+  R.moisL.forEach(function(m){ RG.d.ch.forEach(function(c){ const re = RG.d.remu[c._id]; if (!re || re.type !== 'horaire') return; if (RG.filtres.ch && c._id !== RG.filtres.ch) return; const rec = (RG.d.paie[m] || {})[c._id]; const r = rec && rec.statut === 'valide' ? rec : rgRecap(c, m, rec); paie.push({ 'Mois': m, 'Chauffeur': r.nom, 'Société': r.societe, 'H normales': r.heures.normal, 'H sup 1': r.heures.sup1, 'H sup 2': r.heures.sup2, 'H dimanche': r.heures.dim, 'H férié': r.heures.ferie, 'H nuit': r.heures.nuit, 'Taux (€)': r.taux.normal, 'Salaire de base (€)': r.montants.normal, 'Heures sup (€)': r2(r.montants.sup1 + r.montants.sup2), 'Dimanches (€)': r.montants.dim, 'Jours fériés (€)': r.montants.ferie, 'Nuit (€)': r.montants.nuit, 'Primes (€)': r.primes, 'Ajustement (€)': r.ajust, 'Brut calculé (€)': r.brut, 'Frais remboursables (€)': r.fraisRemb, 'Total (€)': r.total, 'Statut': rec ? rec.statut : 'provisoire' }); }); });
+  return { 'Société': soc, 'Chauffeurs': ch, 'Véhicules': veh, 'Frais': fr, 'Paie': paie };
+}
+window.rgExporter = async function(fmt) {
+  if (!RG.d) return;
+  const F = rgFeuilles(), nomBase = 'Rentabilite_' + (RG.annee || RG.mois) + (RG.filtres.soc ? '_' + RG.filtres.soc.replace(/[^a-z0-9]+/gi, '_') : '');
+  const onglet = { bord: 'Société', chauffeurs: 'Chauffeurs', vehicules: 'Véhicules', paie: 'Paie', frais: 'Frais', param: 'Chauffeurs' }[RG.onglet] || 'Société';
+  if (fmt === 'xlsx') {
+    if (!(await gxXlsx())) return;
+    const X = window.XLSX, wb = X.utils.book_new();
+    Object.keys(F).forEach(function(k){ X.utils.book_append_sheet(wb, X.utils.json_to_sheet(F[k].length ? F[k] : [{ 'Info': 'Aucune donnée' }]), k); });
+    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([['Méthode'], ['CA', 'Hors taxes (TVA ' + Math.round(TVA * 100) + ' %), transferts terminés / facturés / no-show facturés'], ['Salaire', 'Pointeuse × taux ; heures sup au-delà du seuil hebdomadaire ; dimanche / férié / nuit selon les règles de la société'], ['Charges', rgNum(RG.d.regles.chargesPct) ? RG.d.regles.chargesPct + ' % du brut' : 'non renseignées'], ['Véhicules', 'Coûts mensuels × nombre de mois, répartis entre chauffeurs selon les heures pointées avec le véhicule'], ['Frais', 'Dépenses déclarées (hors refusées)'], ['Avertissement', 'Aide à la gestion et à la préparation de la paie — pas un bulletin de salaire']]), 'Méthode');
+    await gxEnregistrer(wb, nomBase + '.xlsx');
+  } else if (fmt === 'csv') {
+    const L = F[onglet]; if (!L.length) { showToast('Rien à exporter', true); return; }
+    const cols = Object.keys(L[0]), q = function(v){ return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+    const csv = '﻿' + [cols.map(q).join(';')].concat(L.map(function(o){ return cols.map(function(c){ return q(typeof o[c] === 'number' ? String(o[c]).replace('.', ',') : o[c]); }).join(';'); })).join('\r\n');
+    if (typeof gExporterFichier === 'function') await gExporterFichier(nomBase + '_' + onglet + '.csv', csv, 'text/csv');
+  } else {
+    if (RG.onglet === 'paie') { const L = []; RG.d.ch.forEach(function(c){ const re = RG.d.remu[c._id]; if (!re || re.type !== 'horaire' || (RG.filtres.ch && c._id !== RG.filtres.ch)) return; const rec = (RG.d.paie[RG.mois] || {})[c._id]; L.push(rec && rec.statut === 'valide' ? rec : rgRecap(c, RG.mois, rec)); }); if (!L.length) { showToast('Aucune paie', true); return; } rgPdfPaie(L); return; }
+    const L = F[onglet]; const cols = L.length ? Object.keys(L[0]) : [];
+    openPrintableDoc('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Rentabilité</title><style>body{font-family:Helvetica,Arial,sans-serif;color:#111;padding:24px;font-size:11px}h1{font-size:17px;margin:0}.s{color:#555;margin:4px 0 12px}table{width:100%;border-collapse:collapse}th{background:#1f2937;color:#fff;text-align:left;padding:5px 6px;font-size:10px}td{padding:5px 6px;border-bottom:1px solid #e5e7eb}@media print{body{padding:8mm}}</style></head><body>'
+      + '<h1>' + (RG.ctx.mode === 'gerant' ? E(RG.ctx.soc) : 'MOBILEA') + ' — Rapport ' + E(onglet.toLowerCase()) + '</h1><div class="s">' + E(rgLibPeriode()) + (RG.filtres.soc ? ' · ' + E(RG.filtres.soc) : '') + ' · CA hors taxes · édité le ' + new Date().toLocaleDateString('fr-FR') + '</div>'
+      + (L.length ? '<table><thead><tr>' + cols.map(function(c){ return '<th>' + E(c) + '</th>'; }).join('') + '</tr></thead><tbody>' + L.map(function(o){ return '<tr>' + cols.map(function(c){ return '<td>' + E(typeof o[c] === 'number' ? o[c].toLocaleString('fr-FR') : String(o[c] == null ? '' : o[c])) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table>' : '<p>Aucune donnée.</p>')
+      + '</body></html>');
+  }
+};
+
+// ── Côté CHAUFFEUR : « Mes frais » (déclaration d'une dépense) ──────────────
+// Salariés MOBILEA (sans société) → frais de MOBILEA ; chauffeurs d'un gérant
+// → frais privés du gérant (gerant_data/{uid}/frais, via l'index des sociétés
+// de gérant). Les sous-traitants indépendants ne voient pas ce menu.
+async function rgFraisCible() {
+  const moi = (D.chauffeurs || []).find(function(x){ return x._id === SESSION.chauffeurId; });
+  if (!moi) return undefined;                              // fiche pas encore chargée
+  const soc = String(moi.soc_nom || '').trim();
+  if (SESSION.gerant === true) return { base: 'gerant_data/' + gUid() + '/', soc: SESSION.socNom || soc, moi: moi };
+  if (!soc || rgSocCle(soc) === 'MOBILEA') return { base: '', soc: 'MOBILEA', moi: moi };
+  try {
+    const tok = await getAuthToken();
+    const r = await fetch(FB_URL + '/gerant_par_soc/' + rgSocCle(soc) + '.json' + authParam(tok));
+    const uid = r.ok ? await r.json() : null;
+    if (typeof uid === 'string' && uid) return { base: 'gerant_data/' + uid + '/', soc: soc, moi: moi };
+  } catch (e) {}
+  return null;
+}
+async function rgNavChauffeur() {
+  if (!SESSION || SESSION.role !== 'chauffeur' || document.getElementById('rg-nav-frais')) return;
+  const cible = await rgFraisCible();
+  if (cible === undefined) { window._rgNavFait = false; return; }   // réessayer plus tard
+  if (!cible) return;
+  window._rgFraisCible = cible;
+  const nav = document.getElementById('main-nav'); if (!nav || document.getElementById('rg-nav-frais')) return;
+  const b = document.createElement('button');
+  b.id = 'rg-nav-frais'; b.className = 'ni dyn-nav'; b.dataset.p = 'mesfrais';
+  b.innerHTML = '<i style="width:16px;text-align:center" class="fas fa-receipt"></i> Mes frais';
+  b.onclick = function(){ rgMesFrais(); };
+  const ref = nav.querySelector('.dyn-nav[data-p="messagerie"]');
+  if (ref && ref.nextSibling) nav.insertBefore(b, ref.nextSibling); else nav.appendChild(b);
+}
+window.rgMesFrais = async function() {
+  const cible = window._rgFraisCible || await rgFraisCible(); if (!cible) { showToast('Déclaration de frais non disponible pour votre compte', true); return; }
+  const uid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.uid || '';
+  let mes = [];
+  try {
+    const tok = await getAuthToken();
+    const r = await fetch(FB_URL + '/' + cible.base + 'frais.json?orderBy=' + encodeURIComponent('"chauffeurUid"') + '&equalTo=' + encodeURIComponent(JSON.stringify(uid)) + (tok ? '&auth=' + tok : ''));
+    if (r.ok) { const v = await r.json() || {}; mes = Object.keys(v).map(function(k){ return Object.assign({ _id: k }, v[k]); }); }
+  } catch (e) {}
+  try { mes = fileAppliquer(cible.base + 'frais', mes).filter(function(x){ return x.chauffeurUid === uid; }); } catch (e) {}
+  mes.sort(function(a, b){ return String(b.date).localeCompare(String(a.date)); });
+  const old = document.getElementById('rg-ov'); if (old) old.remove();
+  const ov = document.createElement('div'); ov.id = 'rg-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:330;display:flex;align-items:center;justify-content:center;padding:16px';
+  const st = function(x){ return x.statut === 'valide' ? '<span style="color:#16a34a">✔ validé</span>' : x.statut === 'refuse' ? '<span style="color:#dc2626">refusé</span>' : '<span style="color:#d97706">en attente</span>'; };
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:560px;max-width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center"><div style="font-size:16px;font-weight:800">🧾 Mes frais</div><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'rg-ov\').remove()" aria-label="Fermer"><i class="fas fa-times"></i></button></div>'
+    + '<div style="padding:14px 16px;overflow:auto"><div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:12px"><button class="btn btn-p" onclick="rgFraisChauffeur(\'carburant\')">⛽ Carburant / recharge</button><button class="btn btn-s" onclick="rgFraisChauffeur(\'peage\')">＋ Autre dépense</button></div>'
+    + (mes.length ? mes.slice(0, 100).map(function(x){ return '<div style="display:flex;justify-content:space-between;gap:8px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px"><div style="min-width:0"><div style="font-weight:700">' + (RG_FRAIS_CAT[x.categorie] || E(x.categorie || '')) + ' · ' + rgEur(x.montant) + '</div><div style="font-size:11.5px;color:var(--muted)">' + new Date(x.date + 'T12:00:00').toLocaleDateString('fr-FR') + (x.justificatif ? ' · 📎' : ' · ⚠️ sans justificatif') + (x.payePar === 'chauffeur' ? ' · à rembourser' : ' · carte société') + '</div></div><div style="font-size:12px;white-space:nowrap">' + st(x) + '</div></div>'; }).join('') : '<div style="color:var(--muted);font-size:13px;text-align:center;padding:16px">Aucune dépense déclarée.</div>')
+    + '</div></div>';
+  document.body.appendChild(ov);
+};
+window.rgFraisChauffeur = async function(cat) {
+  const cible = window._rgFraisCible; if (!cible) return;
+  const mob = rgSocCle(cible.soc) === 'MOBILEA';
+  let tousVeh = D.vehicules || [];
+  if (!tousVeh.length) { try { tousVeh = await fbGet('vehicules') || []; } catch (e) { tousVeh = []; } }
+  const vehs = tousVeh.filter(function(v){ return !v.archived && (mob ? rgSocDe(v, 'societe') === 'MOBILEA' : String(v.societe || '').trim() === cible.soc); });
+  const moi = cible.moi || {};
+  const courses = (D.courses || []).filter(function(c){ return (c.chauffeurId === SESSION.chauffeurId || c.chauffeur === SESSION.name) && String(c.datetime || '').slice(0, 10) >= rgIso(new Date(Date.now() - 7 * 864e5)); }).sort(function(a, b){ return String(b.datetime).localeCompare(String(a.datetime)); }).slice(0, 40);
+  const vehJour = vehs.find(function(v){ return String(v.immat || '').toUpperCase() === String(moi.vehImmatJour || '').toUpperCase(); });
+  const ov = rgSous(cat === 'carburant' ? '⛽ Nouvel achat carburant / recharge' : '＋ Nouvelle dépense', rgFraisFormHtml({ categorie: cat, vehiculeId: vehJour ? vehJour._id : '', energie: vehJour && vehJour.motorisation === 'electrique' ? 'electricite' : (vehJour && vehJour.motorisation === 'essence' ? 'essence' : 'diesel') }, vehs, courses, null)
+    + '<div style="font-size:11px;color:var(--muted)">Saisissez uniquement le montant réellement payé. Photo du ticket conseillée.</div>', 'Envoyer');
+  rgFraisCat();
+  ov.querySelector('#rg-f-ok').onclick = async function(){
+    const err = document.getElementById('rg-f-err'); this.disabled = true; err.style.color = 'var(--muted)'; err.textContent = 'Envoi…';
+    try {
+      const uid = (window.fbAuth && window.fbAuth.currentUser && window.fbAuth.currentUser.uid) || SESSION.uid || '';
+      const data = await rgFraisLireForm(null, { chauffeurId: SESSION.chauffeurId || '', chauffeurNom: SESSION.name || '', chauffeurUid: uid });
+      const c = courses.find(function(x){ return x._id === data.courseId; }); if (c) data.courseRef = String(c.datetime || '').slice(0, 16).replace('T', ' ') + ' ' + (c.depart || '').slice(0, 40);
+      Object.assign(data, { statut: 'a_valider', creeAt: new Date().toISOString(), societe: cible.soc });
+      await fbPush(cible.base + 'frais', data);
+      ov.remove(); showToast('Dépense envoyée ✓'); rgMesFrais();
+    } catch (e) { this.disabled = false; err.style.color = '#dc2626'; err.textContent = e.message || 'Erreur'; }
+  };
+};
+// Index « société du gérant → gérant » : permet aux chauffeurs du gérant
+// d'envoyer leurs frais dans l'espace privé du gérant (règle Firebase vérifiée).
+async function rgIndexGerant() {
+  try {
+    if (!SESSION || SESSION.gerant !== true || !SESSION.socNom) return;
+    const uid = gUid(); if (!uid) return;
+    const tok = await getAuthToken();
+    await fetch(FB_URL + '/gerant_par_soc/' + rgSocCle(SESSION.socNom) + '.json' + authParam(tok), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(uid) });
+  } catch (e) {}
+}
+
+// ── Points d'entrée : Rapports (admin), Mes rapports (gérant), fiches ──────
+function rgBoutons() {
+  try {
+    if (SESSION && SESSION.role === 'admin') {
+      const pg = document.getElementById('page-rapports');
+      if (pg && !document.getElementById('rg-btn-rap')) {
+        const b = document.createElement('div'); b.id = 'rg-btn-rap';
+        b.style.cssText = 'margin:0 0 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:linear-gradient(135deg,rgba(201,168,76,.14),rgba(59,130,246,.10));border:1px solid var(--border2);border-radius:12px;padding:12px 14px';
+        b.innerHTML = '<div style="flex:1;min-width:200px"><div style="font-weight:800;font-size:14px">💼 Gestion, paie & rentabilité</div><div style="font-size:12px;color:var(--muted)">Société → chauffeur → véhicule : heures, salaires, frais, coût réel et marge</div></div><button class="btn btn-p btn-sm" onclick="rgOuvrir(\'bord\')">Ouvrir</button>';
+        pg.insertBefore(b, pg.firstChild);
+      }
+      const mc = document.querySelector('#mo-chauffeur .mo-b');
+      if (mc && !document.getElementById('rg-btn-ch')) mc.insertAdjacentHTML('beforeend', '<div id="rg-btn-ch" style="margin-top:8px"><button type="button" class="btn btn-ghost btn-sm" onclick="(function(){ var id=(document.getElementById(\'ch-edit-id\')||{}).value; if(!id){ showToast(\'Enregistrez d\\\'abord le chauffeur\', true); return; } rgOuvrir(\'param\', { ch: id }); })()">💶 Rémunération et paie</button></div>');
+      const mv = document.querySelector('#mo-vehicule .mo-b');
+      if (mv && !document.getElementById('rg-btn-veh')) mv.insertAdjacentHTML('beforeend', '<div id="rg-btn-veh" style="margin-top:8px"><button type="button" class="btn btn-ghost btn-sm" onclick="(function(){ var id=(document.getElementById(\'vh-edit-id\')||{}).value; if(!id){ showToast(\'Enregistrez d\\\'abord le véhicule\', true); return; } rgOuvrir(\'param\', { veh: id }); })()">💶 Coûts mensuels du véhicule</button></div>');
+    }
+  } catch (e) {}
+}
+(function(){
+  const r0 = window.renderGerantRapports;
+  if (typeof r0 === 'function') window.renderGerantRapports = async function() {
+    const out = await r0.apply(this, arguments);
+    try {
+      const root = document.getElementById('grp-root');
+      if (root && gOpt('rapports') && !document.getElementById('rg-btn-g')) root.insertAdjacentHTML('afterbegin', '<div id="rg-btn-g" style="margin:0 0 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:12px 14px"><div style="flex:1;min-width:200px"><div style="font-weight:800;font-size:14px">💼 Gestion, paie & rentabilité</div><div style="font-size:12px;color:var(--muted)">Paie de vos chauffeurs, frais, coût réel des véhicules et marge — privé</div></div><button class="btn btn-p btn-sm" onclick="rgOuvrir(\'bord\')">Ouvrir</button></div>');
+    } catch (e) {}
+    return out;
+  };
+})();
+setInterval(function(){
+  try { rgBoutons(); } catch (e) {}
+  try { if (SESSION && SESSION.role === 'chauffeur' && !window._rgNavFait && document.getElementById('main-nav')) { window._rgNavFait = true; setTimeout(function(){ rgNavChauffeur(); rgIndexGerant(); }, 2500); } } catch (e) {}
+}, 3000);
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  📈 RAPPORT CA (Rapports → « Rapport CA complet »)
+//  CA total → société → client → prestation → chauffeur → véhicule →
+//  facturé → encaissé → coûts → marge.
+//
+//  Couche d'ANALYSE des données existantes — aucune saisie en double :
+//   • CA        = transferts (prix facturé, même règle que les Rapports :
+//                 terminés, facturés, payés, no-show facturés), archive comprise.
+//                 Une mission n'est comptée qu'une fois (clé = son identifiant).
+//   • facturé   = référence de facture déjà posée sur les transferts par
+//                 « Facturation » (admin) / factures du gérant (espace privé).
+//                 Payé à bord ou en ligne = facturé et encaissé.
+//   • encaissé  = paiements enregistrés sur la facture (nouveau suivi), sinon
+//                 transferts « payés » (statut payée, paiement en ligne réussi).
+//   • coûts     = module « Gestion, paie & rentabilité » (salaires + charges,
+//                 véhicules, frais) réparti sur les missions au prorata du CA ;
+//                 sous-traitance = prix chauffeur.
+//  Seule donnée nouvelle (admin) : factures_suivi/{facture} → envoi, paiements
+//  reçus, annulation. Chez un gérant : ces champs vont sur SA facture privée.
+// ═══════════════════════════════════════════════════════════════════════════
+const RC = { ctx: null, onglet: 'bord', per: 'mois', ref: '', du: '', au: '', cmp: 'prec', cmpDu: '', cmpAu: '', fst: '', f: { soc: '', client: '', ch: '', veh: '', type: '', moto: '', presta: '', source: '', paie: '' }, d: null, E: {}, reg: [] };
+const RC_PRESTA = { aeroport: '✈️ Transfert aéroport', gare: '🚆 Transfert gare', disney: '🏰 Disneyland Paris', mad: '⏱️ Mise à disposition', event: '🎉 Événementiel', entreprise: '🏢 Transport entreprise', vip: '⭐ VIP', longue: '🛣️ Longue distance', autre: '📦 Autre' };
+const RC_SOURCE = { client: '📱 Client direct (app / en ligne)', plateforme: '🌐 Plateforme (LogiPax)', partenaire: '🤝 Partenaire / gérant', import: '📥 Import Excel', dispatch: '🎧 Dispatch', autre: '❔ Autre' };
+const RC_PAIE = { afacturer: 'À facturer', facturee: 'Facturée (non échue)', partielle: 'Partiellement payée', payee: 'Payée', retard: 'En retard' };
+const RC_FSTAT = { afacturer: 'À facturer', facturee: 'Facturée', envoyee: 'Envoyée', partielle: 'Partiellement payée', payee: 'Payée', retard: 'En retard', annulee: 'Annulée' };
+const RC_FCOL = { afacturer: '#6b7280', facturee: '#2563eb', envoyee: '#7c3aed', partielle: '#d97706', payee: '#16a34a', retard: '#dc2626', annulee: '#9ca3af' };
+const RC_TYPES = { berline: 'Berline', van: 'Van', classev: 'Classe V', classee: 'Classe E', autre: 'Autre' };
+const RC_JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
+const RC_MODES = { virement: 'Virement', cheque: 'Chèque', carte: 'Carte', especes: 'Espèces', prelevement: 'Prélèvement', autre: 'Autre' };
+
+// ── Dates et périodes ───────────────────────────────────────────────────────
+function rcD(s) { return new Date(String(s).slice(0, 10) + 'T12:00:00'); }
+function rcAdd(s, n) { const d = rcD(s); d.setDate(d.getDate() + n); return rgIso(d); }
+function rcJours(du, au) { return Math.round((rcD(au) - rcD(du)) / 86400000) + 1; }
+function rcAuj() { return rgIso(new Date()); }
+function rcFr(s) { return s ? rcD(s).toLocaleDateString('fr-FR') : '—'; }
+function rcFinMois(m) { const d = new Date(parseInt(m.slice(0, 4), 10), parseInt(m.slice(5, 7), 10), 0); return rgIso(d); }
+function rcMois(du, au) { const L = []; let m = du.slice(0, 7); while (m <= au.slice(0, 7)) { L.push(m); const d = rcD(m + '-15'); d.setMonth(d.getMonth() + 1); m = rgIso(d).slice(0, 7); } return L; }
+function rcBornes(per, ref, du, au) {
+  const d = rcD(ref);
+  if (per === 'jour') return { du: ref, au: ref };
+  if (per === 'semaine') { const l = rgLundi(ref); return { du: l, au: rcAdd(l, 6) }; }
+  if (per === 'mois') return { du: ref.slice(0, 7) + '-01', au: rcFinMois(ref.slice(0, 7)) };
+  if (per === 'trimestre') { const q = Math.floor(d.getMonth() / 3); return { du: rgIso(new Date(d.getFullYear(), q * 3, 1)), au: rgIso(new Date(d.getFullYear(), q * 3 + 3, 0)) }; }
+  if (per === 'annee') return { du: d.getFullYear() + '-01-01', au: d.getFullYear() + '-12-31' };
+  const a = du || ref, b = au || ref;
+  return a <= b ? { du: a, au: b } : { du: b, au: a };
+}
+function rcPrec(per, b) {
+  if (per === 'mois' || per === 'trimestre') { const d = rcD(b.du); d.setDate(1); d.setMonth(d.getMonth() - (per === 'mois' ? 1 : 3)); return rcBornes(per, rgIso(d)); }
+  if (per === 'annee') return rcBornes('annee', (parseInt(b.du, 10) - 1) + '-06-15');
+  const n = rcJours(b.du, b.au); return { du: rcAdd(b.du, -n), au: rcAdd(b.du, -1) };
+}
+function rcN1(b) { const f = function(s){ let r = (parseInt(s.slice(0, 4), 10) - 1) + s.slice(4); if (r.slice(5) === '02-29') r = r.slice(0, 5) + '02-28'; return r; }; const r = { du: f(b.du), au: f(b.au) }; if (b.au.slice(5) === '02-28' && RC.per !== 'jour') r.au = rcFinMois(r.au.slice(0, 7)); return r; }
+function rcCmpBornes(b) { if (RC.cmp === 'n1') return rcN1(b); if (RC.cmp === 'perso' && RC.cmpDu && RC.cmpAu) return rcBornes('perso', RC.cmpDu, RC.cmpDu, RC.cmpAu); return rcPrec(RC.per, b); }
+function rcLib(b, per) {
+  per = per || 'perso';
+  if (per === 'jour') return rcD(b.du).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  if (per === 'semaine') return 'Semaine du ' + rcFr(b.du) + ' au ' + rcFr(b.au);
+  if (per === 'mois') return rgMoisLabel(b.du.slice(0, 7));
+  if (per === 'trimestre') return 'T' + (Math.floor(rcD(b.du).getMonth() / 3) + 1) + ' ' + b.du.slice(0, 4);
+  if (per === 'annee') return 'Année ' + b.du.slice(0, 4);
+  return 'Du ' + rcFr(b.du) + ' au ' + rcFr(b.au);
+}
+// Part d'un mois couverte par une plage (bornée à aujourd'hui : pas de coûts futurs)
+function rcFracMois(m, b) {
+  const a = b.du > m + '-01' ? b.du : m + '-01'; let z = b.au < rcFinMois(m) ? b.au : rcFinMois(m);
+  const auj = rcAuj(); if (z > auj) z = auj;
+  if (z < a) return 0;
+  return rcJours(a, z) / rcJours(m + '-01', rcFinMois(m));
+}
+
+// ── Petits outils ───────────────────────────────────────────────────────────
+function rcCle(ref) { return String(ref || '').replace(/[.#$\[\]\/'"\\]/g, '_').slice(0, 120) || '_'; }
+function rcNorm(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
+function rcAct(fn) { RC.reg.push(fn); return 'rcGo(' + (RC.reg.length - 1) + ')'; }
+window.rcGo = function(i) { const f = RC.reg[i]; if (typeof f === 'function') f(); };
+function rcDelta(a, b, inverse) {
+  if (!b && !a) return '<span style="color:var(--muted)">—</span>';
+  const diff = a - b, pct = b ? diff / Math.abs(b) * 100 : null;
+  const bon = inverse ? diff <= 0 : diff >= 0;
+  return '<span style="color:' + (bon ? '#16a34a' : '#dc2626') + ';font-weight:700">' + (diff >= 0 ? '+' : '−') + rgEur0(Math.abs(diff)).replace('-', '') + (pct == null ? '' : ' (' + (pct >= 0 ? '+' : '−') + rgPct(Math.abs(pct)) + ')') + '</span>';
+}
+function rcDeltaN(a, b) {
+  if (!b && !a) return '<span style="color:var(--muted)">—</span>';
+  const diff = a - b, pct = b ? diff / Math.abs(b) * 100 : null;
+  return '<span style="color:' + (diff >= 0 ? '#16a34a' : '#dc2626') + ';font-weight:700">' + (diff >= 0 ? '+' : '−') + Math.abs(Math.round(diff * 10) / 10).toLocaleString('fr-FR') + (pct == null ? '' : ' (' + (pct >= 0 ? '+' : '−') + rgPct(Math.abs(pct)) + ')') + '</span>';
+}
+function rcBadge(st) { return '<span style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:700;color:#fff;background:' + (RC_FCOL[st] || '#6b7280') + '">' + E(RC_FSTAT[st] || st) + '</span>'; }
+function rcTitre(t) { return '<div style="font-size:14px;font-weight:800;margin:12px 0 6px">' + t + '</div>'; }
+function rcCarte(t, html) { return '<div style="background:var(--dark);border:1px solid var(--border);border-radius:10px;padding:12px;min-width:0"><div style="font-size:13px;font-weight:800;margin-bottom:6px">' + t + '</div>' + html + '</div>'; }
+function rcDeux(a, b) { return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;margin-top:6px">' + a + b + '</div>'; }
+
+// ── Contexte (admin / gérant) ───────────────────────────────────────────────
+function rcContexte() { return rgContexte(); }
+function rcChSoc(c) { return RC.ctx.mode === 'gerant' ? RC.ctx.soc : rgSocDe(c, 'soc_nom'); }
+
+// ── Chargement : données + coûts mois par mois (moteur du module paie) ─────
+async function rcCharger() {
+  const ctx = RC.ctx;
+  const b = rcBornes(RC.per, RC.ref, RC.du, RC.au), bp = rcCmpBornes(b), bn = rcN1(b);
+  RC.b = b; RC.bp = bp; RC.bn = bn;
+  const moisSet = {};
+  [b, bp, bn].forEach(function(x){ rcMois(x.du, x.au).forEach(function(m){ if (m <= rcAuj().slice(0, 7)) moisSet[m] = 1; }); });
+  const moisL = Object.keys(moisSet).sort();
+  const sauve = { d: RG.d, R: RG.R, ctx: RG.ctx, f: RG.filtres, m: RG._moisL, refus: RG.refus };
+  try {
+    RG.ctx = ctx; RG._moisL = moisL.length ? moisL : [rcAuj().slice(0, 7)];
+    await rgCharger();
+    RC.d = RG.d; RC.refus = RG.refus;
+    RG.filtres = { soc: '', ch: '', veh: '', moto: '', type: '' };
+    RC.E = {};
+    moisL.forEach(function(m){
+      RG._moisL = [m];
+      const R = rgCalculer();
+      const ch = {}, veh = {};
+      Object.keys(R.ch).forEach(function(id){ const L = R.ch[id]; ch[id] = { soc: L.soc, nom: L.nom, ca: L.ca, horaire: !!(L.remu && L.remu.type === 'horaire'), sal: L.coutSal, veh: L.vehCout, ene: L.energie, frais: L.peage + L.autres, tot: L.coutTotal, heures: L.heures }; });
+      Object.keys(R.veh).forEach(function(id){ const W = R.veh[id]; veh[id] = { soc: W.soc, ca: W.ca, detail: W.detail, fixe: W.fixe, ene: W.energie, peage: W.peage, autres: W.autres, coutVeh: W.coutVeh, chSal: W.chSal, tot: W.coutTotal, nonRep: W.nonReparti || 0 }; });
+      RC.E[m] = { ch: ch, veh: veh, alertes: R.alertes.filter(function(a){ return a.type === 'taux' || a.type === 'vehicule'; }) };
+    });
+    if (ctx.mode === 'admin') RC.suivi = (await rgGet('factures_suivi')) || {};
+    else { RC.suivi = {}; try { RC.tvaApp = !!(await gMaSociete()).tvaApplicable; } catch (e) { RC.tvaApp = true; } }
+  } finally {
+    RG.d = sauve.d; RG.R = sauve.R; RG.ctx = sauve.ctx; RG.filtres = sauve.f; RG._moisL = sauve.m; RG.refus = sauve.refus;
+  }
+  if (ctx.mode === 'admin') RC.tvaApp = true;
+  rcPreparer();
+}
+
+// ── Classement d'une mission ────────────────────────────────────────────────
+function rcPresta(c) {
+  const t = rcNorm([c.depart, c.arrivee, c.lieu].concat(Array.isArray(c.etapes) ? c.etapes.map(function(e){ return (e && (e.adresse || e.lieu)) || e; }) : []).join(' '));
+  const n = rcNorm((c.notes || '') + ' ' + (c.options ? JSON.stringify(c.options) : '') + ' ' + (c.typePrestation || ''));
+  if (c.type === 'mad' || (c.duree && !c.arrivee)) return 'mad';
+  if (/evenement|mariage|seminaire|salon |gala|soiree|congres|festival/.test(n)) return 'event';
+  if (/disney|marne.la.vallee|chessy|serris|val d.europe/.test(t)) return 'disney';
+  if (c.vol || c.terminaux || /\bcdg\b|roissy|charles.de.gaulle|\borly\b|beauvais|aeroport|airport|le bourget/.test(t)) return 'aeroport';
+  if (/\bgare\b|eurostar|\btgv\b|saint.lazare|montparnasse|gare du nord|gare de lyon|marne.la.vallee.chessy/.test(t)) return 'gare';
+  if (rgNum(c.trajetKm) >= 150 || rgNum(c.kmBord) >= 150) return 'longue';
+  if (/\bvip\b|prestige|limousine/.test(n + ' ' + rcNorm(c.vehicule))) return 'vip';
+  if (RC.ctx.mode === 'admin') { const cl = RC.clParNom[String(c.client || '').trim()]; if (cl && (cl.siret || cl.tva)) return 'entreprise'; }
+  return 'autre';
+}
+function rcSource(c) {
+  if (c.logipaxNumBon || c.logipaxId || c.logipaxIdCourse) return 'plateforme';
+  if (c.createdByClient || c.clientUser || c.source === 'client' || c.source === 'auto_inscription') return 'client';
+  if (RC.ctx.mode === 'admin' && c.creePar === 'gerant') return 'partenaire';
+  if (/^import/.test(String(c.source || ''))) return 'import';
+  return 'dispatch';
+}
+function rcTypeVeh(v, c) {
+  const mod = rcNorm(v ? [v.marque, v.modele].join(' ') : (c.vehModele || ''));
+  if (/classe\s*v\b|v.?class|\bv\s?\d{3}\b|viano/.test(mod)) return 'classev';
+  if (/classe\s*e\b|e.?class|\be\s?\d{3}\b/.test(mod)) return 'classee';
+  const t = rcNorm((v && v.type) || c.vehicule || '');
+  if (/berline|sedan/.test(t)) return 'berline';
+  if (/van|sprinter|minibus|bus/.test(t)) return 'van';
+  return 'autre';
+}
+function rcClient(c) { return String((RC.ctx.mode === 'gerant' && c._priv && c._priv.clientNom) || c.client || c.createdByClient || '').trim() || 'Sans client'; }
+function rcSousTraitee(c, ch) {
+  if (RC.ctx.mode === 'gerant') return !!c.sousTraitance;
+  return !!(c.sousTraitance || c.extChauffeurNom || (ch && (ch.soustraitant || rgSocDe(ch, 'soc_nom') !== 'MOBILEA')));
+}
+
+// ── Factures (existantes) + suivi des paiements ─────────────────────────────
+function rcDelaiClient(nom, f) {
+  if (RC.ctx.mode === 'gerant') { const p = parseInt((GP.parametres || {}).delai, 10); return isNaN(p) ? 0 : p; }
+  const cl = RC.clParNom[String(nom || '').trim()];
+  if (cl && cl.modeFac === 'prepaye') return 0;
+  const n = parseInt(cl && cl.delai, 10);
+  return isNaN(n) ? 30 : n;
+}
+function rcStatutFacture(f) {
+  if (f.annulee) return 'annulee';
+  if (f.ttc <= 0.005) return 'payee';
+  if (f.ttc > 0 && f.enc >= f.ttc - 0.01) return 'payee';
+  if (f.echeance && f.echeance < rcAuj()) return 'retard';
+  if (f.enc > 0.005) return 'partielle';
+  if (f.envoyeeLe) return 'envoyee';
+  return 'facturee';
+}
+function rcPaiementsListe(s) { return Object.keys((s && s.paiements) || {}).map(function(k){ return Object.assign({ _id: k }, s.paiements[k]); }).filter(function(p){ return p && p.montant != null; }).sort(function(a, b){ return String(a.date).localeCompare(String(b.date)); }); }
+function rcConstruireFactures(courses) {
+  const F = {}, parCourse = {};
+  if (RC.ctx.mode === 'admin') {
+    courses.forEach(function(c){
+      const ref = String(c.factureRef || '').trim(); if (!ref) return;
+      const f = F[ref] || (F[ref] = { ref: ref, cle: rcCle(ref), courses: [], clients: {} });
+      f.courses.push(c); const n = String(c.client || '').trim(); f.clients[n] = (f.clients[n] || 0) + 1;
+    });
+    Object.keys(RC.suivi || {}).forEach(function(cle){
+      const s = RC.suivi[cle]; if (!s || !s.ref || F[s.ref]) return;
+      if (s.annuleeLe) F[s.ref] = { ref: s.ref, cle: cle, courses: [], clients: {}, fantome: true };
+      else F[s.ref] = { ref: s.ref, cle: cle, courses: [], clients: {}, orpheline: true };
+    });
+    Object.keys(F).forEach(function(ref){
+      const f = F[ref], s = (RC.suivi || {})[f.cle] || {};
+      f.s = s;
+      f.client = Object.keys(f.clients).sort(function(a, b){ return f.clients[b] - f.clients[a]; })[0] || s.client || '—';
+      const dates = f.courses.map(function(c){ return String(c.factureAt || '').slice(0, 10); }).filter(Boolean).sort();
+      const dts = f.courses.map(function(c){ return String(c.datetime || '').slice(0, 10); }).filter(Boolean).sort();
+      f.date = dates[0] || s.date || dts[dts.length - 1] || '';
+      f.du = dts[0] || s.du || ''; f.au = dts[dts.length - 1] || s.au || '';
+      f.ttc = f.courses.length ? f.courses.reduce(function(t, c){ return t + prixFacture(c); }, 0) : rgNum(s.ttc);
+      f.ht = f.courses.length ? f.courses.reduce(function(t, c){ return t + ht(prixFacture(c)); }, 0) : rgNum(s.ht);
+      f.tva = f.ttc - f.ht;
+      f.paiements = rcPaiementsListe(s);
+      const reemise = f.courses.some(function(c){ return String(c.factureAt || '') > String(s.annuleeLe || ''); });
+      f.annulee = !!(s.annuleeLe && (!f.courses.length || !reemise));
+      if (f.paiements.length) { f.enc = f.paiements.reduce(function(t, p){ return t + rgNum(p.montant); }, 0); f.payeLe = f.paiements[f.paiements.length - 1].date; }
+      else { const pay = f.courses.filter(function(c){ return c.statut === 'payee' || c.paiement_statut === 'paye'; }); f.enc = pay.reduce(function(t, c){ return t + prixFacture(c); }, 0); f.payeLe = pay.map(function(c){ return String(c.payeLe || c.paiementLe || '').slice(0, 10); }).filter(Boolean).sort().pop() || ''; }
+      f.delai = rcDelaiClient(f.client); f.echeance = f.date ? rcAdd(f.date, f.delai) : '';
+      f.envoyeeLe = s.envoyeeLe || '';
+      f.statut = rcStatutFacture(f);
+      if (!f.annulee) f.courses.forEach(function(c){ (parCourse[c._id] = parCourse[c._id] || []).push(f); });
+    });
+  } else {
+    (GP.factures || []).forEach(function(x){
+      const f = { ref: x.numero || x._id, cle: x._id, id: x._id, gf: x, courses: [], client: x.clientNom || (x.client && x.client.nom) || '—', date: String(x.date || '').slice(0, 10), du: x.du || '', au: x.au || '', ttc: rgNum(x.totalTTC), ht: rgNum(x.totalHT), s: x };
+      f.tva = f.ttc - f.ht;
+      f.paiements = rcPaiementsListe(x);
+      f.annulee = !!x.annuleeLe;
+      if (f.paiements.length) { f.enc = f.paiements.reduce(function(t, p){ return t + rgNum(p.montant); }, 0); f.payeLe = f.paiements[f.paiements.length - 1].date; }
+      else { f.enc = x.payee ? f.ttc : 0; f.payeLe = x.payee ? String(x.payeeLe || '').slice(0, 10) : ''; }
+      f.delai = rcDelaiClient(f.client); f.echeance = f.date ? rcAdd(f.date, f.delai) : '';
+      f.envoyeeLe = x.envoyeeLe || '';
+      f.statut = rcStatutFacture(f);
+      f.lignes = Array.isArray(x.lignes) ? x.lignes : Object.keys(x.lignes || {}).map(function(k){ return x.lignes[k]; });
+      F[f.cle] = f;
+      if (!f.annulee) f.lignes.forEach(function(l){ if (l && l.courseId) (parCourse[l.courseId] = parCourse[l.courseId] || []).push(f); });
+    });
+    const parId = {}; courses.forEach(function(c){ parId[c._id] = c; });
+    Object.keys(F).forEach(function(k){ const f = F[k]; f.courses = (f.lignes || []).map(function(l){ return l && parId[l.courseId]; }).filter(Boolean); f.orpheline = !f.annulee && (f.lignes || []).length > 0 && !f.courses.length; });
+  }
+  RC.F = F; RC.parCourse = parCourse;
+}
+
+// ── Préparation : une ligne par mission (calculée une seule fois) ──────────
+function rcPreparer() {
+  const d = RC.d, ctx = RC.ctx;
+  RC.clParNom = {};
+  (ctx.mode === 'admin' ? (D.clients || []) : (GP.clients || [])).forEach(function(c){ if (c && c.nom) RC.clParNom[String(c.nom).trim()] = c; });
+  const tous = ctx.mode === 'admin' ? (D.chauffeurs || []) : d.ch;
+  RC.chId = {}; RC.chNom = {};
+  tous.forEach(function(c){ RC.chId[c._id] = c; RC.chNom[rgNomCh(c)] = c; });
+  RC.ptsJour = {};
+  d.pts.forEach(function(p){ if (p.chauffeurId) RC.ptsJour[p.chauffeurId + '|' + p.date] = p; });
+  const vus = {};
+  const courses = d.courses.filter(function(c){ if (!c || !c._id || vus[c._id]) return false; vus[c._id] = 1; return true; });
+  rcConstruireFactures(courses);
+  const auj = rcAuj();
+  RC.Mall = []; RC.annulees = [];
+  courses.forEach(function(c){
+    if (c.statut === 'annulee') { RC.annulees.push(c); return; }
+    if (!STATUTS_CA.includes(c.statut)) return;
+    const j = String(c.datetime || '').slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(j)) return;
+    const ch = (c.chauffeurId && RC.chId[c.chauffeurId]) || RC.chNom[String(c.chauffeur || '').trim()] || null;
+    const v = rgVehDeCourse(c, d, ch ? RC.ptsJour[ch._id + '|' + j] : null);
+    const ttc = prixFacture(c), htv = RC.tvaApp ? ht(ttc) : ttc;
+    const st = rcSousTraitee(c, ch);
+    const m = { c: c, id: c._id, j: j, mois: j.slice(0, 7), ttc: ttc, ht: htv, tva: ttc - htv, client: rcClient(c), chId: ch ? ch._id : ('x:' + (String(c.extChauffeurNom || c.chauffeur || '').trim() || '—')), chNom: ch ? rgNomCh(ch) : (String(c.extChauffeurNom || c.chauffeur || '').trim() || 'Non attribué'), ch: ch, v: v, vehId: v ? v._id : '', st: st, prixCh: rgNum(c.prixChauffeur), km: rgNum(c.kmBord) || rgNum(c.trajetKm) };
+    m.soc = ch ? rcChSoc(ch) : (st ? (ctx.mode === 'gerant' ? ctx.soc : 'Sous-traitants externes') : (ctx.mode === 'gerant' ? ctx.soc : 'MOBILEA'));
+    m.type = rcTypeVeh(v, c); m.moto = (v && v.motorisation) || ''; m.presta = rcPresta(c); m.source = rcSource(c);
+    // Coûts : part de la mission dans les coûts du mois du chauffeur (au prorata du CA)
+    const Em = RC.E[m.mois], L = ch && Em && Em.ch[ch._id];
+    m.cout = { sal: 0, veh: 0, ene: 0, frais: 0 };
+    if (L && L.ca > 0) { const k = ht(ttc) / L.ca; m.cout.sal = L.horaire ? L.sal * k : m.prixCh; m.cout.veh = L.veh * k; m.cout.ene = L.ene * k; m.cout.frais = L.frais * k; }
+    else m.cout.sal = m.prixCh;
+    m.coutTot = m.cout.sal + m.cout.veh + m.cout.ene + m.cout.frais;
+    m.coutConnu = !!(Em) || m.prixCh > 0;
+    // Facturation / encaissement
+    const fs = RC.parCourse[c._id] || [];
+    const f = fs[0] || null; m.f = f; m.nbFact = fs.length;
+    const direct = estPaiementABord(c) || c.paiement_statut === 'paye';
+    if (f) {
+      m.fact = ttc;
+      if (f.paiements.length) m.enc = f.ttc > 0 ? ttc * Math.min(1, f.enc / f.ttc) : 0;
+      else m.enc = (c.statut === 'payee' || c.paiement_statut === 'paye' || (RC.ctx.mode === 'gerant' && f.enc >= f.ttc - 0.01)) ? ttc : 0;
+    } else if (direct || c.statut === 'payee') { m.fact = ttc; m.enc = ttc; m.direct = true; }
+    else if (c.statut === 'facturee') { m.fact = ttc; m.enc = 0; m.sansNumero = true; }
+    else { m.fact = 0; m.enc = 0; }
+    if (ttc <= 0) m.paie = m.fact ? 'payee' : 'afacturer';
+    else if (m.enc >= ttc - 0.01) m.paie = 'payee';
+    else if (!m.fact) m.paie = 'afacturer';
+    else if (f && f.echeance && f.echeance < auj) m.paie = 'retard';
+    else if (m.enc > 0.005) m.paie = 'partielle';
+    else m.paie = 'facturee';
+    RC.Mall.push(m);
+  });
+  Object.keys(RC.F).forEach(function(k){ const f = RC.F[k]; const m0 = RC.Mall.find(function(m){ return m.f === f; }); f.soc = m0 ? m0.soc : (RC.ctx.mode === 'gerant' ? RC.ctx.soc : 'MOBILEA'); });
+}
+
+// ── Filtres ─────────────────────────────────────────────────────────────────
+function rcFiltresMissionSeuls() { const f = RC.f; return !!(f.client || f.presta || f.source || f.paie); }
+function rcPasse(m, sauf) {
+  const f = RC.f;
+  if (f.soc && sauf !== 'soc' && m.soc !== f.soc) return false;
+  if (f.client && sauf !== 'client' && m.client !== f.client) return false;
+  if (f.ch && sauf !== 'ch' && m.chId !== f.ch) return false;
+  if (f.veh && sauf !== 'veh' && m.vehId !== f.veh) return false;
+  if (f.type && sauf !== 'type' && m.type !== f.type) return false;
+  if (f.moto && sauf !== 'moto' && (m.moto || 'nc') !== f.moto) return false;
+  if (f.presta && sauf !== 'presta' && m.presta !== f.presta) return false;
+  if (f.source && sauf !== 'source' && m.source !== f.source) return false;
+  if (f.paie && sauf !== 'paie' && m.paie !== f.paie) return false;
+  return true;
+}
+function rcDans(m, b) { return m.j >= b.du && m.j <= b.au; }
+
+// ── Agrégation d'une période ────────────────────────────────────────────────
+function rcVide() { return { n: 0, ttc: 0, ht: 0, tva: 0, fact: 0, enc: 0, sal: 0, veh: 0, ene: 0, frais: 0, cout: 0, prixSt: 0, km: 0 }; }
+function rcAjout(a, m) { a.n++; a.ttc += m.ttc; a.ht += m.ht; a.tva += m.tva; a.fact += m.fact; a.enc += m.enc; a.sal += m.cout.sal; a.veh += m.cout.veh; a.ene += m.cout.ene; a.frais += m.cout.frais; a.cout += m.coutTot; if (m.st) a.prixSt += m.prixCh; a.km += m.km; return a; }
+function rcFin(a) { a.reste = Math.max(0, a.fact - a.enc); a.marge = a.ht - a.cout; a.pct = a.ht ? a.marge / a.ht * 100 : null; a.panier = a.n ? a.ht / a.n : 0; return a; }
+// Coûts qui ne se rattachent à aucune mission de la période (chauffeur pointé
+// sans CA, véhicule non utilisé…) : comptés au prorata des jours.
+function rcNonImputes(b) {
+  const U = []; if (rcFiltresMissionSeuls()) return U;
+  const f = RC.f;
+  Object.keys(RC.E).forEach(function(m){
+    const fr = rcFracMois(m, b); if (!fr) return;
+    const E0 = RC.E[m];
+    if (!f.veh && !f.type && !f.moto) Object.keys(E0.ch).forEach(function(id){ const L = E0.ch[id]; if (L.ca > 0 || L.tot <= 0.005) return; if (f.soc && L.soc !== f.soc) return; if (f.ch && f.ch !== id) return; U.push({ k: 'ch', id: id, nom: L.nom, soc: L.soc, sal: L.sal * fr, veh: L.veh * fr, ene: L.ene * fr, frais: L.frais * fr, cout: L.tot * fr }); });
+    if (!f.ch) Object.keys(E0.veh).forEach(function(id){ const W = E0.veh[id]; if (W.nonRep <= 0.005) return; const v = RC.d.veh.find(function(x){ return x._id === id; }) || {}; if (f.soc && W.soc !== f.soc) return; if (f.veh && f.veh !== id) return; if (f.type && rcTypeVeh(v, {}) !== f.type) return; if (f.moto && (v.motorisation || 'nc') !== f.moto) return; const r = W.coutVeh > 0 ? W.nonRep / W.coutVeh : 0; U.push({ k: 'veh', id: id, nom: rgVehNom(v), soc: W.soc, sal: 0, veh: W.fixe * r * fr, ene: W.ene * r * fr, frais: (W.peage + W.autres) * r * fr, cout: W.nonRep * fr }); });
+  });
+  return U;
+}
+function rcAgreger(b) {
+  const M = RC.Mall.filter(function(m){ return rcDans(m, b) && rcPasse(m); });
+  const T = rcVide(); M.forEach(function(m){ rcAjout(T, m); });
+  const U = rcNonImputes(b);
+  T.coutMissions = T.cout; T.nonImp = 0;
+  U.forEach(function(u){ T.sal += u.sal; T.veh += u.veh; T.ene += u.ene; T.frais += u.frais; T.cout += u.cout; T.nonImp += u.cout; });
+  rcFin(T);
+  const S = function(fn){ const o = {}; M.forEach(function(m){ o[fn(m)] = 1; }); return Object.keys(o).length; };
+  T.nbClients = S(function(m){ return m.client; }); T.nbSocs = S(function(m){ return m.soc; }); T.nbCh = S(function(m){ return m.chId; }); T.nbVeh = (function(){ const o = {}; M.forEach(function(m){ if (m.vehId) o[m.vehId] = 1; }); return Object.keys(o).length; })();
+  T.heures = rcHeures(b);
+  T.jours = Math.max(1, rcJours(b.du, b.au < rcAuj() ? b.au : (b.du <= rcAuj() ? rcAuj() : b.au)));
+  const fg = rgNum((RC.d.regles || {}).fraisGeneraux);
+  T.fg = (fg && !rcFiltresMissionSeuls() && !RC.f.ch && !RC.f.veh && !RC.f.type && !RC.f.moto) ? Object.keys(RC.E).reduce(function(s, m){ return s + fg * rcFracMois(m, b); }, 0) : 0;
+  T.margeNette = T.fg ? T.marge - T.fg : null;
+  return { M: M, T: T, U: U, b: b };
+}
+function rcHeures(b, chId, vehId) {
+  const f = RC.f; let h = 0;
+  RC.d.pts.forEach(function(p){
+    if (!p.date || p.date < b.du || p.date > b.au) return;
+    const ch = RC.chId[p.chauffeurId]; if (!ch) return;
+    if (chId && p.chauffeurId !== chId) return;
+    if (!chId && f.ch && p.chauffeurId !== f.ch) return;
+    if (f.soc && rcChSoc(ch) !== f.soc) return;
+    if (vehId || f.veh) { const v = rgVehDePointage(p, RC.d); if (!v || v._id !== (vehId || f.veh)) return; }
+    h += p.heures != null ? rgNum(p.heures) : (heuresEntre(p.heureDebut, p.heureFin, p.pauseMinutes) || 0);
+  });
+  return h;
+}
+function rcGrouper(M, cle, lib) {
+  const G = {};
+  M.forEach(function(m){ const k = cle(m); const g = G[k] || (G[k] = Object.assign(rcVide(), { k: k, lib: lib(m), ms: [] })); rcAjout(g, m); g.ms.push(m); });
+  return Object.keys(G).map(function(k){ return rcFin(G[k]); }).sort(function(a, b){ return b.ht - a.ht; });
+}
+
+// ── Interface ───────────────────────────────────────────────────────────────
+window.rcOuvrir = async function(onglet) {
+  const ctx = rcContexte();
+  if (!ctx) { showToast('Accès réservé à l\'administrateur ou au gérant (option Rapports)', true); return; }
+  RC.ctx = ctx; RC.onglet = onglet || RC.onglet || 'bord';
+  if (!RC.ref) RC.ref = rcAuj();
+  if (ctx.mode === 'gerant') RC.f.soc = '';
+  const old = document.getElementById('rc-ov'); if (old) old.remove();
+  const ov = document.createElement('div'); ov.id = 'rc-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:330;display:flex;align-items:center;justify-content:center;padding:16px';
+  const ong = [['bord', '📊 Tableau de bord'], ['societes', '🏢 Sociétés'], ['clients', '👥 Clients'], ['prestations', '🧭 Prestations'], ['chauffeurs', '👤 Chauffeurs'], ['vehicules', '🚐 Véhicules'], ['evolution', '📈 Évolution & comparaison'], ['factures', '🧾 Factures'], ['creances', '⏰ Impayés'], ['analyses', '🔎 Sous-traitance, sources, motorisations'], ['missions', '📋 Missions'], ['controles', '⚠️ Contrôles']];
+  ov.innerHTML = '<div style="background:var(--card);border:1px solid var(--border2);border-radius:14px;width:1180px;max-width:100%;min-width:0;max-height:94vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div style="font-size:16px;font-weight:800">📈 Rapport CA' + (ctx.mode === 'gerant' ? ' — ' + E(ctx.soc) : '') + '</div><button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'rc-ov\').remove()" aria-label="Fermer"><i class="fas fa-times"></i></button></div>'
+    +   '<div id="rc-onglets" style="display:flex;gap:6px;overflow-x:auto;padding-bottom:2px">' + ong.map(function(o){ return '<button class="btn btn-' + (o[0] === RC.onglet ? 's' : 'ghost') + ' btn-sm" data-o="' + o[0] + '" onclick="rcOnglet(\'' + o[0] + '\')" style="white-space:nowrap">' + o[1] + '</button>'; }).join('') + '</div>'
+    +   '<div id="rc-periode" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>'
+    +   '<details id="rc-filtres-box"' + (window.innerWidth > 760 ? ' open' : '') + '><summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--muted)" id="rc-filtres-tit">🔎 Filtres</summary><div id="rc-filtres" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px"></div></details>'
+    + '</div>'
+    + '<div id="rc-corps" style="padding:14px 16px;overflow:auto;min-width:0;flex:1 1 auto">Chargement…</div>'
+    + '<div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" onclick="rcExporter(\'compta\')">📒 Export comptabilité</button><button class="btn btn-ghost btn-sm" onclick="rcExporter(\'csv\')"><i class="fas fa-file-csv"></i> CSV</button><button class="btn btn-ghost btn-sm" onclick="rcExporter(\'pdf\')"><i class="fas fa-file-pdf"></i> PDF</button><button class="btn btn-p btn-sm" onclick="rcExporter(\'xlsx\')"><i class="fas fa-file-excel"></i> Excel</button></div></div>';
+  ov.addEventListener('click', function(e){ if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  await rcRecharger();
+};
+window.rcOnglet = function(o) {
+  RC.onglet = o;
+  document.querySelectorAll('#rc-onglets button').forEach(function(b){ b.className = 'btn btn-' + (b.dataset.o === o ? 's' : 'ghost') + ' btn-sm'; if (b.dataset.o === o) try { b.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) {} });
+  rcDessiner();
+};
+async function rcRecharger() {
+  const box = document.getElementById('rc-corps'); if (box) box.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">Chargement…</div>';
+  try { await rcCharger(); } catch (e) { console.warn('Rapport CA', e); if (box) box.innerHTML = '<div style="padding:24px;text-align:center;color:#dc2626">Chargement impossible — vérifiez la connexion.</div>'; return; }
+  rcPeriodeHtml(); rcFiltresHtml(); rcDessiner();
+}
+function rcSel(id, val, opts, onch, w) { return '<select ' + (id ? 'id="' + id + '" ' : '') + 'onchange="' + onch + '" style="' + RG_IN + (w ? ';max-width:' + w + 'px' : '') + '">' + opts.map(function(o){ return '<option value="' + E(o[0]) + '"' + (String(o[0]) === String(val) ? ' selected' : '') + '>' + E(o[1]) + '</option>'; }).join('') + '</select>'; }
+function rcPeriodeHtml() {
+  const el = document.getElementById('rc-periode'); if (!el) return;
+  const an = new Date().getFullYear(), per = RC.per;
+  let champ = '';
+  if (per === 'jour' || per === 'semaine') champ = '<input type="date" value="' + RC.ref + '" onchange="rcPeriode(\'ref\',this.value)" style="' + RG_IN + '">';
+  else if (per === 'mois') champ = '<input type="month" value="' + RC.ref.slice(0, 7) + '" onchange="rcPeriode(\'ref\',this.value+\'-01\')" style="' + RG_IN + '">';
+  else if (per === 'trimestre') { const L = []; for (let y = an; y >= an - 3; y--) for (let q = 4; q >= 1; q--) { const s = y + '-' + rgP2((q - 1) * 3 + 1) + '-01'; if (s <= rcAuj()) L.push([s, 'T' + q + ' ' + y]); } champ = rcSel('', rcBornes('trimestre', RC.ref).du, L, 'rcPeriode(\'ref\',this.value)'); }
+  else if (per === 'annee') { const L = []; for (let y = an; y >= an - 5; y--) L.push([y + '-06-15', 'Année ' + y]); champ = rcSel('', RC.ref.slice(0, 4) + '-06-15', L, 'rcPeriode(\'ref\',this.value)'); }
+  else champ = '<input type="date" value="' + (RC.du || RC.ref) + '" onchange="rcPeriode(\'du\',this.value)" style="' + RG_IN + '"> <span style="font-size:12px">→</span> <input type="date" value="' + (RC.au || RC.ref) + '" onchange="rcPeriode(\'au\',this.value)" style="' + RG_IN + '">';
+  el.innerHTML = rcSel('', per, [['jour', 'Jour'], ['semaine', 'Semaine'], ['mois', 'Mois'], ['trimestre', 'Trimestre'], ['annee', 'Année'], ['perso', 'Période personnalisée']], 'rcPeriode(\'per\',this.value)')
+    + (per !== 'perso' ? '<button class="btn btn-ghost btn-sm" onclick="rcDecaler(-1)" aria-label="Période précédente">◀</button>' : '') + champ + (per !== 'perso' ? '<button class="btn btn-ghost btn-sm" onclick="rcDecaler(1)" aria-label="Période suivante">▶</button>' : '')
+    + '<span style="font-size:12px;color:var(--muted);margin-left:4px">comparer à</span>' + rcSel('', RC.cmp, [['prec', 'la période précédente'], ['n1', 'la même période N-1'], ['perso', 'une période choisie']], 'rcPeriode(\'cmp\',this.value)')
+    + (RC.cmp === 'perso' ? '<input type="date" value="' + (RC.cmpDu || '') + '" onchange="rcPeriode(\'cmpDu\',this.value)" style="' + RG_IN + '"> <span style="font-size:12px">→</span> <input type="date" value="' + (RC.cmpAu || '') + '" onchange="rcPeriode(\'cmpAu\',this.value)" style="' + RG_IN + '">' : '');
+}
+window.rcPeriode = async function(k, v) {
+  if (k === 'per') { if (v === 'perso') { const b = rcBornes(RC.per, RC.ref, RC.du, RC.au); RC.du = b.du; RC.au = b.au; } RC.per = v; }
+  else if (k === 'ref') { if (v) RC.ref = v; }
+  else RC[k] = v;
+  if (k === 'cmp' && v === 'perso' && (!RC.cmpDu || !RC.cmpAu)) { const p = rcPrec(RC.per, rcBornes(RC.per, RC.ref, RC.du, RC.au)); RC.cmpDu = p.du; RC.cmpAu = p.au; }
+  await rcRecharger();
+};
+window.rcDecaler = async function(s) {
+  const b = rcBornes(RC.per, RC.ref);
+  if (s < 0) RC.ref = rcPrec(RC.per, b).du;
+  else RC.ref = rcAdd(b.au, 1);
+  await rcRecharger();
+};
+function rcFiltresHtml() {
+  const el = document.getElementById('rc-filtres'); if (!el) return;
+  const f = RC.f, M = RC.Mall.filter(function(m){ return rcDans(m, RC.b); });
+  const uniq = function(fn, lib){ const o = {}; M.forEach(function(m){ const k = fn(m); if (k != null && k !== '') o[k] = lib(m); }); return Object.keys(o).map(function(k){ return [k, o[k]]; }).sort(function(a, b){ return String(a[1]).localeCompare(String(b[1]), 'fr'); }); };
+  const socs = RC.ctx.mode === 'admin' ? uniq(function(m){ return m.soc; }, function(m){ return m.soc; }) : [];
+  if (f.soc && !socs.some(function(s){ return s[0] === f.soc; })) socs.push([f.soc, f.soc]);
+  const add = function(L, k, l){ if (k && !L.some(function(x){ return x[0] === k; })) L.push([k, l || k]); return L; };
+  const vehs = RC.d.veh.map(function(v){ return [v._id, rgVehNom(v)]; });
+  const motos = uniq(function(m){ return m.moto || 'nc'; }, function(m){ return m.moto ? rgMotoNom(m.moto) : 'Non renseignée'; });
+  el.innerHTML = (RC.ctx.mode === 'admin' ? rcSel('', f.soc, [['', 'Toutes les sociétés']].concat(socs), 'rcFiltre(\'soc\',this.value)', 190) : '')
+    + rcSel('', f.client, [['', 'Tous les clients']].concat(add(uniq(function(m){ return m.client; }, function(m){ return m.client; }), f.client)), 'rcFiltre(\'client\',this.value)', 190)
+    + rcSel('', f.ch, [['', 'Tous les chauffeurs']].concat(add(uniq(function(m){ return m.chId; }, function(m){ return m.chNom; }), f.ch, (RC.chId[f.ch] && rgNomCh(RC.chId[f.ch])) || f.ch.replace(/^x:/, ''))), 'rcFiltre(\'ch\',this.value)', 180)
+    + rcSel('', f.veh, [['', 'Tous les véhicules']].concat(vehs), 'rcFiltre(\'veh\',this.value)', 180)
+    + rcSel('', f.type, [['', 'Tous types de véhicule']].concat(Object.keys(RC_TYPES).map(function(k){ return [k, RC_TYPES[k]]; })), 'rcFiltre(\'type\',this.value)')
+    + rcSel('', f.moto, [['', 'Toutes motorisations']].concat(add(motos, f.moto)), 'rcFiltre(\'moto\',this.value)')
+    + rcSel('', f.presta, [['', 'Toutes prestations']].concat(Object.keys(RC_PRESTA).map(function(k){ return [k, RC_PRESTA[k]]; })), 'rcFiltre(\'presta\',this.value)')
+    + rcSel('', f.source, [['', 'Toutes sources']].concat(Object.keys(RC_SOURCE).map(function(k){ return [k, RC_SOURCE[k]]; })), 'rcFiltre(\'source\',this.value)')
+    + rcSel('', f.paie, [['', 'Tous statuts de paiement']].concat(Object.keys(RC_PAIE).map(function(k){ return [k, RC_PAIE[k]]; })), 'rcFiltre(\'paie\',this.value)')
+    + '<button class="btn btn-ghost btn-sm" onclick="rcFiltre(\'*\')">✕ Réinitialiser</button>';
+  const n = Object.keys(f).filter(function(k){ return f[k]; }).length;
+  const t = document.getElementById('rc-filtres-tit'); if (t) t.textContent = '🔎 Filtres' + (n ? ' (' + n + ' actif' + (n > 1 ? 's' : '') + ')' : '');
+}
+window.rcFiltre = function(k, v) {
+  if (k === '*') Object.keys(RC.f).forEach(function(x){ RC.f[x] = ''; }); else RC.f[k] = v;
+  rcFiltresHtml(); rcDessiner();
+};
+function rcVoir(k, v, onglet) { RC.f[k] = v; rcFiltresHtml(); rcOnglet(onglet); }
+function rcLibFiltres() {
+  const f = RC.f, L = [];
+  if (f.soc) L.push(f.soc); if (f.client) L.push(f.client); if (f.ch) L.push((RC.chId[f.ch] && rgNomCh(RC.chId[f.ch])) || f.ch.replace(/^x:/, ''));
+  if (f.veh) { const v = RC.d.veh.find(function(x){ return x._id === f.veh; }); L.push(v ? rgVehNom(v) : f.veh); }
+  if (f.type) L.push(RC_TYPES[f.type]); if (f.moto) L.push(f.moto === 'nc' ? 'motorisation non renseignée' : rgMotoNom(f.moto)); if (f.presta) L.push(RC_PRESTA[f.presta]); if (f.source) L.push(RC_SOURCE[f.source]); if (f.paie) L.push(RC_PAIE[f.paie]);
+  return L.join(' · ');
+}
+function rcEntete() { const lf = rcLibFiltres(); return '<div style="font-size:13px;color:var(--muted);margin-bottom:8px">' + E(rcLib(RC.b, RC.per)) + (lf ? ' · ' + E(lf) : '') + ' · montants HT sauf mention TTC</div>'; }
+function rcDessiner() {
+  const box = document.getElementById('rc-corps'); if (!box || !RC.d) return;
+  RC.reg = [];
+  RC.A = rcAgreger(RC.b);
+  let h = RC.refus ? '<div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);border-radius:10px;padding:10px;margin-bottom:10px;font-size:12px">⚠️ Une partie des données (coûts, suivi des factures) est refusée par le serveur : publiez les nouvelles règles Firebase (fichier fourni).</div>' : '';
+  const o = RC.onglet;
+  try {
+    if (o === 'bord') h += rcVueBord();
+    else if (o === 'societes') h += rcVueSocietes();
+    else if (o === 'clients') h += rcVueClients();
+    else if (o === 'prestations') h += rcVuePrestations();
+    else if (o === 'chauffeurs') h += rcVueChauffeurs();
+    else if (o === 'vehicules') h += rcVueVehicules();
+    else if (o === 'evolution') h += rcVueEvolution();
+    else if (o === 'factures') h += rcVueFactures();
+    else if (o === 'creances') h += rcVueCreances();
+    else if (o === 'analyses') h += rcVueAnalyses();
+    else if (o === 'missions') h += rcVueMissions();
+    else if (o === 'controles') h += rcVueControles();
+  } catch (e) { console.warn('Rapport CA', e); h += '<div style="color:#dc2626">Erreur d\'affichage : ' + E(String(e && e.message || e)) + '</div>'; }
+  box.innerHTML = h;
+}
+
+// ── Graphiques (SVG, sans bibliothèque) ─────────────────────────────────────
+function rcAxe(v) { return v >= 10000 ? Math.round(v / 1000) + 'k' : (v >= 1000 ? (Math.round(v / 100) / 10).toString().replace('.', ',') + 'k' : String(Math.round(v))); }
+function rcSvgBarres(labels, s1, s2, n1, n2) {
+  const W = 640, H = 190, pad = 26, n = labels.length, max = Math.max.apply(null, s1.concat(s2 || []).concat([1]));
+  const bw = (W - pad) / n, b1 = s2 ? bw * 0.38 : bw * 0.62;
+  let g = '';
+  for (let i = 0; i <= 4; i++) { const y = 10 + (H - 40) * i / 4; g += '<line x1="' + pad + '" x2="' + W + '" y1="' + y + '" y2="' + y + '" stroke="currentColor" stroke-opacity=".12"/><text x="' + (pad - 3) + '" y="' + (y + 3) + '" font-size="8" text-anchor="end" fill="currentColor" fill-opacity=".55">' + rcAxe(max * (1 - i / 4)) + '</text>'; }
+  labels.forEach(function(l, i){
+    const x = pad + i * bw + bw * 0.1, h1 = (H - 40) * s1[i] / max;
+    if (s2) { const h2 = (H - 40) * s2[i] / max; g += '<rect x="' + x + '" y="' + (H - 30 - h2) + '" width="' + b1 + '" height="' + h2 + '" fill="#94a3b8" rx="2"><title>' + E(n2 + ' : ' + rgEur0(s2[i])) + '</title></rect>'; }
+    g += '<rect x="' + (s2 ? x + b1 + 2 : x) + '" y="' + (H - 30 - h1) + '" width="' + b1 + '" height="' + h1 + '" fill="#3b82f6" rx="2"><title>' + E(l + ' — ' + n1 + ' : ' + rgEur0(s1[i])) + '</title></rect>';
+    g += '<text x="' + (pad + i * bw + bw / 2) + '" y="' + (H - 16) + '" font-size="9" text-anchor="middle" fill="currentColor" fill-opacity=".7">' + E(l) + '</text>';
+  });
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-width:860px;height:auto;display:block;margin:0 auto;color:var(--white)" role="img" aria-label="Évolution du CA">' + g + '</svg>'
+    + '<div style="font-size:11px;color:var(--muted)"><span style="color:#3b82f6">■</span> ' + E(n1) + (s2 ? ' &nbsp; <span style="color:#94a3b8">■</span> ' + E(n2) : '') + '</div>';
+}
+function rcBarresH(L, val, lib) {
+  const max = Math.max.apply(null, L.map(val).concat([1]));
+  return L.map(function(x){ return '<div style="display:grid;grid-template-columns:96px minmax(0,1fr) 78px;gap:6px;align-items:center;margin:4px 0;font-size:11.5px"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + E(lib(x)) + '</div><div style="height:9px;border-radius:4px;background:#3b82f6;width:' + Math.max(1, val(x) / max * 100) + '%"></div><div style="text-align:right">' + rgEur0(val(x)) + '</div></div>'; }).join('');
+}
+function rcSerieMois(fin, nb, decalAns) {
+  const mois = []; const d = rcD(fin.slice(0, 7) + '-15');
+  for (let i = nb - 1; i >= 0; i--) { const x = new Date(d.getFullYear() - (decalAns || 0), d.getMonth() - i, 15); mois.push(rgIso(x).slice(0, 7)); }
+  const o = {}; mois.forEach(function(m){ o[m] = 0; });
+  RC.Mall.forEach(function(m){ if (o[m.mois] != null && rcPasse(m)) o[m.mois] += m.ht; });
+  return { mois: mois, v: mois.map(function(m){ return o[m]; }) };
+}
+
+// ── Vues ───────────────────────────────────────────────────────────────────
+function rcVueBord() {
+  const A = RC.A, T = A.T, Ap = rcAgreger(RC.bp), P = Ap.T;
+  const an = RC.b.au.slice(0, 4), ytdFin = RC.b.au < rcAuj() ? RC.b.au : rcAuj();
+  const ytd = RC.Mall.filter(function(m){ return m.j >= an + '-01-01' && m.j <= ytdFin && rcPasse(m); }).reduce(function(s, m){ return s + m.ht; }, 0);
+  const moisCourant = RC.Mall.filter(function(m){ return m.mois === rcAuj().slice(0, 7) && rcPasse(m); }).reduce(function(s, m){ return s + m.ht; }, 0);
+  const aFact = A.M.filter(function(m){ return m.paie === 'afacturer'; }).reduce(function(s, m){ return s + m.ttc; }, 0);
+  const cmpLib = RC.cmp === 'n1' ? 'vs N-1' : (RC.cmp === 'perso' ? 'vs période choisie' : 'vs période préc.');
+  const ev = rcSerieMois(RC.b.au, 12, 0), ev1 = rcSerieMois(RC.b.au, 12, 1);
+  const top = function(L, n, act){ return L.slice(0, 5).map(function(g, i){ return rgTr([(i + 1) + '. ' + E(g.lib), String(g.n), rgEur0(g.ht), '<span style="color:' + rgColMarge(g.marge) + '">' + rgPct(g.pct) + '</span>'], act ? rcAct(act(g)) : ''); }); };
+  const cols = ['', 'Prest.', 'CA HT', 'Marge'];
+  const gCl = rcGrouper(A.M, function(m){ return m.client; }, function(m){ return m.client; });
+  const gCh = rcGrouper(A.M, function(m){ return m.chId; }, function(m){ return m.chNom; });
+  const gVe = rcGrouper(A.M.filter(function(m){ return m.vehId; }), function(m){ return m.vehId; }, function(m){ return rgVehNom(m.v); });
+  const gSo = rcGrouper(A.M, function(m){ return m.soc; }, function(m){ return m.soc; });
+  return rcEntete()
+    + rcTitre('💶 Chiffre d\'affaires')
+    + rgGrille([rgKpi('CA de la période', rgEur0(T.ht), rcDelta(T.ht, P.ht) + ' ' + cmpLib, '#3b82f6'), rgKpi('CA TTC', rgEur0(T.ttc), 'TVA ' + rgEur0(T.tva)), rgKpi('CA du mois en cours', rgEur0(moisCourant), rgMoisLabel(rcAuj().slice(0, 7))), rgKpi('CA de l\'année ' + an, rgEur0(ytd), 'au ' + rcFr(ytdFin)), rgKpi('Prestations', String(T.n), rcDeltaN(T.n, P.n) + ' ' + cmpLib), rgKpi('Panier moyen', rgEur0(T.panier), 'HT par prestation')])
+    + rcTitre('🧾 Facturation et encaissement (TTC)')
+    + rgGrille([rgKpi('Réalisé', rgEur0(T.ttc)), rgKpi('Facturé', rgEur0(T.fact), T.ttc ? rgPct(T.fact / T.ttc * 100) + ' du réalisé' : ''), rgKpi('Encaissé', rgEur0(T.enc), '', '#16a34a'), rgKpi('Reste à encaisser', rgEur0(T.reste), '', T.reste > 0 ? '#d97706' : ''), rgKpi('À facturer', rgEur0(aFact), 'réalisé non facturé', aFact > 0 ? '#d97706' : '')])
+    + rcTitre('📉 Coûts et marge (HT)')
+    + rgGrille([rgKpi('Coût total', rgEur0(T.cout), rcDelta(T.cout, P.cout, true) + ' ' + cmpLib), rgKpi('Chauffeurs / sous-traitance', rgEur0(T.sal)), rgKpi('Véhicules + énergie', rgEur0(T.veh + T.ene)), rgKpi('Frais (péages, autres)', rgEur0(T.frais)), rgKpi('Marge brute', rgEur0(T.marge), rgPct(T.pct) + ' · ' + rcDelta(T.marge, P.marge), rgColMarge(T.marge))].concat(T.margeNette != null ? [rgKpi('Marge nette', rgEur0(T.margeNette), 'après ' + rgEur0(T.fg) + ' de frais généraux', rgColMarge(T.margeNette))] : []))
+    + rcTitre('📌 Activité')
+    + rgGrille([rgKpi('Clients', String(T.nbClients), 'CA moyen ' + rgEur0(T.nbClients ? T.ht / T.nbClients : 0)), rgKpi('Sociétés', String(T.nbSocs)), rgKpi('Chauffeurs', String(T.nbCh), 'CA moyen ' + rgEur0(T.nbCh ? T.ht / T.nbCh : 0)), rgKpi('Véhicules', String(T.nbVeh), 'CA moyen ' + rgEur0(T.nbVeh ? A.M.filter(function(m){ return m.vehId; }).reduce(function(s, m){ return s + m.ht; }, 0) / T.nbVeh : 0)), rgKpi('CA moyen / jour', rgEur0(T.ht / T.jours), T.jours + ' jour(s)'), rgKpi('CA / heure travaillée', T.heures ? rgEur0(T.ht / T.heures) : '—', T.heures ? rgH(T.heures) + ' pointées' : 'pas de pointage')])
+    + rcCarte('📈 Évolution du CA HT — 12 mois', rcSvgBarres(ev.mois.map(function(m){ return rcD(m + '-15').toLocaleDateString('fr-FR', { month: 'short' }).replace('.', ''); }), ev.v, ev1.v, 'CA HT', 'Même mois N-1'))
+    + rcDeux(rcCarte('🏆 Top 5 clients', rgTable(cols, top(gCl, 5, function(g){ return function(){ rcVoir('client', g.k, 'missions'); }; }))), rcCarte('🏆 Top 5 chauffeurs', rgTable(cols, top(gCh, 5, function(g){ return function(){ rcVoir('ch', g.k, 'missions'); }; }))))
+    + rcDeux(rcCarte('🏆 Top 5 véhicules', rgTable(cols, top(gVe, 5, function(g){ return function(){ rcVoir('veh', g.k, 'missions'); }; }))), rcCarte('🏆 Top 5 sociétés', rgTable(cols, top(gSo, 5, function(g){ return function(){ rcVoir('soc', g.k, 'clients'); }; }))))
+    + (T.nonImp > 0.5 ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">Coût total : dont ' + rgEur0(T.nonImp) + ' non rattachés à une mission (véhicule non utilisé, heures sans course…).</div>' : '')
+    + '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-ghost btn-sm" onclick="rcOnglet(\'controles\')">⚠️ ' + rcControles().length + ' contrôle(s) à voir</button>' + (RC.ctx.mode === 'admin' || RC.ctx.mode === 'gerant' ? '<button class="btn btn-ghost btn-sm" onclick="rcFraisGeneraux()">⚙️ Frais généraux (marge nette)</button>' : '') + '</div>';
+}
+function rcLigneTab(g, extra) { return [g.n, rgEur0(g.ht), rgEur0(g.tva), rgEur0(g.ttc), rgEur0(g.fact), rgEur0(g.enc), '<span style="color:' + (g.reste > 0.5 ? '#d97706' : 'inherit') + '">' + rgEur0(g.reste) + '</span>'].concat(extra || []); }
+function rcVueSocietes() {
+  const A = RC.A, G = rcGrouper(A.M, function(m){ return m.soc; }, function(m){ return m.soc; });
+  A.U.forEach(function(u){ let g = G.find(function(x){ return x.k === u.soc; }); if (!g) { g = rcFin(Object.assign(rcVide(), { k: u.soc, lib: u.soc, ms: [] })); G.push(g); } g.sal += u.sal; g.veh += u.veh; g.ene += u.ene; g.frais += u.frais; g.cout += u.cout; rcFin(g); });
+  return rcEntete() + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Société qui a réalisé la prestation (MOBILEA ou sous-traitant). Touchez une société pour voir ses clients.</div>'
+    + rgTable(['Société', 'Prest.', 'CA HT', 'TVA', 'CA TTC', 'Facturé TTC', 'Encaissé TTC', 'Reste TTC', 'Coût chauffeurs', 'Coût véhicules', 'Frais', 'Coût total', 'Marge', 'Marge %'],
+      G.map(function(g){ return rgTr(['<b>' + E(g.lib) + '</b>'].concat(rcLigneTab(g, [rgEur0(g.sal), rgEur0(g.veh + g.ene), rgEur0(g.frais), rgEur0(g.cout), '<b style="color:' + rgColMarge(g.marge) + '">' + rgEur0(g.marge) + '</b>', rgPct(g.pct)])), rcAct(function(){ rcVoir('soc', g.k, 'clients'); })); }));
+}
+function rcDelaiMoyen(client) {
+  const L = Object.keys(RC.F).map(function(k){ return RC.F[k]; }).filter(function(f){ return f.client === client && f.statut === 'payee' && f.payeLe && f.date; });
+  if (!L.length) return null;
+  return L.reduce(function(s, f){ return s + Math.max(0, rcJours(f.date, f.payeLe) - 1); }, 0) / L.length;
+}
+function rcVueClients() {
+  const G = rcGrouper(RC.A.M, function(m){ return m.client; }, function(m){ return m.client; });
+  return rcEntete() + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Classés du plus gros CA au plus petit. Touchez un client pour voir ses missions.</div>'
+    + rgTable(['Client', 'Prest.', 'CA HT', 'CA TTC', 'Facturé TTC', 'Encaissé TTC', 'Reste TTC', 'Coût', 'Marge', 'Marge %', 'Délai de paiement'],
+      G.map(function(g){ const dl = rcDelaiMoyen(g.k); return rgTr(['<b>' + E(g.lib) + '</b>', g.n, rgEur0(g.ht), rgEur0(g.ttc), rgEur0(g.fact), rgEur0(g.enc), '<span style="color:' + (g.reste > 0.5 ? '#d97706' : 'inherit') + '">' + rgEur0(g.reste) + '</span>', rgEur0(g.cout), '<b style="color:' + rgColMarge(g.marge) + '">' + rgEur0(g.marge) + '</b>', rgPct(g.pct), dl == null ? '—' : Math.round(dl) + ' j'], rcAct(function(){ rcVoir('client', g.k, 'missions'); })); }));
+}
+function rcVuePrestations() {
+  const G = rcGrouper(RC.A.M, function(m){ return m.presta; }, function(m){ return RC_PRESTA[m.presta]; });
+  return rcEntete() + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Type déduit automatiquement des adresses (aéroport, gare, Disney…), du vol et du type de course (mise à disposition).</div>'
+    + rgTable(['Prestation', 'Nombre', 'CA HT', 'Part du CA', 'Panier moyen', 'Coût', 'Marge', 'Marge %'],
+      G.map(function(g){ return rgTr(['<b>' + E(g.lib) + '</b>', g.n, rgEur0(g.ht), rgPct(RC.A.T.ht ? g.ht / RC.A.T.ht * 100 : null), rgEur0(g.panier), rgEur0(g.cout), '<b style="color:' + rgColMarge(g.marge) + '">' + rgEur0(g.marge) + '</b>', rgPct(g.pct)], rcAct(function(){ rcVoir('presta', g.k, 'missions'); })); }))
+    + '<div style="margin-top:12px">' + rcCarte('Répartition du CA', rcBarresH(G, function(g){ return g.ht; }, function(g){ return g.lib.replace(/^\S+\s/, ''); })) + '</div>';
+}
+function rcVueChauffeurs() {
+  const A = RC.A, G = rcGrouper(A.M, function(m){ return m.chId; }, function(m){ return m.chNom; });
+  A.U.filter(function(u){ return u.k === 'ch'; }).forEach(function(u){ let g = G.find(function(x){ return x.k === u.id; }); if (!g) { g = rcFin(Object.assign(rcVide(), { k: u.id, lib: u.nom, ms: [] })); G.push(g); } g.sal += u.sal; g.veh += u.veh; g.ene += u.ene; g.frais += u.frais; g.cout += u.cout; rcFin(g); });
+  return rcEntete() + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Coûts issus de « Gestion, paie & rentabilité » (salaire + charges, véhicule, frais) ; sous-traitant = prix chauffeur. Touchez un chauffeur pour ses missions.</div>'
+    + rgTable(['Chauffeur', 'Type', 'Missions', 'CA HT', 'CA / mission', 'Heures', 'CA / heure', 'Coût salarial', 'Frais', 'Coût véhicule', 'Coût total', 'Marge', 'Marge %'],
+      G.map(function(g){ const ch = RC.chId[g.k]; const h = ch ? rcHeures(RC.b, g.k) : 0; const st = g.ms.length ? g.ms[0].st : false; return rgTr(['<b>' + E(g.lib) + '</b>', st ? 'sous-traitant' : 'interne', g.n, rgEur0(g.ht), rgEur0(g.panier), h ? rgH(h) : '—', h ? rgEur0(g.ht / h) : '—', rgEur0(g.sal), rgEur0(g.frais), rgEur0(g.veh + g.ene), rgEur0(g.cout), '<b style="color:' + rgColMarge(g.marge) + '">' + rgEur0(g.marge) + '</b>', rgPct(g.pct)], rcAct(function(){ rcVoir('ch', g.k, 'missions'); })); }));
+}
+// Coûts d'un véhicule sur la période : coûts mensuels × part de son CA du mois
+// réalisée dans la période (ou part des jours s'il n'a pas roulé).
+function rcCoutsVehicule(id, b, caParMois) {
+  const o = { leasing: 0, assurance: 0, entretien: 0, autresFixes: 0, ene: 0, frais: 0, chSal: 0, tot: 0 };
+  Object.keys(RC.E).forEach(function(m){
+    const W = RC.E[m].veh[id]; if (!W) return;
+    const fr = W.ca > 0 ? (caParMois[m] || 0) / W.ca : (rcFracMois(m, b) && !(caParMois[m]) ? rcFracMois(m, b) : 0);
+    if (!fr) return;
+    const dt = W.detail || {};
+    o.leasing += rgNum(dt.leasing) * fr; o.assurance += rgNum(dt.assurance) * fr; o.entretien += rgNum(dt.entretien) * fr; o.autresFixes += (rgNum(dt.assistance) + rgNum(dt.autresFixes)) * fr;
+    o.ene += W.ene * fr; o.frais += (W.peage + W.autres) * fr; o.chSal += W.chSal * fr; o.tot += W.tot * fr;
+  });
+  return o;
+}
+function rcVueVehicules() {
+  const A = RC.A, f = RC.f;
+  const vehs = RC.d.veh.filter(function(v){ return (!f.veh || v._id === f.veh) && (!f.type || rcTypeVeh(v, {}) === f.type) && (!f.moto || (v.motorisation || 'nc') === f.moto) && (!f.soc || rgSocDe(v, 'societe') === f.soc || RC.ctx.mode === 'gerant'); });
+  const lignes = [];
+  vehs.forEach(function(v){
+    const ms = A.M.filter(function(m){ return m.vehId === v._id; });
+    const caM = {}; ms.forEach(function(m){ caM[m.mois] = (caM[m.mois] || 0) + ht(m.ttc); });
+    const cs = rcFiltresMissionSeuls() || f.ch ? null : rcCoutsVehicule(v._id, RC.b, caM);
+    if (!ms.length && (!cs || cs.tot < 0.5)) return;
+    const g = rcFin(ms.reduce(rcAjout, rcVide()));
+    const tot = cs ? cs.tot : g.cout, marge = g.ht - tot;
+    const h = rcHeures(RC.b, null, v._id);
+    const chs = {}; ms.forEach(function(m){ chs[m.chNom] = (chs[m.chNom] || 0) + 1; });
+    const chAtt = (v.chauffeur || '').trim() || Object.keys(chs).sort(function(a, b){ return chs[b] - chs[a]; })[0] || '—';
+    lignes.push({ v: v, ms: ms, g: g, cs: cs, tot: tot, marge: marge, h: h, chAtt: chAtt });
+  });
+  lignes.sort(function(a, b){ return b.g.ht - a.g.ht; });
+  const sans = A.M.filter(function(m){ return !m.vehId; });
+  return rcEntete() + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Coûts mensuels du véhicule (module Gestion) imputés à la période. Comparez diesel / électrique avec le filtre « motorisation » ou l\'onglet Analyses.</div>'
+    + rgTable(['Immat.', 'Modèle', 'Type', 'Motorisation', 'Chauffeur', 'Missions', 'CA HT', 'CA / mission', 'CA / heure', 'CA / km', 'Leasing', 'Assurance', 'Entretien', 'Carburant / recharge', 'Autres frais', 'Salaire chauffeur', 'Coût total', 'Marge'],
+      lignes.map(function(x){ const v = x.v, cs = x.cs || {}; return rgTr(['<b>' + E(v.immat || '—') + '</b>', E([v.marque, v.modele].filter(Boolean).join(' ') || '—'), RC_TYPES[rcTypeVeh(v, {})], E(v.motorisation ? rgMotoNom(v.motorisation) : '—'), E(x.chAtt), x.g.n, rgEur0(x.g.ht), rgEur0(x.g.panier), x.h ? rgEur0(x.g.ht / x.h) : '—', x.g.km ? rgEur(x.g.ht / x.g.km) : '—', rgEur0(cs.leasing), rgEur0(cs.assurance), rgEur0(cs.entretien), rgEur0(cs.ene), rgEur0((cs.frais || 0) + (cs.autresFixes || 0)), rgEur0(cs.chSal), rgEur0(x.tot), '<b style="color:' + rgColMarge(x.marge) + '">' + rgEur0(x.marge) + '</b>'], rcAct(function(){ rcVoir('veh', v._id, 'missions'); })); }))
+    + (sans.length ? '<div style="font-size:12px;color:var(--muted);margin-top:8px">+ ' + sans.length + ' mission(s) sans véhicule identifié (immatriculation non saisie) : ' + rgEur0(sans.reduce(function(s, m){ return s + m.ht; }, 0)) + ' HT.</div>' : '')
+    + (rcFiltresMissionSeuls() || f.ch ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">Avec un filtre client / chauffeur / prestation / source / paiement, le coût affiché est la part imputée aux missions filtrées.</div>' : '');
+}
+function rcVueEvolution() {
+  const A = RC.A, T = A.T, Ap = rcAgreger(RC.bp), P = Ap.T, An = rcAgreger(RC.bn), N = An.T;
+  const ev = rcSerieMois(RC.b.au, 12, 0), ev1 = rcSerieMois(RC.b.au, 12, 1);
+  const lignesCmp = [['CA HT', T.ht, P.ht, N.ht], ['CA TTC', T.ttc, P.ttc, N.ttc], ['Facturé TTC', T.fact, P.fact, N.fact], ['Encaissé TTC', T.enc, P.enc, N.enc], ['Coût total', T.cout, P.cout, N.cout, true], ['Marge brute', T.marge, P.marge, N.marge], ['Panier moyen', T.panier, P.panier, N.panier]];
+  const jours = [0, 0, 0, 0, 0, 0, 0], nbJ = [0, 0, 0, 0, 0, 0, 0], occ = [0, 0, 0, 0, 0, 0, 0];
+  A.M.forEach(function(m){ const i = (rcD(m.j).getDay() + 6) % 7; jours[i] += m.ht; nbJ[i]++; });
+  for (let d = RC.b.du; d <= RC.b.au && d <= rcAuj(); d = rcAdd(d, 1)) occ[(rcD(d).getDay() + 6) % 7]++;
+  const tabMois = ev.mois.map(function(m, i){ return rgTr([E(rgMoisLabel(m)), rgEur0(ev.v[i]), i ? rcDelta(ev.v[i], ev.v[i - 1]) : '—', rgEur0(ev1.v[i]), rcDelta(ev.v[i], ev1.v[i])], rcAct(function(){ RC.per = 'mois'; RC.ref = m + '-01'; rcRecharger(); })); }).reverse();
+  return rcEntete()
+    + rcTitre('⚖️ Comparaison des périodes')
+    + rgTable(['Indicateur', E(rcLib(RC.b, RC.per)), E(rcLib(RC.bp, RC.cmp === 'perso' ? 'perso' : RC.per)), 'Écart', 'Même période N-1', 'Écart N-1'],
+      lignesCmp.map(function(l){ return rgTr(['<b>' + l[0] + '</b>', rgEur0(l[1]), rgEur0(l[2]), rcDelta(l[1], l[2], l[4]), rgEur0(l[3]), rcDelta(l[1], l[3], l[4])]); })
+        .concat([rgTr(['<b>Prestations</b>', String(T.n), String(P.n), rcDeltaN(T.n, P.n), String(N.n), rcDeltaN(T.n, N.n)]), rgTr(['<b>Taux de marge</b>', rgPct(T.pct), rgPct(P.pct), T.pct != null && P.pct != null ? rcDeltaN(T.pct, P.pct).replace(/\(.*\)/, '') + ' pts' : '—', rgPct(N.pct), T.pct != null && N.pct != null ? rcDeltaN(T.pct, N.pct).replace(/\(.*\)/, '') + ' pts' : '—'])]))
+    + '<div style="margin-top:12px">' + rcCarte('📈 CA HT mensuel — 12 mois (bleu) et même mois N-1 (gris)', rcSvgBarres(ev.mois.map(function(m){ return rcD(m + '-15').toLocaleDateString('fr-FR', { month: 'short' }).replace('.', ''); }), ev.v, ev1.v, 'CA HT', 'N-1')) + '</div>'
+    + rcTitre('📅 Mois par mois') + rgTable(['Mois', 'CA HT', 'vs mois précédent', 'N-1', 'vs N-1'], tabMois)
+    + rcTitre('🗓️ CA par jour de la semaine')
+    + rcDeux(rcCarte('CA HT par jour', rcBarresH(RC_JOURS.map(function(j, i){ return { l: j, v: jours[i] }; }), function(x){ return x.v; }, function(x){ return x.l; })),
+        rcCarte('Détail', rgTable(['Jour', 'Prest.', 'CA HT', 'CA moyen / jour'], RC_JOURS.map(function(j, i){ return rgTr([j, nbJ[i], rgEur0(jours[i]), occ[i] ? rgEur0(jours[i] / occ[i]) : '—']); }))))
+    + '<div style="font-size:11px;color:var(--muted);margin-top:6px">« CA moyen / jour » = CA du jour de la semaine ÷ nombre de ces jours dans la période : utile pour prévoir plus de chauffeurs les jours forts.</div>';
+}
+function rcFacturesListe(toutes) {
+  const f = RC.f;
+  return Object.keys(RC.F).map(function(k){ return RC.F[k]; }).filter(function(x){
+    if (f.client && x.client !== f.client) return false;
+    if (f.soc && x.soc !== f.soc) return false;
+    if (!toutes && (x.date < RC.b.du || x.date > RC.b.au)) return false;
+    if (RC.fst && x.statut !== RC.fst) return false;
+    return true;
+  }).sort(function(a, b){ return String(b.date).localeCompare(String(a.date)); });
+}
+function rcVueFactures() {
+  const L = rcFacturesListe(false);
+  const tot = function(k){ return L.filter(function(x){ return !x.annulee; }).reduce(function(s, x){ return s + x[k]; }, 0); };
+  const aF = rcGrouper(RC.A.M.filter(function(m){ return m.paie === 'afacturer'; }), function(m){ return m.client; }, function(m){ return m.client; });
+  return rcEntete()
+    + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><span style="font-size:12px;color:var(--muted)">Factures émises dans la période · statut</span>' + rcSel('', RC.fst, [['', 'Tous']].concat(Object.keys(RC_FSTAT).filter(function(k){ return k !== 'afacturer'; }).map(function(k){ return [k, RC_FSTAT[k]]; })), 'RC.fst=this.value;rcDessiner()') + '</div>'
+    + rgGrille([rgKpi('Factures', String(L.length)), rgKpi('Montant TTC', rgEur0(tot('ttc')), 'HT ' + rgEur0(tot('ht'))), rgKpi('Encaissé', rgEur0(tot('enc')), '', '#16a34a'), rgKpi('Reste à payer', rgEur0(Math.max(0, tot('ttc') - tot('enc'))), '', '#d97706')])
+    + rgTable(['N°', 'Client', 'Date', 'Période', 'HT', 'TVA', 'TTC', 'Échéance', 'Statut', 'Payée le', 'Encaissé', 'Reste'],
+      L.map(function(x){ return rgTr(['<b>' + E(x.ref) + '</b>', E(x.client), rcFr(x.date), x.du ? rcFr(x.du) + ' → ' + rcFr(x.au) : '—', rgEur(x.ht), rgEur(x.tva), rgEur(x.ttc), rcFr(x.echeance), rcBadge(x.statut), x.payeLe ? rcFr(x.payeLe) + (x.date ? ' <span style="font-size:10px;color:var(--muted)">(' + Math.max(0, rcJours(x.date, x.payeLe) - 1) + ' j)</span>' : '') : '—', rgEur(x.enc), rgEur(Math.max(0, x.ttc - x.enc))], rcAct(function(){ rcFacture(x.cle); })); }), 'Aucune facture émise sur la période.')
+    + rcTitre('🕒 À facturer (prestations réalisées, sans facture)')
+    + rgTable(['Client', 'Prestations', 'Montant TTC', 'Plus ancienne'], aF.map(function(g){ return rgTr(['<b>' + E(g.lib) + '</b>', g.n, rgEur(g.ttc), rcFr(g.ms.map(function(m){ return m.j; }).sort()[0])], rcAct(function(){ RC.f.paie = 'afacturer'; rcVoir('client', g.k, 'missions'); })); }), 'Rien à facturer sur la période. ✅')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:6px">Les factures se créent toujours depuis « Facturation ». Ici : suivi d\'envoi, paiements reçus, relances. Touchez une facture pour enregistrer un paiement.</div>';
+}
+function rcVueCreances() {
+  const L = rcFacturesListe(true).filter(function(x){ return !x.annulee && x.statut !== 'payee'; });
+  const auj = rcAuj();
+  L.forEach(function(x){ x.retardJ = x.echeance && x.echeance < auj ? rcJours(x.echeance, auj) - 1 : 0; x.reste = Math.max(0, x.ttc - x.enc); });
+  L.sort(function(a, b){ return b.retardJ - a.retardJ || b.reste - a.reste; });
+  const totI = L.reduce(function(s, x){ return s + x.reste; }, 0), ret = L.filter(function(x){ return x.retardJ > 0; }), totR = ret.reduce(function(s, x){ return s + x.reste; }, 0);
+  return '<div style="font-size:13px;color:var(--muted);margin-bottom:8px">Créances clients à ce jour (toutes périodes)' + (rcLibFiltres() ? ' · ' + E(rcLibFiltres()) : '') + ' · montants TTC</div>'
+    + rgGrille([rgKpi('Total impayé', rgEur0(totI), L.length + ' facture(s)', totI > 0 ? '#d97706' : ''), rgKpi('Total en retard', rgEur0(totR), '', totR > 0 ? '#dc2626' : ''), rgKpi('Pas encore échu', rgEur0(totI - totR)), rgKpi('Factures en retard', String(ret.length), '', ret.length ? '#dc2626' : '')])
+    + rgTable(['Client', 'Facture', 'Date', 'Montant', 'Échéance', 'Jours de retard', 'Reste', 'Statut'],
+      L.map(function(x){ return rgTr(['<b>' + E(x.client) + '</b>', E(x.ref), rcFr(x.date), rgEur(x.ttc), rcFr(x.echeance), x.retardJ ? '<b style="color:#dc2626">' + x.retardJ + ' j</b>' : '—', rgEur(x.reste), rcBadge(x.statut)], rcAct(function(){ rcFacture(x.cle); })); }), 'Aucune créance en cours. ✅');
+}
+function rcVueAnalyses() {
+  const A = RC.A, M = A.M;
+  const gT = rcGrouper(M, function(m){ return m.type; }, function(m){ return RC_TYPES[m.type]; });
+  const gM = rcGrouper(M, function(m){ return m.moto || 'nc'; }, function(m){ return m.moto ? rgMotoNom(m.moto) : 'Non renseignée'; });
+  const gS = rcGrouper(M, function(m){ return m.source; }, function(m){ return RC_SOURCE[m.source]; });
+  const gI = rcGrouper(M, function(m){ return m.st ? 'st' : 'int'; }, function(m){ return m.st ? '🤝 Sous-traitées' : '🏠 Réalisées en interne'; });
+  const gSt = rcGrouper(M.filter(function(m){ return m.st; }), function(m){ return m.chNom; }, function(m){ return m.chNom + (m.soc !== 'MOBILEA' && m.soc !== 'Sous-traitants externes' ? ' (' + m.soc + ')' : ''); });
+  return rcEntete()
+    + rcTitre('🤝 Interne / sous-traitance')
+    + rgTable(['Missions', 'Nombre', 'CA vendu HT', 'Coût', 'Marge brute', 'Marge %'], gI.map(function(g){ return rgTr(['<b>' + g.lib + '</b>', g.n, rgEur0(g.ht), rgEur0(g.cout), '<b style="color:' + rgColMarge(g.marge) + '">' + rgEur0(g.marge) + '</b>', rgPct(g.pct)]); }))
+    + rcTitre('Détail par sous-traitant')
+    + rgTable(['Sous-traitant', 'Missions', 'CA vendu TTC', 'CA vendu HT', 'Prix payé au sous-traitant', 'Marge brute', 'Marge %'], gSt.map(function(g){ const mb = g.ht - g.prixSt; return rgTr(['<b>' + E(g.lib) + '</b>', g.n, rgEur0(g.ttc), rgEur0(g.ht), rgEur0(g.prixSt), '<b style="color:' + rgColMarge(mb) + '">' + rgEur0(mb) + '</b>', rgPct(g.ht ? mb / g.ht * 100 : null)]); }), 'Aucune mission sous-traitée sur la période.')
+    + rcTitre('🚐 Par type de véhicule')
+    + rgTable(['Type', 'Missions', 'CA HT', 'Coût', 'Marge', 'CA moyen / mission', 'Marge moyenne'], gT.map(function(g){ return rgTr(['<b>' + E(g.lib) + '</b>', g.n, rgEur0(g.ht), rgEur0(g.cout), '<b style="color:' + rgColMarge(g.marge) + '">' + rgEur0(g.marge) + '</b>', rgEur0(g.panier), rgEur0(g.n ? g.marge / g.n : 0)], rcAct(function(){ rcVoir('type', g.k, 'missions'); })); }))
+    + rcTitre('⚡ Par motorisation')
+    + rgTable(['Motorisation', 'Missions', 'CA HT', 'Coût énergétique', 'Coût total', 'Marge', 'Marge %'], gM.map(function(g){ return rgTr(['<b>' + E(g.lib) + '</b>', g.n, rgEur0(g.ht), rgEur0(g.ene), rgEur0(g.cout), '<b style="color:' + rgColMarge(g.marge) + '">' + rgEur0(g.marge) + '</b>', rgPct(g.pct)], rcAct(function(){ rcVoir('moto', g.k, 'vehicules'); })); }))
+    + rcTitre('🧲 Par source (origine de la demande)')
+    + rgTable(['Source', 'Missions', 'CA HT', 'Part du CA', 'Marge', 'Marge %'], gS.map(function(g){ return rgTr(['<b>' + E(g.lib) + '</b>', g.n, rgEur0(g.ht), rgPct(A.T.ht ? g.ht / A.T.ht * 100 : null), '<b style="color:' + rgColMarge(g.marge) + '">' + rgEur0(g.marge) + '</b>', rgPct(g.pct)], rcAct(function(){ rcVoir('source', g.k, 'missions'); })); }));
+}
+function rcVueMissions() {
+  const M = RC.A.M.slice().sort(function(a, b){ return String(b.c.datetime).localeCompare(String(a.c.datetime)); });
+  const lim = 400;
+  return rcEntete() + '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">' + M.length + ' mission(s)' + (M.length > lim ? ' — ' + lim + ' premières affichées (export pour tout voir)' : '') + '. Coût = part de la mission dans les coûts du chauffeur et du véhicule.</div>'
+    + rgTable(['Date', 'Client', 'Trajet', 'Prestation', 'Chauffeur', 'Véhicule', 'CA HT', 'Coût', 'Marge', 'Facture', 'Paiement'],
+      M.slice(0, lim).map(function(m){ const c = m.c; return rgTr([new Date(c.datetime).toLocaleDateString('fr-FR') + ' ' + String(c.datetime || '').slice(11, 16), E(m.client), E(String((c.depart || c.lieu || '') + (c.arrivee ? ' → ' + c.arrivee : '')).slice(0, 60)), RC_PRESTA[m.presta], E(m.chNom) + (m.st ? ' <span style="font-size:10px;color:var(--muted)">ST</span>' : ''), m.v ? E(m.v.immat || rgVehNom(m.v)) : '—', rgEur(m.ht), rgEur(m.coutTot), '<b style="color:' + rgColMarge(m.ht - m.coutTot) + '">' + rgEur(m.ht - m.coutTot) + '</b>', m.f ? E(m.f.ref) : (m.direct ? 'réglé direct' : (m.sansNumero ? 'sans n°' : '—')), '<span style="color:' + (RC_FCOL[m.paie] || 'inherit') + '">' + RC_PAIE[m.paie] + '</span>']); }));
+}
+
+// ── Contrôles automatiques ──────────────────────────────────────────────────
+function rcControles() {
+  const A = RC.A, b = RC.b, out = [], auj = rcAuj();
+  const push = function(niv, txt){ out.push({ niv: niv, txt: txt }); };
+  const dt = function(c){ return new Date(c.datetime).toLocaleDateString('fr-FR') + ' ' + (c.depart || c.lieu || '').slice(0, 30); };
+  A.M.forEach(function(m){
+    const c = m.c;
+    if (c.statut !== 'noshow' && (c.prix == null || c.prix === '')) push('rouge', 'Mission sans prix — ' + m.client + ' · ' + dt(c));
+    else if (c.statut !== 'noshow' && rgNum(c.prix) === 0) push('orange', 'Mission à 0 € — ' + m.client + ' · ' + dt(c));
+    if (m.nbFact > 1) push('rouge', 'Mission présente dans ' + m.nbFact + ' factures — ' + m.client + ' · ' + dt(c));
+    if (m.sansNumero) push('orange', 'Mission « facturée » sans numéro de facture — ' + m.client + ' · ' + dt(c));
+  });
+  RC.annulees.forEach(function(c){ const j = String(c.datetime || '').slice(0, 10); if (j < b.du || j > b.au) return; if (c.factureRef || c.paiement_statut === 'paye') push('rouge', 'Mission annulée mais ' + (c.factureRef ? 'facturée (' + c.factureRef + ')' : 'payée') + ' — ' + (c.client || '') + ' · ' + dt(c)); });
+  // Même référence / bon facturé deux fois (deux transferts distincts)
+  const parBon = {};
+  A.M.forEach(function(m){ const r = String(m.c.logipaxNumBon || m.c.ref || '').trim(); if (!r || !m.fact) return; (parBon[r] = parBon[r] || []).push(m); });
+  Object.keys(parBon).forEach(function(r){ const L = parBon[r]; if (L.length > 1 && new Set(L.map(function(m){ return m.client; })).size === 1) push('orange', 'Référence « ' + r + ' » facturée ' + L.length + ' fois (' + L[0].client + ') — doublon possible'); });
+  // Écart réalisé / facturé : missions anciennes jamais facturées
+  const vieilles = RC.Mall.filter(function(m){ return m.paie === 'afacturer' && m.ttc > 0 && m.j < rcAdd(auj, -45) && rcPasse(m); });
+  if (vieilles.length) push('orange', vieilles.length + ' mission(s) réalisée(s) il y a plus de 45 jours toujours pas facturée(s) — ' + rgEur0(vieilles.reduce(function(s, m){ return s + m.ttc; }, 0)) + ' TTC');
+  // Factures
+  Object.keys(RC.F).forEach(function(k){
+    const f = RC.F[k];
+    if (RC.f.client && f.client !== RC.f.client) return;
+    if (f.orpheline) push('orange', 'Facture ' + f.ref + ' sans mission associée');
+    if (!f.annulee && f.enc > f.ttc + 0.01) push('rouge', 'Encaissé supérieur au facturé — ' + f.ref + ' : ' + rgEur(f.enc) + ' pour ' + rgEur(f.ttc));
+    if (f.statut === 'retard') push('orange', 'Facture impayée en retard — ' + f.ref + ' (' + f.client + ') : ' + rgEur(Math.max(0, f.ttc - f.enc)) + ', échue le ' + rcFr(f.echeance));
+  });
+  // Tarifs, coûts chauffeurs, véhicules
+  const clients = {}; A.M.forEach(function(m){ clients[m.client] = m; });
+  Object.keys(clients).forEach(function(n){
+    if (RC.ctx.mode === 'admin') { if (RC.clParNom[n] && !(D.tarifs || []).some(function(t){ return String(t.client || '').trim() === n; })) push('gris', 'Client sans tarif configuré — ' + n); }
+    else { const id = clients[n].c._priv && clients[n].c._priv.clientId; if (id && !(GP.tarifs || []).some(function(t){ return t.clientId === id; })) push('gris', 'Client sans tarif configuré — ' + n); }
+  });
+  const sansPrix = {}; A.M.forEach(function(m){ const L = m.ch && RC.E[m.mois] && RC.E[m.mois].ch[m.ch._id]; if ((!L || !L.horaire) && !(m.prixCh > 0)) sansPrix[m.chNom] = (sansPrix[m.chNom] || 0) + 1; });
+  Object.keys(sansPrix).forEach(function(n){ push('orange', 'Chauffeur sans coût associé — ' + n + ' : ' + sansPrix[n] + ' mission(s) sans prix chauffeur ni taux horaire'); });
+  const vus = {};
+  Object.keys(RC.E).forEach(function(m){ if (m < b.du.slice(0, 7) || m > b.au.slice(0, 7)) return; RC.E[m].alertes.forEach(function(a){ if (/Véhicule sans coût/.test(a.txt) && !vus[a.txt]) { vus[a.txt] = 1; push('gris', a.txt); } }); });
+  const o = { rouge: 0, orange: 1, gris: 2 };
+  return out.sort(function(a, b){ return o[a.niv] - o[b.niv]; });
+}
+function rcVueControles() {
+  const L = rcControles();
+  return rcEntete() + (L.length ? rgAlertesHtml({ alertes: L }) : '<div style="font-size:13px;color:#16a34a">✅ Aucun problème détecté sur la période.</div>')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:10px">Contrôles : prix manquant ou à 0 €, mission annulée facturée, facture sans mission, mission facturée deux fois, écart réalisé / facturé, factures en retard, encaissé > facturé, client sans tarif, chauffeur ou véhicule sans coût.</div>';
+}
+
+// ── Suivi d'une facture : envoi, paiements, annulation ─────────────────────
+function rcPeutEcrire() { return RC.ctx.mode === 'admin' || (RC.ctx.mode === 'gerant' && typeof gOpt === 'function' && gOpt('facturation')); }
+window.rcFacture = function(cle) {
+  const f = RC.F[cle] || Object.keys(RC.F).map(function(k){ return RC.F[k]; }).find(function(x){ return x.cle === cle; }); if (!f) return;
+  const reste = Math.max(0, f.ttc - f.enc), ecr = rcPeutEcrire() && !f.annulee;
+  let h = '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + E(f.client) + ' · émise le ' + rcFr(f.date) + (f.du ? ' · prestations du ' + rcFr(f.du) + ' au ' + rcFr(f.au) : '') + '</div>'
+    + '<div style="margin-bottom:8px">' + rcBadge(f.statut) + '</div>'
+    + rgLigneRes('Montant HT', rgEur(f.ht)) + rgLigneRes('TVA', rgEur(f.tva)) + rgLigneRes('Montant TTC', rgEur(f.ttc), true)
+    + rgLigneRes('Échéance', rcFr(f.echeance) + ' <span style="font-size:11px;color:var(--muted)">(' + (f.delai ? f.delai + ' j' : 'à réception') + ')</span>') + rgLigneRes('Envoyée', f.envoyeeLe ? rcFr(f.envoyeeLe) : '—')
+    + rgLigneRes('Encaissé', rgEur(f.enc)) + rgLigneRes('Reste à payer', '<b style="color:' + (reste > 0.005 ? '#d97706' : '#16a34a') + '">' + rgEur(reste) + '</b>', true)
+    + '<div style="font-size:13px;font-weight:800;margin:12px 0 4px">Paiements reçus</div>'
+    + (f.paiements.length ? f.paiements.map(function(p){ return '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--border)"><span>' + rcFr(p.date) + ' · ' + E(RC_MODES[p.mode] || p.mode || '') + (p.note ? ' · ' + E(p.note) : '') + '</span><span><b>' + rgEur(p.montant) + '</b>' + (ecr ? ' <button class="btn btn-ghost btn-sm" data-p="' + E(p._id) + '" onclick="rcPaiementSuppr(\'' + E(f.cle) + '\',this.dataset.p)" aria-label="Supprimer ce paiement">✕</button>' : '') + '</span></div>'; }).join('') : '<div style="font-size:12px;color:var(--muted)">' + (f.enc > 0 ? 'Réglée (statut « payée » des transferts' + (f.payeLe ? ', le ' + rcFr(f.payeLe) : '') + ').' : 'Aucun paiement enregistré.') + '</div>')
+    + (f.courses.length ? '<div style="font-size:13px;font-weight:800;margin:12px 0 4px">Missions (' + f.courses.length + ')</div>' + f.courses.slice(0, 60).map(function(c){ return '<div style="font-size:12px;padding:3px 0;border-bottom:1px solid var(--border)">' + new Date(c.datetime).toLocaleDateString('fr-FR') + ' · ' + E(String((c.depart || c.lieu || '') + (c.arrivee ? ' → ' + c.arrivee : '')).slice(0, 70)) + ' · <b>' + rgEur(prixFacture(c)) + '</b></div>'; }).join('') : '')
+    + (ecr ? '<div style="font-size:13px;font-weight:800;margin:14px 0 6px">💶 Enregistrer un paiement</div>'
+      + '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">' + rgChamp('Date', rgInp('rc-p-date', rcAuj(), 'date')) + rgChamp('Montant reçu (€)', rgInp('rc-p-mt', reste ? Math.round(reste * 100) / 100 : '')) + '</div>'
+      + '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">' + rgChamp('Mode', '<select id="rc-p-mode" style="' + RG_IN + ';width:100%">' + Object.keys(RC_MODES).map(function(k){ return '<option value="' + k + '">' + RC_MODES[k] + '</option>'; }).join('') + '</select>') + rgChamp('Note (facultatif)', rgInp('rc-p-note', '', 'text', 'maxlength="120"')) + '</div>' : '')
+    + (f.annulee ? '<div style="font-size:12px;color:var(--muted);margin-top:8px">Facture annulée le ' + rcFr(f.s && f.s.annuleeLe) + (f.s && f.s.annuleeMotif ? ' — ' + E(f.s.annuleeMotif) : '') + '.</div>' : '');
+  const ov = rgSous('🧾 Facture ' + E(f.ref), h, ecr ? '💶 Enregistrer le paiement' : null);
+  const btns = ov.querySelector('#rg-f-btns');
+  if (ecr) {
+    btns.insertAdjacentHTML('afterbegin', (f.envoyeeLe ? '' : '<button class="btn btn-ghost btn-sm" id="rc-f-env">📤 Marquer envoyée</button>') + (f.paiements.length || f.enc > 0.005 ? '' : '<button class="btn btn-ghost btn-sm" id="rc-f-ann">🗑️ Annuler la facture</button>'));
+    const env = ov.querySelector('#rc-f-env'); if (env) env.onclick = async function(){ await rcFactureMaj(f, { envoyeeLe: rcAuj() }); ov.remove(); showToast('📤 Facture marquée envoyée'); };
+    const ann = ov.querySelector('#rc-f-ann'); if (ann) ann.onclick = function(){ rcAnnulerForm(f); };
+    ov.querySelector('#rg-f-ok').onclick = async function(){
+      const err = ov.querySelector('#rg-f-err');
+      const mt = rgNum(document.getElementById('rc-p-mt').value), dte = document.getElementById('rc-p-date').value;
+      if (!(mt > 0) || mt > 1000000) { err.textContent = 'Montant invalide'; return; }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dte)) { err.textContent = 'Date invalide'; return; }
+      if (f.enc + mt > f.ttc + 0.01 && !ov.dataset.confirme) { ov.dataset.confirme = '1'; err.textContent = 'Le total encaissé dépasserait le montant de la facture (' + rgEur(f.ttc) + '). Touchez à nouveau pour confirmer.'; return; }
+      const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const p = { date: dte, montant: Math.round(mt * 100) / 100, mode: document.getElementById('rc-p-mode').value, note: sanitize(document.getElementById('rc-p-note').value || '', 120), par: SESSION.name || '', at: new Date().toISOString() };
+      this.disabled = true;
+      const ok = await rcPaiementAjouter(f, id, p);
+      this.disabled = false;
+      if (ok) { ov.remove(); showToast('💶 Paiement enregistré'); }
+      else err.textContent = 'Enregistrement impossible (droits ou connexion).';
+    };
+  }
+};
+async function rcFactureMaj(f, data) {
+  try {
+    if (RC.ctx.mode === 'admin') {
+      const base = { ref: f.ref, client: f.client, date: f.date, du: f.du, au: f.au, ttc: Math.round(f.ttc * 100) / 100, ht: Math.round(f.ht * 100) / 100, majLe: new Date().toISOString() };
+      await fbUpdate('factures_suivi', f.cle, Object.assign(base, data));
+      RC.suivi[f.cle] = Object.assign({}, RC.suivi[f.cle] || {}, base);
+      Object.keys(data).forEach(function(k){ const p = k.split('/'); if (p.length === 2) { const o = RC.suivi[f.cle][p[0]] = Object.assign({}, RC.suivi[f.cle][p[0]] || {}); if (data[k] == null) delete o[p[1]]; else o[p[1]] = data[k]; } else RC.suivi[f.cle][k] = data[k]; });
+    } else {
+      await fbUpdate(RC.ctx.base + 'factures', f.id, data);
+      const x = (GP.factures || []).find(function(y){ return y._id === f.id; });
+      if (x) Object.keys(data).forEach(function(k){ const p = k.split('/'); if (p.length === 2) { const o = x[p[0]] = Object.assign({}, x[p[0]] || {}); if (data[k] == null) delete o[p[1]]; else o[p[1]] = data[k]; } else x[k] = data[k]; });
+    }
+    rcPreparer(); rcDessiner();
+    return true;
+  } catch (e) { console.warn('Suivi facture', e); showToast('Enregistrement refusé — publiez les nouvelles règles Firebase', true); return false; }
+}
+async function rcPaiementAjouter(f, id, p) {
+  const data = {}; data['paiements/' + id] = p;
+  const encApres = (f.paiements.length ? f.enc : 0) + p.montant;
+  const solde = encApres >= f.ttc - 0.01;
+  if (RC.ctx.mode === 'gerant') { data.payee = solde; data.payeeLe = solde ? p.date : null; }
+  // Premier paiement enregistré alors que des transferts étaient déjà « payés » :
+  // on garde l'historique tel quel (le suivi prend le relais pour cette facture).
+  const ok = await rcFactureMaj(f, data);
+  if (ok && solde && RC.ctx.mode === 'admin') await rcCoursesPayees(f, p.date);
+  return ok;
+}
+// Facture soldée → ses transferts passent « payés » (même statut qu'avant, à la main).
+async function rcCoursesPayees(f, date) {
+  const L = f.courses.filter(function(c){ return c.statut === 'facturee'; });
+  if (!L.length) return;
+  for (const c of L) { try { await fbUpdate('courses', c._id, { statut: 'payee', payeLe: date }); c.statut = 'payee'; c.payeLe = date; const loc = (D.courses || []).find(function(x){ return x._id === c._id; }); if (loc) { loc.statut = 'payee'; loc.payeLe = date; } } catch (e) {} }
+  await rcFactureMaj(f, { coursesPayees: L.map(function(c){ return c._id; }) });
+}
+window.rcPaiementSuppr = async function(cle, pid) {
+  const f = RC.F[cle] || Object.keys(RC.F).map(function(k){ return RC.F[k]; }).find(function(x){ return x.cle === cle; }); if (!f) return;
+  const p = f.paiements.find(function(x){ return x._id === pid; }); if (!p) return;
+  const ov = rgSous('Supprimer ce paiement ?', '<div style="font-size:13px">' + rcFr(p.date) + ' · ' + rgEur(p.montant) + ' — facture ' + E(f.ref) + '</div>', '🗑️ Supprimer');
+  ov.querySelector('#rg-f-ok').onclick = async function(){
+    const data = {}; data['paiements/' + pid] = null;
+    const reste = f.enc - rgNum(p.montant), solde = reste >= f.ttc - 0.01;
+    if (RC.ctx.mode === 'gerant') { data.payee = solde; if (!solde) data.payeeLe = null; }
+    if (RC.ctx.mode === 'admin' && !solde && f.s && f.s.coursesPayees) data.coursesPayees = null;
+    const ids = RC.ctx.mode === 'admin' && !solde && f.s && f.s.coursesPayees ? (Array.isArray(f.s.coursesPayees) ? f.s.coursesPayees : Object.keys(f.s.coursesPayees).map(function(k){ return f.s.coursesPayees[k]; })) : [];
+    const ok = await rcFactureMaj(f, data);
+    if (ok && ids.length) {
+      for (const id of ids) { const c = f.courses.find(function(x){ return x._id === id; }); if (!c || c.statut !== 'payee') continue; try { await fbUpdate('courses', id, { statut: 'facturee', payeLe: null }); c.statut = 'facturee'; c.payeLe = null; const loc = (D.courses || []).find(function(x){ return x._id === id; }); if (loc) { loc.statut = 'facturee'; loc.payeLe = null; } } catch (e) {} }
+      rcPreparer(); rcDessiner();
+    }
+    ov.remove(); if (ok) showToast('Paiement supprimé');
+  };
+};
+function rcAnnulerForm(f) {
+  const ov = rgSous('🗑️ Annuler la facture ' + E(f.ref), '<div style="font-size:13px;margin-bottom:8px">Ses ' + f.courses.length + ' mission(s) redeviennent « à facturer » (elles pourront être refacturées depuis Facturation). La facture reste visible avec le statut « Annulée ».</div>' + rgChamp('Motif', rgInp('rc-a-motif', '', 'text', 'maxlength="160" placeholder="ex. erreur de prix, avoir émis…"')), '🗑️ Annuler la facture');
+  ov.querySelector('#rg-f-ok').onclick = async function(){
+    const motif = sanitize(document.getElementById('rc-a-motif').value || '', 160);
+    if (!motif) { ov.querySelector('#rg-f-err').textContent = 'Indiquez un motif'; return; }
+    this.disabled = true;
+    const ok = await rcFactureMaj(f, { annuleeLe: new Date().toISOString(), annuleeMotif: motif, annuleePar: SESSION.name || '', nbMissions: f.courses.length });
+    if (ok) {
+      for (const c of f.courses) {
+        try {
+          if (RC.ctx.mode === 'admin') { if (c.statut !== 'facturee') continue; await fbUpdate('courses', c._id, { statut: 'terminee', factureRef: null, factureAt: null }); c.statut = 'terminee'; c.factureRef = null; c.factureAt = null; const loc = (D.courses || []).find(function(x){ return x._id === c._id; }); if (loc) { loc.statut = 'terminee'; loc.factureRef = null; loc.factureAt = null; } }
+          else { await gRest('PATCH', gpChemin('courses_priv/' + c._id), { factureRef: null, factureId: null, factureLe: null }); if (GP.priv[c._id]) { delete GP.priv[c._id].factureRef; delete GP.priv[c._id].factureId; delete GP.priv[c._id].factureLe; } if (c._priv) { delete c._priv.factureRef; delete c._priv.factureId; } }
+        } catch (e) {}
+      }
+      try { addLog('🗑️ Facture ' + f.ref + ' annulée (' + motif + ')'); } catch (e) {}
+      ov.remove(); document.getElementById('rg-f-ov') && document.getElementById('rg-f-ov').remove();
+      rcPreparer(); rcDessiner(); showToast('Facture annulée — missions à refacturer');
+    } else this.disabled = false;
+  };
+}
+window.rcFraisGeneraux = function() {
+  const v = rgNum((RC.d.regles || {}).fraisGeneraux);
+  const ov = rgSous('⚙️ Frais généraux mensuels', '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">Loyer, expert-comptable, logiciels, téléphonie, publicité… Sert uniquement à afficher la <b>marge nette</b> (marge brute − frais généraux). Laisser vide si inconnu.</div>' + rgChamp('Montant par mois (€ HT)', rgInp('rc-fg', v || '')), '💾 Enregistrer');
+  ov.querySelector('#rg-f-ok').onclick = async function(){
+    const n = rgNum(document.getElementById('rc-fg').value);
+    let ok = false;
+    try { const tok = await getAuthToken(); const r = await fetch(FB_URL + '/' + RC.ctx.base + 'paie_regles.json' + authParam(tok), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fraisGeneraux: n || null }) }); ok = r.ok; } catch (e) {}
+    if (!ok) { ov.querySelector('#rg-f-err').textContent = 'Enregistrement impossible (droits ou connexion).'; return; }
+    RC.d.regles.fraisGeneraux = n || null; ov.remove(); rcDessiner(); showToast('Frais généraux enregistrés');
+  };
+};
+
+// ── Exports ─────────────────────────────────────────────────────────────────
+function rcR2(x) { return Math.round((parseFloat(x) || 0) * 100) / 100; }
+function rcFeuilles() {
+  const A = RC.A || rcAgreger(RC.b), T = A.T, M = A.M, per = rcLib(RC.b, RC.per), filt = rcLibFiltres() || 'aucun';
+  const ligne = function(g, nom){ return Object.assign({}, nom, { 'Prestations': g.n, 'CA HT (€)': rcR2(g.ht), 'TVA (€)': rcR2(g.tva), 'CA TTC (€)': rcR2(g.ttc), 'Facturé TTC (€)': rcR2(g.fact), 'Encaissé TTC (€)': rcR2(g.enc), 'Reste à encaisser (€)': rcR2(g.reste), 'Coût chauffeurs (€)': rcR2(g.sal), 'Coût véhicules (€)': rcR2(g.veh + g.ene), 'Frais (€)': rcR2(g.frais), 'Coût total (€)': rcR2(g.cout), 'Marge (€)': rcR2(g.marge), 'Marge %': g.pct == null ? '' : rcR2(g.pct) }); };
+  const synth = [{ 'Période': per, 'Filtres': filt, 'CA HT (€)': rcR2(T.ht), 'TVA (€)': rcR2(T.tva), 'CA TTC (€)': rcR2(T.ttc), 'Facturé TTC (€)': rcR2(T.fact), 'Encaissé TTC (€)': rcR2(T.enc), 'Reste à encaisser (€)': rcR2(T.reste), 'Prestations': T.n, 'Clients': T.nbClients, 'Sociétés': T.nbSocs, 'Chauffeurs': T.nbCh, 'Véhicules': T.nbVeh, 'Coût total (€)': rcR2(T.cout), 'dont non rattaché à une mission (€)': rcR2(T.nonImp), 'Marge brute (€)': rcR2(T.marge), 'Taux de marge %': T.pct == null ? '' : rcR2(T.pct), 'Marge nette (€)': T.margeNette == null ? '' : rcR2(T.margeNette), 'Panier moyen HT (€)': rcR2(T.panier), 'CA moyen / jour (€)': rcR2(T.ht / T.jours), 'Heures pointées': rcR2(T.heures), 'CA / heure (€)': T.heures ? rcR2(T.ht / T.heures) : '' }];
+  const soc = rcGrouper(M, function(m){ return m.soc; }, function(m){ return m.soc; }).map(function(g){ return ligne(g, { 'Société': g.lib }); });
+  const cli = rcGrouper(M, function(m){ return m.client; }, function(m){ return m.client; }).map(function(g){ const dl = rcDelaiMoyen(g.k); return Object.assign(ligne(g, { 'Client': g.lib }), { 'Délai moyen de paiement (j)': dl == null ? '' : Math.round(dl) }); });
+  const pre = rcGrouper(M, function(m){ return m.presta; }, function(m){ return RC_PRESTA[m.presta].replace(/^\S+\s/, ''); }).map(function(g){ return ligne(g, { 'Prestation': g.lib }); });
+  const chs = rcGrouper(M, function(m){ return m.chId; }, function(m){ return m.chNom; }).map(function(g){ const h = RC.chId[g.k] ? rcHeures(RC.b, g.k) : 0; return Object.assign(ligne(g, { 'Chauffeur': g.lib, 'Type': g.ms[0] && g.ms[0].st ? 'sous-traitant' : 'interne' }), { 'Heures': rcR2(h), 'CA / heure (€)': h ? rcR2(g.ht / h) : '', 'CA / mission (€)': rcR2(g.panier) }); });
+  const veh = rcGrouper(M.filter(function(m){ return m.vehId; }), function(m){ return m.vehId; }, function(m){ return rgVehNom(m.v); }).map(function(g){ const v = g.ms[0].v; return Object.assign(ligne(g, { 'Véhicule': g.lib, 'Type': RC_TYPES[g.ms[0].type], 'Motorisation': v.motorisation ? rgMotoNom(v.motorisation) : '' }), { 'Km': Math.round(g.km), 'CA / km (€)': g.km ? rcR2(g.ht / g.km) : '' }); });
+  const typ = rcGrouper(M, function(m){ return m.type; }, function(m){ return RC_TYPES[m.type]; }).map(function(g){ return ligne(g, { 'Type de véhicule': g.lib }); });
+  const mot = rcGrouper(M, function(m){ return m.moto || 'nc'; }, function(m){ return m.moto ? rgMotoNom(m.moto) : 'Non renseignée'; }).map(function(g){ return Object.assign(ligne(g, { 'Motorisation': g.lib }), { 'Coût énergétique (€)': rcR2(g.ene) }); });
+  const src = rcGrouper(M, function(m){ return m.source; }, function(m){ return RC_SOURCE[m.source].replace(/^\S+\s/, ''); }).map(function(g){ return ligne(g, { 'Source': g.lib }); });
+  const st = rcGrouper(M, function(m){ return m.st ? 'Sous-traitées' : 'Interne'; }, function(m){ return m.st ? 'Sous-traitées' : 'Interne'; }).map(function(g){ return Object.assign(ligne(g, { 'Missions': g.lib }), { 'Prix payé aux sous-traitants (€)': rcR2(g.prixSt) }); });
+  const ev = rcSerieMois(RC.b.au, 12, 0), ev1 = rcSerieMois(RC.b.au, 12, 1);
+  const mois = ev.mois.map(function(m, i){ return { 'Mois': m, 'CA HT (€)': rcR2(ev.v[i]), 'CA HT N-1 (€)': rcR2(ev1.v[i]), 'Évolution vs N-1 %': ev1.v[i] ? rcR2((ev.v[i] - ev1.v[i]) / ev1.v[i] * 100) : '' }; });
+  const jr = RC_JOURS.map(function(j, i){ const L = M.filter(function(m){ return (rcD(m.j).getDay() + 6) % 7 === i; }); return { 'Jour': j, 'Prestations': L.length, 'CA HT (€)': rcR2(L.reduce(function(s, m){ return s + m.ht; }, 0)) }; });
+  const fac = rcFacturesListe(true).map(function(f){ return { 'N° facture': f.ref, 'Client': f.client, 'Société': f.soc, 'Date': f.date, 'Période du': f.du, 'Période au': f.au, 'Montant HT (€)': rcR2(f.ht), 'TVA (€)': rcR2(f.tva), 'Montant TTC (€)': rcR2(f.ttc), 'Échéance': f.echeance, 'Statut': RC_FSTAT[f.statut], 'Envoyée le': String(f.envoyeeLe || '').slice(0, 10), 'Payée le': f.payeLe || '', 'Encaissé (€)': rcR2(f.enc), 'Reste à payer (€)': rcR2(f.annulee ? 0 : Math.max(0, f.ttc - f.enc)) }; });
+  const auj = rcAuj();
+  const cre = rcFacturesListe(true).filter(function(f){ return !f.annulee && f.statut !== 'payee'; }).map(function(f){ return { 'Client': f.client, 'Facture': f.ref, 'Date': f.date, 'Montant TTC (€)': rcR2(f.ttc), 'Échéance': f.echeance, 'Jours de retard': f.echeance && f.echeance < auj ? rcJours(f.echeance, auj) - 1 : 0, 'Reste (€)': rcR2(f.ttc - f.enc), 'Statut': RC_FSTAT[f.statut] }; });
+  const mis = M.slice().sort(function(a, b){ return String(a.c.datetime).localeCompare(String(b.c.datetime)); }).map(function(m){ const c = m.c; return { 'Date': String(c.datetime || '').slice(0, 16).replace('T', ' '), 'Client': m.client, 'Réf.': c.ref || c.logipaxNumBon || '', 'Départ': c.depart || c.lieu || '', 'Arrivée': c.arrivee || '', 'Prestation': RC_PRESTA[m.presta].replace(/^\S+\s/, ''), 'Source': RC_SOURCE[m.source].replace(/^\S+\s/, ''), 'Société': m.soc, 'Chauffeur': m.chNom, 'Sous-traitée': m.st ? 'oui' : 'non', 'Véhicule': m.v ? rgVehNom(m.v) : '', 'Type véhicule': RC_TYPES[m.type], 'Motorisation': m.moto ? rgMotoNom(m.moto) : '', 'HT (€)': rcR2(m.ht), 'TVA (€)': rcR2(m.tva), 'TTC (€)': rcR2(m.ttc), 'Prix chauffeur (€)': m.prixCh ? rcR2(m.prixCh) : '', 'Coût imputé (€)': rcR2(m.coutTot), 'Marge (€)': rcR2(m.ht - m.coutTot), 'Facture': m.f ? m.f.ref : (m.direct ? 'réglé direct' : ''), 'Encaissé TTC (€)': rcR2(m.enc), 'Statut paiement': RC_PAIE[m.paie], 'Statut mission': c.statut }; });
+  const ctl = rcControles().map(function(a){ return { 'Niveau': a.niv, 'Contrôle': a.txt }; });
+  return { 'Synthèse': synth, 'Sociétés': soc, 'Clients': cli, 'Prestations': pre, 'Chauffeurs': chs, 'Véhicules': veh, 'Types véhicule': typ, 'Motorisations': mot, 'Sources': src, 'Sous-traitance': st, 'Mois': mois, 'Jours semaine': jr, 'Factures': fac, 'Créances': cre, 'Missions': mis, 'Contrôles': ctl };
+}
+window.rcExporter = async function(fmt) {
+  if (!RC.d) return;
+  const F = rcFeuilles(), nomBase = 'Rapport_CA_' + RC.b.du + '_' + RC.b.au + (RC.f.soc ? '_' + RC.f.soc : '') + (RC.f.client ? '_' + RC.f.client : '') + (RC.f.ch ? '_' + ((RC.chId[RC.f.ch] && rgNomCh(RC.chId[RC.f.ch])) || 'chauffeur') : '');
+  const nom = nomBase.replace(/[^a-z0-9_\-]+/gi, '_');
+  const onglet = { bord: 'Synthèse', societes: 'Sociétés', clients: 'Clients', prestations: 'Prestations', chauffeurs: 'Chauffeurs', vehicules: 'Véhicules', evolution: 'Mois', factures: 'Factures', creances: 'Créances', analyses: 'Sous-traitance', missions: 'Missions', controles: 'Contrôles' }[RC.onglet] || 'Synthèse';
+  if (fmt === 'xlsx' || fmt === 'compta') {
+    if (!(await gxXlsx())) return;
+    const X = window.XLSX, wb = X.utils.book_new();
+    const feuilles = fmt === 'compta' ? ['Factures', 'Créances', 'Missions'] : Object.keys(F);
+    feuilles.forEach(function(k){ X.utils.book_append_sheet(wb, X.utils.json_to_sheet(F[k].length ? F[k] : [{ 'Info': 'Aucune donnée' }]), k); });
+    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet([['Méthode'], ['Période', rcLib(RC.b, RC.per)], ['Filtres', rcLibFiltres() || 'aucun'], ['CA', 'Transferts terminés, facturés, payés, no-show facturés ; HT = TTC ÷ ' + (1 + TVA) + (RC.tvaApp ? '' : ' (non applicable : TVA non applicable)') + ' ; une mission comptée une seule fois'], ['Facturé', 'Référence de facture posée par Facturation ; payé à bord / en ligne = facturé et encaissé'], ['Encaissé', 'Paiements enregistrés sur la facture, sinon transferts au statut payé'], ['Coûts', 'Module Gestion, paie & rentabilité : salaire + charges, véhicule, frais, répartis au prorata du CA ; sous-traitance = prix chauffeur'], ['Marge', 'CA HT − coûts ; marge nette = marge brute − frais généraux (si renseignés)'], ['Édité le', new Date().toLocaleString('fr-FR')]]), 'Méthode');
+    await gxEnregistrer(wb, nom + (fmt === 'compta' ? '_comptabilite' : '') + '.xlsx');
+  } else if (fmt === 'csv') {
+    const L = F[onglet]; if (!L.length) { showToast('Rien à exporter', true); return; }
+    const cols = Object.keys(L[0]), q = function(v){ return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+    const csv = '\uFEFF' + [cols.map(q).join(';')].concat(L.map(function(o){ return cols.map(function(c){ return q(typeof o[c] === 'number' ? String(o[c]).replace('.', ',') : o[c]); }).join(';'); })).join('\r\n');
+    if (typeof gExporterFichier === 'function') await gExporterFichier(nom + '_' + onglet.replace(/\s+/g, '_') + '.csv', csv, 'text/csv');
+  } else {
+    const L = F[onglet]; const cols = L.length ? Object.keys(L[0]) : [];
+    openPrintableDoc('<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Rapport CA</title><style>body{font-family:Helvetica,Arial,sans-serif;color:#111;padding:24px;font-size:10.5px}h1{font-size:17px;margin:0}.s{color:#555;margin:4px 0 12px}table{width:100%;border-collapse:collapse}th{background:#1f2937;color:#fff;text-align:left;padding:5px 6px;font-size:9.5px}td{padding:4px 6px;border-bottom:1px solid #e5e7eb}@media print{body{padding:8mm}}</style></head><body>'
+      + '<h1>' + (RC.ctx.mode === 'gerant' ? E(RC.ctx.soc) : 'MOBILEA') + ' — Rapport CA · ' + E(onglet) + '</h1><div class="s">' + E(rcLib(RC.b, RC.per)) + (rcLibFiltres() ? ' · ' + E(rcLibFiltres()) : '') + ' · édité le ' + new Date().toLocaleDateString('fr-FR') + '</div>'
+      + (L.length ? '<table><thead><tr>' + cols.map(function(c){ return '<th>' + E(c) + '</th>'; }).join('') + '</tr></thead><tbody>' + L.map(function(o){ return '<tr>' + cols.map(function(c){ return '<td>' + E(typeof o[c] === 'number' ? o[c].toLocaleString('fr-FR') : String(o[c] == null ? '' : o[c])) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table>' : '<p>Aucune donnée.</p>')
+      + '</body></html>');
+  }
+};
+
+// ── Points d'entrée : Rapports (admin), Mes rapports (gérant) ──────────────
+function rcBoutons() {
+  try {
+    if (SESSION && SESSION.role === 'admin') {
+      const pg = document.getElementById('page-rapports');
+      if (pg && !document.getElementById('rc-btn-rap')) {
+        const b = document.createElement('div'); b.id = 'rc-btn-rap';
+        b.style.cssText = 'margin:0 0 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:linear-gradient(135deg,rgba(59,130,246,.14),rgba(22,163,74,.10));border:1px solid var(--border2);border-radius:12px;padding:12px 14px';
+        b.innerHTML = '<div style="flex:1;min-width:200px"><div style="font-weight:800;font-size:14px">📈 Rapport CA complet</div><div style="font-size:12px;color:var(--muted)">CA par société, client, prestation, chauffeur, véhicule · facturé / encaissé / impayés · marge · comparaisons</div></div><button class="btn btn-p btn-sm" onclick="rcOuvrir(\'bord\')">Ouvrir</button>';
+        const rg = document.getElementById('rg-btn-rap');
+        if (rg && rg.parentNode === pg) pg.insertBefore(b, rg.nextSibling); else pg.insertBefore(b, pg.firstChild);
+      }
+    }
+    if (SESSION && SESSION.role === 'chauffeur' && SESSION.gerant === true) {
+      const root = document.getElementById('grp-root');
+      if (root && typeof gOpt === 'function' && gOpt('rapports') && !document.getElementById('rc-btn-g')) {
+        const html = '<div id="rc-btn-g" style="margin:0 0 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--card);border:1px solid var(--border2);border-radius:12px;padding:12px 14px"><div style="flex:1;min-width:200px"><div style="font-weight:800;font-size:14px">📈 Rapport CA complet</div><div style="font-size:12px;color:var(--muted)">CA par client, prestation, chauffeur · factures, encaissements, impayés · marge</div></div><button class="btn btn-p btn-sm" onclick="rcOuvrir(\'bord\')">Ouvrir</button></div>';
+        const g = document.getElementById('rg-btn-g');
+        if (g) g.insertAdjacentHTML('afterend', html); else root.insertAdjacentHTML('afterbegin', html);
+      }
+    }
+  } catch (e) {}
+}
+setInterval(function(){ try { rcBoutons(); } catch (e) {} }, 3000);
