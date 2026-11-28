@@ -95,13 +95,19 @@ jobs:
           PL="App/Info.plist"
           LOC="MOBILEA utilise votre position pour vous attribuer les courses proches, permettre au dispatch de suivre votre trajet en temps reel, et valider votre arrivee sur le lieu de prise en charge."
           LOCBG="MOBILEA utilise votre position, y compris en arriere-plan pendant une course, pour permettre au dispatch de suivre votre trajet en temps reel et valider votre arrivee."
-          MIC="MOBILEA utilise le microphone uniquement lorsque vous choisissez d'enregistrer ou d'envoyer un message vocal au support ou a votre chauffeur depuis la messagerie."
-          CAM="MOBILEA utilise l'appareil photo uniquement lorsque vous choisissez de prendre une photo pour votre profil, joindre un justificatif ou signaler un incident au support."
+          MIC="MOBILEA utilise le microphone uniquement lorsque vous enregistrez un message vocal pour le support ou pour votre chauffeur depuis la messagerie."
+          CAM="MOBILEA utilise votre appareil photo uniquement lorsque vous prenez une photo pour votre profil, pour un justificatif de frais ou pour signaler un incident au support."
+          PHO="MOBILEA accede a vos photos uniquement lorsque vous choisissez une image a joindre, par exemple le ticket de vos frais."
+          PHOADD="MOBILEA enregistre une image dans vos photos uniquement si vous le demandez."
           pb() { /usr/libexec/PlistBuddy -c "$1" "$PL" 2>/dev/null; }
           pb "Set :NSLocationWhenInUseUsageDescription $LOC"       || pb "Add :NSLocationWhenInUseUsageDescription string $LOC"
           pb "Set :NSLocationAlwaysAndWhenInUseUsageDescription $LOCBG" || pb "Add :NSLocationAlwaysAndWhenInUseUsageDescription string $LOCBG"
           pb "Set :NSMicrophoneUsageDescription $MIC"              || pb "Add :NSMicrophoneUsageDescription string $MIC"
           pb "Set :NSCameraUsageDescription $CAM"                  || pb "Add :NSCameraUsageDescription string $CAM"
+          pb "Set :NSPhotoLibraryUsageDescription $PHO"            || pb "Add :NSPhotoLibraryUsageDescription string $PHO"
+          pb "Set :NSPhotoLibraryAddUsageDescription $PHOADD"      || pb "Add :NSPhotoLibraryAddUsageDescription string $PHOADD"
+          # Sans ces textes iOS ferme l app des que la camera ou les photos sont ouvertes : build bloque s ils manquent.
+          for K in NSCameraUsageDescription NSPhotoLibraryUsageDescription NSMicrophoneUsageDescription; do /usr/libexec/PlistBuddy -c "Print :$K" "$PL" >/dev/null || { echo "::error::$K absent de Info.plist"; exit 1; }; done
           pb "Set :ITSAppUsesNonExemptEncryption false"           || pb "Add :ITSAppUsesNonExemptEncryption bool false"
           if [ -f "Podfile" ]; then
             sed -i '' -E "s/platform :ios, '[0-9.]+'/platform :ios, '15.0'/" Podfile || true
